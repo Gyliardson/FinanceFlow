@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 from main import app
 
 client = TestClient(app)
@@ -13,6 +14,18 @@ def test_health_check():
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "message": "A API está operante e saudável."}
 
+@patch("main.get_supabase_client")
+def test_add_bill_record(mock_supabase):
+    mock_execute = mock_supabase.return_value.table.return_value.insert.return_value.execute
+    mock_execute.return_value.data = [{"id": "abc", "amount": 250.0}]
+    
+    payload = {"description": "Conta X", "amount": 250.0, "status": "pending", "due_date": "2026-05-10"}
+    res = client.post("/add-bill", json=payload)
+    assert res.status_code == 200
+    r_json = res.json()
+    assert r_json["status"] == "success"
+    assert r_json["data"][0]["amount"] == 250.0
+
 def test_get_bills_integration():
     """Testa se a API consegue se conectar ao Supabase e ler a tabela."""
     response = client.get("/bills")
@@ -22,7 +35,6 @@ def test_get_bills_integration():
     assert "data" in data
     assert isinstance(data["data"], list)
 
-from unittest.mock import patch
 
 @patch("main.extract_invoice_data")
 def test_upload_receipt(mock_extract):

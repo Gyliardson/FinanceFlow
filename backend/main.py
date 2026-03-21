@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from database import get_supabase_client
 from ai_service import extract_invoice_data
+from typing import Optional
 
 app = FastAPI(
     title="FinanceFlow API",
@@ -22,6 +23,13 @@ app.add_middleware(
 class HealthResponse(BaseModel):
     status: str
     message: str
+
+class BillCreateRequest(BaseModel):
+    description: str
+    amount: float
+    due_date: Optional[str] = None
+    barcode: Optional[str] = None
+    status: str = "pending"
 
 class BillValidationRequest(BaseModel):
     bill_id: str
@@ -52,6 +60,26 @@ async def get_bills():
         return {"data": response.data}
     except Exception as e:
         # Pega qualquer erro do Supabase ou de credenciais
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/add-bill", tags=["Bills"])
+async def add_bill(req: BillCreateRequest):
+    """
+    Cadastra uma fatura inteiramente nova extraída via OCR de celular, 
+    ou simplesmente criada de modo estritamente manual pelo usuário mobile (Fase 5).
+    """
+    try:
+        supabase = get_supabase_client()
+        data = {
+            "description": req.description,
+            "amount": req.amount,
+            "due_date": req.due_date if req.due_date else None,
+            "barcode": req.barcode if req.barcode else None,
+            "status": req.status
+        }
+        response = supabase.table("finance_bills").insert(data).execute()
+        return {"status": "success", "data": response.data}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload-receipt", tags=["Bills", "OCR"])
