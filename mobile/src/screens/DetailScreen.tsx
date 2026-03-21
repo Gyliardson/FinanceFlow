@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, Switch, ActivityIndicator, Alert, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, Switch, ActivityIndicator, Alert, ScrollView, Platform } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import api from '../services/api';
 
 export default function DetailScreen({ navigation }: any) {
@@ -13,6 +14,9 @@ export default function DetailScreen({ navigation }: any) {
   const [amount, setAmount] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [barcode, setBarcode] = useState('');
+
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [dateObj, setDateObj] = useState(new Date());
 
   const handleAmountChange = (text: string) => {
     const numericValue = text.replace(/[^0-9]/g, '');
@@ -84,8 +88,12 @@ export default function DetailScreen({ navigation }: any) {
         if (ocrData.amount) setAmount(Number(ocrData.amount).toFixed(2).replace('.', ','));
         if (ocrData.due_date) {
             const parts = ocrData.due_date.split('-');
-            if (parts.length === 3) setDueDate(`${parts[2]}/${parts[1]}/${parts[0]}`);
-            else setDueDate(ocrData.due_date);
+            if (parts.length === 3) {
+              setDueDate(`${parts[2]}/${parts[1]}/${parts[0]}`);
+              setDateObj(new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])));
+            } else {
+              setDueDate(ocrData.due_date);
+            }
         }
         setBarcode(ocrData.barcode || '');
         setDescription('Fatura ' + (fileAsset.name || 'Nova'));
@@ -100,8 +108,8 @@ export default function DetailScreen({ navigation }: any) {
   };
 
   const handleSaveBill = async () => {
-    if (!amount || !description) {
-      Alert.alert('Incompleto', 'Os campos de Descrição e Valor são obrigatórios.');
+    if (!amount || !description || !dueDate) {
+      Alert.alert('Incompleto', 'Os campos de Descrição, Valor e Data de Vencimento são obrigatórios.');
       return;
     }
     
@@ -112,13 +120,36 @@ export default function DetailScreen({ navigation }: any) {
     }
 
     let dbDate = null;
-    if (dueDate.length === 10) {
-      const parts = dueDate.split('/');
-      dbDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
-    } else if (dueDate.length > 0) {
+    if (dueDate.length !== 10) {
       Alert.alert('Data inválida', 'A data deve estar no formato DD/MM/AAAA');
       return;
     }
+
+    const parts = dueDate.split('/');
+    const day = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10);
+    const year = parseInt(parts[2], 10);
+
+    const currentYear = new Date().getFullYear();
+    if (month < 1 || month > 12 || day < 1 || day > 31) {
+      Alert.alert('Data inválida', 'Informe uma data com dia e mês válidos.');
+      return;
+    }
+    if (year > currentYear + 5) {
+      Alert.alert('Data inválida', 'A data não pode exceder 5 anos no futuro.');
+      return;
+    }
+    if (year < 2000) {
+      Alert.alert('Data inválida', 'Ano informado é muito antigo ou inválido.');
+      return;
+    }
+
+    const testDate = new Date(year, month - 1, day);
+    if (testDate.getFullYear() !== year || testDate.getMonth() !== month - 1 || testDate.getDate() !== day) {
+      Alert.alert('Data inválida', 'Esta data não existe no calendário (ex: 31 de fevereiro).');
+      return;
+    }
+    dbDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
 
     setLoadingSave(true);
     try {
@@ -182,8 +213,32 @@ export default function DetailScreen({ navigation }: any) {
         <Text style={styles.inputLabel}>Custo real (R$)*</Text>
         <TextInput style={styles.input} keyboardType="numeric" value={amount} onChangeText={handleAmountChange} placeholder="0,00" />
 
-        <Text style={styles.inputLabel}>Data de Pagamento (DD/MM/AAAA)</Text>
-        <TextInput style={styles.input} keyboardType="numeric" value={dueDate} onChangeText={handleDateChange} placeholder="Ex: 10/05/2026" maxLength={10} />
+        <Text style={styles.inputLabel}>Data de Pagamento (DD/MM/AAAA)*</Text>
+        <TouchableOpacity onPress={() => setShowDatePicker(true)}>
+          <View pointerEvents="none">
+            <TextInput style={styles.input} value={dueDate} placeholder="Toque para selecionar a data" editable={false} />
+          </View>
+        </TouchableOpacity>
+
+        {showDatePicker && (
+          <DateTimePicker
+            value={dateObj}
+            mode="date"
+            display="default"
+            maximumDate={new Date(new Date().getFullYear() + 5, 11, 31)}
+            minimumDate={new Date(2000, 0, 1)}
+            onChange={(event, selectedDate) => {
+              setShowDatePicker(Platform.OS === 'ios');
+              if (selectedDate) {
+                setDateObj(selectedDate);
+                const day = selectedDate.getDate().toString().padStart(2, '0');
+                const month = (selectedDate.getMonth() + 1).toString().padStart(2, '0');
+                const year = selectedDate.getFullYear();
+                setDueDate(`${day}/${month}/${year}`);
+              }
+            }}
+          />
+        )}
 
         <Text style={styles.inputLabel}>Sequência Numérica ou chave Pix</Text>
         <TextInput style={[styles.input, { height: 90, textAlignVertical: 'top' }]} multiline value={barcode} onChangeText={setBarcode} placeholder="Números ou linha digitável" />

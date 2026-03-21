@@ -27,7 +27,7 @@ class HealthResponse(BaseModel):
 class BillCreateRequest(BaseModel):
     description: str
     amount: float
-    due_date: Optional[str] = None
+    due_date: str
     barcode: Optional[str] = None
     status: str = "pending"
 
@@ -73,7 +73,7 @@ async def add_bill(req: BillCreateRequest):
         data = {
             "description": req.description,
             "amount": req.amount,
-            "due_date": req.due_date if req.due_date else None,
+            "due_date": req.due_date,
             "barcode": req.barcode if req.barcode else None,
             "status": req.status
         }
