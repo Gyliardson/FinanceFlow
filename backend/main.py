@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from database import get_supabase_client
+from ai_service import extract_invoice_data
 
 app = FastAPI(
     title="FinanceFlow API",
@@ -46,3 +47,36 @@ async def get_bills():
     except Exception as e:
         # Pega qualquer erro do Supabase ou de credenciais
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/upload-receipt", tags=["Bills", "OCR"])
+async def upload_receipt(file: UploadFile = File(...)):
+    """
+    Recebe um arquivo de imagem ou PDF e envia para a Inteligência Artificial
+    realizar o OCR, extraindo valor, data e linha digitável.
+    """
+    # Validações primárias de segurança
+    allowed_types = ["image/jpeg", "image/png", "image/webp", "application/pdf"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Formato de arquivo não suportado. Envie imagens ou PDF.")
+    
+    try:
+        # Ler conteúdo binário do arquivo na memória
+        file_bytes = await file.read()
+        
+        # Repassa o trabalho pesado de IA para o ai_service
+        resultado_ocr = extract_invoice_data(file_bytes, mime_type=file.content_type)
+        
+        if resultado_ocr.get("status") == "error":
+            raise HTTPException(status_code=500, detail=resultado_ocr.get("message"))
+            
+        return {
+            "message": "Arquivo processado com sucesso.",
+            "filename": file.filename,
+            "ocr_result": resultado_ocr["extracted_data"]
+        }
+        
+    except ValueError as ve:
+        # Dispara quando a API não está configurada no backend
+        raise HTTPException(status_code=500, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro no processamento do arquivo: {str(e)}")
