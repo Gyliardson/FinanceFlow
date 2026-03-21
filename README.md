@@ -53,7 +53,11 @@ git clone https://github.com/Gyliardson/NotificaContas.git financeflow
 cd financeflow
 ```
 
-2. **Backend:**
+2. **Banco de Dados (Supabase):**
+- Crie um projeto no Supabase.
+- Abra o painel **SQL Editor** na web e execute o script localizado em `backend/supabase_schema.sql` para criar a estrutura e permissões do banco.
+
+3. **Backend:**
 ```bash
 cd backend
 python -m venv venv
