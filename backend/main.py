@@ -23,6 +23,12 @@ class HealthResponse(BaseModel):
     status: str
     message: str
 
+class BillValidationRequest(BaseModel):
+    bill_id: str
+    ocr_amount: float | None = None
+    ocr_due_date: str | None = None
+    ocr_barcode: str | None = None
+
 @app.get("/", tags=["Health"])
 async def root():
     return {"message": "Bem-vindo à API do FinanceFlow"}
@@ -67,7 +73,8 @@ async def upload_receipt(file: UploadFile = File(...)):
         resultado_ocr = extract_invoice_data(file_bytes, mime_type=file.content_type)
         
         if resultado_ocr.get("status") == "error":
-            raise HTTPException(status_code=500, detail=resultado_ocr.get("message"))
+            error_details = resultado_ocr.get("details", "Sem detalhes adicionais")
+            raise HTTPException(status_code=500, detail=f"{resultado_ocr.get('message')} Erro Técnico: {error_details}")
             
         return {
             "message": "Arquivo processado com sucesso.",
@@ -80,3 +87,66 @@ async def upload_receipt(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro no processamento do arquivo: {str(e)}")
+
+@app.post("/validate-bill", tags=["Bills", "Validation"])
+async def validate_bill(req: BillValidationRequest):
+    """
+    Realiza a validação heurística cruzando os dados extraídos do OCR 
+    com os registros oficiais de faturas pendentes no banco de dados (Supabase).
+    """
+    try:
+        supabase = get_supabase_client()
+        # Busca o boleto original e fidedigno no banco
+        response = supabase.table("finance_bills").select("*").eq("id", req.bill_id).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Boleto não encontrado no sistema do FinanceFlow.")
+            
+        bill = response.data[0]
+        
+        # --- Motor Base de Validação Heurística ---
+        is_amount_valid = False
+        if req.ocr_amount is not None:
+            # Tolerância de 5% sob o valor cheio base para abranger pagamentos com juros pequenos simulados
+            val_diff = abs(float(bill["amount"]) - req.ocr_amount)
+            if val_diff <= float(bill["amount"]) * 0.05:
+                is_amount_valid = True
+                
+        is_date_valid = False
+        if req.ocr_due_date is not None and bill.get("due_date"):
+            if req.ocr_due_date == str(bill["due_date"]):
+                is_date_valid = True
+                
+        is_barcode_valid = False
+        if req.ocr_barcode and bill.get("barcode"):
+            # Limpa as strings removendo traços e espaços que OCRs podem adicionar por alucinação visual
+            clean_ocr = "".join(filter(str.isdigit, req.ocr_barcode))
+            clean_db = "".join(filter(str.isdigit, str(bill["barcode"])))
+            if clean_ocr == clean_db and len(clean_ocr) > 0:
+                is_barcode_valid = True
+                
+        # O Score define se o comprovante cobriu as margens estritas o suficiente para ser considerado pago.
+        confidence_score = 0
+        if is_amount_valid: confidence_score += 40
+        if is_date_valid: confidence_score += 30
+        if is_barcode_valid: confidence_score += 30
+            
+        # Limiar de aprovação
+        is_approved = confidence_score >= 60
+
+        return {
+            "status": "success",
+            "bill_id": req.bill_id,
+            "confidence_score": confidence_score,
+            "is_approved": is_approved,
+            "details": {
+                "amount_match": is_amount_valid,
+                "date_match": is_date_valid,
+                "barcode_match": is_barcode_valid
+            }
+        }
+    except HTTPException:
+        # Preserva HTTPExceptions lançadas ativamente
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -45,3 +45,45 @@ def test_upload_receipt(mock_extract):
     json_resp = response.json()
     assert json_resp["message"] == "Arquivo processado com sucesso."
     assert json_resp["ocr_result"]["amount"] == 150.00
+
+@patch("main.get_supabase_client")
+def test_validate_bill(mock_supabase):
+    """Testa adequadamente o motor de tolerância e validação da fatura comparativa (OCR vs DB)."""
+    # Mockando a cascata robusta do método de consulta da library do supabase
+    mock_execute = mock_supabase.return_value.table.return_value.select.return_value.eq.return_value.execute
+    mock_execute.return_value.data = [{
+        "id": "123-abc",
+        "amount": 100.00,
+        "due_date": "2023-10-10",
+        "barcode": "111222333"
+    }]
+    
+    # Payload que a IA extrairia do PDF de teste (102.00 está coberto pela margem dos juros de 5% sobre 100.00!)
+    payload_aprovado = {
+        "bill_id": "123-abc",
+        "ocr_amount": 102.00,
+        "ocr_due_date": "2023-10-10",
+        "ocr_barcode": "111222333"
+    }
+    
+    resp_sucesso = client.post("/validate-bill", json=payload_aprovado)
+    assert resp_sucesso.status_code == 200, f"Erro na rota validate-bill: {resp_sucesso.text}"
+    
+    # O mock deve ser considerado is_approved com confiança 100
+    res_sucesso_json = resp_sucesso.json()
+    assert res_sucesso_json["is_approved"] is True
+    assert res_sucesso_json["confidence_score"] == 100
+    assert res_sucesso_json["details"]["amount_match"] is True
+    
+    # Realoca payload com discrepância imensa em valores para testar reprovação garantida
+    payload_reprovado = {
+        "bill_id": "123-abc",
+        "ocr_amount": 500.00,  # Valor extrapolado fora da janela de multa viável 
+        "ocr_due_date": "2020-01-01",
+        "ocr_barcode": "0000"
+    }
+    
+    resp_falha = client.post("/validate-bill", json=payload_reprovado)
+    res_falha_json = resp_falha.json()
+    assert res_falha_json["is_approved"] is False
+    assert res_falha_json["confidence_score"] == 0
