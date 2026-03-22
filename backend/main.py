@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from database import get_supabase_client
 from ai_service import extract_invoice_data
+from dasmei_scraper import scrape_dasmei
 from typing import Optional
 
 app = FastAPI(
@@ -81,6 +82,58 @@ async def add_bill(req: BillCreateRequest):
         return {"status": "success", "data": response.data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/scrape/dasmei", tags=["Scraping"])
+async def trigger_dasmei_scraping():
+    """
+    Aciona a rotina Playwright para buscar faturas pendentes do MEI
+    usando a variável TARGET_CNPJ.
+    """
+    try:
+        from datetime import datetime
+        supabase = get_supabase_client()
+        
+        # A cobrança do MEI (que vence no mês atual) refere-se sempre ao mês anterior (Competência)
+        now = datetime.now()
+        if now.month == 1:
+            target_month = 12
+            target_year = now.year - 1
+        else:
+            target_month = now.month - 1
+            target_year = now.year
+            
+        current_month_label = f"Guia DAS MEI - {target_month:02d}/{target_year}"
+        
+        # Impede redundância verificando se já buscamos a guia neste mês
+        existing = supabase.table("finance_bills").select("id").eq("description", current_month_label).execute()
+        if existing.data:
+            return {
+                "status": "info",
+                "message": f"A {current_month_label} já foi extraída anteriormente e consta no banco de dados."
+            }
+
+        resultado = await scrape_dasmei()
+        if resultado.get("status") == "error":
+            raise HTTPException(status_code=400, detail=resultado.get("message"))
+            
+        data = {
+            "description": resultado.get("description", current_month_label),
+            "amount": resultado.get("amount"),
+            "due_date": resultado.get("due_date"),
+            "barcode": resultado.get("barcode"),
+            "status": "pending"
+        }
+        db_response = supabase.table("finance_bills").insert(data).execute()
+        
+        return {
+            "status": "success", 
+            "message": resultado.get("message"),
+            "bill_data": db_response.data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno de scraping: {str(e)}")
 
 @app.post("/upload-receipt", tags=["Bills", "OCR"])
 async def upload_receipt(file: UploadFile = File(...)):
