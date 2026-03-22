@@ -4,6 +4,9 @@ from pydantic import BaseModel
 from database import get_supabase_client
 from ai_service import extract_invoice_data
 from dasmei_scraper import scrape_dasmei
+from unopar_scraper import scrape_unopar
+from imap_scraper import scrape_vivo_email
+from tim_scraper import scrape_tim
 from typing import Optional
 
 app = FastAPI(
@@ -134,6 +137,111 @@ async def trigger_dasmei_scraping():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro interno de scraping: {str(e)}")
+
+@app.post("/scrape/unopar", tags=["Scraping"])
+async def trigger_unopar_scraping():
+    """
+    Aciona a rotina Playwright para buscar boletos pendentes da faculdade Unopar
+    usando as credenciais do .env.
+    """
+    try:
+        from datetime import datetime
+        supabase = get_supabase_client()
+        
+        now = datetime.now()
+        current_month_label = f"Mensalidade Unopar - {now.month:02d}/{now.year}"
+        
+        # Impede redundância verificando se já buscamos a guia neste mês
+        existing = supabase.table("finance_bills").select("id").eq("description", current_month_label).execute()
+        if existing.data:
+            return {
+                "status": "info",
+                "message": f"A {current_month_label} já foi extraída anteriormente e consta no banco de dados."
+            }
+
+        resultado = await scrape_unopar()
+        if resultado.get("status") == "error":
+            raise HTTPException(status_code=400, detail=resultado.get("message"))
+            
+        data = {
+            "description": resultado.get("description", current_month_label),
+            "amount": resultado.get("amount"),
+            "due_date": resultado.get("due_date"),
+            "barcode": resultado.get("barcode"),
+            "status": "pending"
+        }
+        db_response = supabase.table("finance_bills").insert(data).execute()
+        
+        return {
+            "status": "success", 
+            "message": resultado.get("message"),
+            "bill_data": db_response.data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno de scraping: {str(e)}")
+
+@app.post("/scrape/email/vivo", tags=["Scraping"])
+async def trigger_vivo_email_scraping():
+    """
+    Aciona a rotina IMAP para buscar faturas na conta de E-mail configurada no .env.
+    Lê os não lidos, baixa e descriptografa PDFs (usando os 4 primeiros digitos do CNPJ),
+    extrai via Gemini e insere no Supabase.
+    """
+    resultado = await scrape_vivo_email()
+    if resultado.get("status") == "error":
+        raise HTTPException(status_code=400, detail=resultado.get("message"))
+    return resultado
+
+@app.post("/scrape/tim", tags=["Scraping"])
+async def trigger_tim_scraping():
+    """
+    Aciona a rotina Playwright para buscar faturas pendentes do plano TIM Movel
+    usando as credenciais do .env.
+    """
+    try:
+        from datetime import datetime
+        supabase = get_supabase_client()
+
+        now = datetime.now()
+        current_month_label = f"Conta TIM Movel - {now.month:02d}/{now.year}"
+
+        # Impede redundancia verificando se ja buscamos a conta neste mes
+        existing = supabase.table("finance_bills").select("id").eq("description", current_month_label).execute()
+        if existing.data:
+            return {
+                "status": "info",
+                "message": f"A {current_month_label} ja foi extraida anteriormente e consta no banco de dados."
+            }
+
+        resultado = await scrape_tim()
+
+        # Cenario "contas pagas": repassa direto sem inserir no banco
+        if resultado.get("status") == "info":
+            return resultado
+
+        if resultado.get("status") == "error":
+            raise HTTPException(status_code=400, detail=resultado.get("message"))
+
+        data = {
+            "description": resultado.get("description", current_month_label),
+            "amount": resultado.get("amount"),
+            "due_date": resultado.get("due_date"),
+            "barcode": resultado.get("barcode"),
+            "status": "pending"
+        }
+        db_response = supabase.table("finance_bills").insert(data).execute()
+
+        return {
+            "status": "success",
+            "message": resultado.get("message"),
+            "bill_data": db_response.data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno de scraping TIM: {str(e)}")
 
 @app.post("/upload-receipt", tags=["Bills", "OCR"])
 async def upload_receipt(file: UploadFile = File(...)):
