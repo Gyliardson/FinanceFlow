@@ -36,6 +36,14 @@ O sistema é dividido em duas partes principais que se comunicam via API REST:
 - **Validação via IA:** Extração de dados (OCR) usando Google Gemini para automatizar a baixa de faturas pagas a partir do upload de comprovantes ou extratos.
 - **Gestão Segura:** Arquitetura que não expõe dados sensíveis.
 
+### Exemplos de Módulos de Scraping Educacionais
+O repositório inclui **4 exemplos práticos** de Scrapers/Coletores para demonstrar como o sistema pode lidar com diferentes arquiteturas web e regras de negócios na hora de capturar faturas. **Estes exemplos foram desenvolvidos com fins educacionais e de demonstração do portfólio.** Quem realizar o clone/fork do projeto é encorajado a modificar, remover, ou criar novos scrapers que atendam às suas preferências bancárias e necessidades pessoais.
+
+1. **DASMEI (Site Governamental / Playwright Headless)**: Scraper que fura sistemas restritos usando apenas CNPJ público, ignorando headers falsos e resolvendo navegação invisível.
+2. **TIM Móvel (Portal com Canvas/Flutter)**: Automação completa para o app/web Meu TIM usando `playwright-stealth`. Lida com logins, contorna banners de cookies e valida faturas usando OCR inteligente da tela, superando os desafios do CanvasKit que oculta os elementos do DOM.
+3. **Universidade Unopar (Portal do Aluno)**: Bot com navegação condicional. Foca no acesso da área financeira, buscando boletos com desconto de pontualidade e realizando a cópia automática da chave "Pix Copia e Cola" usando a área de transferência do browser.
+4. **IMAP / Email (Faturas Vivo Fixo em PDF)**: Este módulo foge da web e entra direto no seu Provedor de E-mail (ex: Gmail) via protocolo IMAP. Monitora mensagens novas contendo faturas em PDF. Consegue **descriptografar nativamente** PDFs protegidos por senha (ex: 4 primeiros dígitos do CNPJ) e extrai o boleto em D-0 via OCR Gemini.
+
 ## Como Rodar
 
 ### Pré-requisitos
