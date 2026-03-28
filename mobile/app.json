@@ -20,13 +20,26 @@
         "backgroundColor": "#4F46E5",
         "foregroundImage": "./assets/android-icon-foreground.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.gyliardson_keitison.financeflow"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "@react-native-community/datetimepicker"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "436dc704-f510-486b-8c1d-b189d0978bef"
+      }
+    },
+    "owner": "gyliardson_keitison",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/436dc704-f510-486b-8c1d-b189d0978bef"
+    }
   }
 }

@@ -14,9 +14,15 @@
       "channel": "preview"
     },
     "production": {
-      "distribution": "store",
+      "distribution": "internal",
       "channel": "production",
-      "autoIncrement": true
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://financeflow-tfe4.onrender.com"
+      }
     }
   },
   "submit": {
