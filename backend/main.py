@@ -1,18 +1,31 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
+import asyncio
+
 from database import get_supabase_client
 from ai_service import extract_invoice_data
 from dasmei_scraper import scrape_dasmei
 from unopar_scraper import scrape_unopar
 from imap_scraper import scrape_vivo_email
 from tim_scraper import scrape_tim
+from scheduler import start_scheduler
 from typing import Optional
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Inicia a task em background do scheduler
+    scheduler_task = asyncio.create_task(start_scheduler())
+    yield
+    # Cancela no momento do shutdown
+    scheduler_task.cancel()
 
 app = FastAPI(
     title="FinanceFlow API",
     description="Backend API para automação e notificação de contas a pagar.",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan
 )
 
 # CORS config to allow mobile app to consume the API
