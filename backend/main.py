@@ -1,5 +1,7 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 import asyncio
@@ -10,6 +12,28 @@ from datetime import datetime, date, timedelta
 
 from database import get_supabase_client, get_supabase_storage_client, ensure_receipts_bucket
 from ai_service import extract_invoice_data, generate_financial_insights
+
+# ===========================================================================
+# Static API Key Authentication Middleware
+# ===========================================================================
+API_KEY = os.getenv("API_SECRET_KEY", "")
+
+# Routes that don't require authentication (health checks)
+PUBLIC_PATHS = {"/", "/health", "/healthz", "/docs", "/openapi.json", "/redoc"}
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    """Rejects any request without a valid X-API-KEY header (except public routes)."""
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in PUBLIC_PATHS or request.method == "OPTIONS":
+            return await call_next(request)
+
+        provided_key = request.headers.get("X-API-KEY", "")
+        if not API_KEY or provided_key != API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized – invalid or missing API key."}
+            )
+        return await call_next(request)
 # ===========================================================================
 # Módulos de Scraping (Inativos - Apenas para Portfólio/Demonstração)
 # ===========================================================================
@@ -46,6 +70,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# API Key authentication (must be added AFTER CORS to allow preflight OPTIONS requests)
+app.add_middleware(APIKeyMiddleware)
 
 # ===========================================================================
 # Models

@@ -4,6 +4,9 @@ import axios from 'axios';
 const api = axios.create({
   baseURL: process.env.EXPO_PUBLIC_API_URL,
   timeout: 120000, // 120s - scraping pode demorar até 60s
+  headers: {
+    'X-API-KEY': process.env.EXPO_PUBLIC_API_KEY || '',
+  },
 });
 
 export default api;
