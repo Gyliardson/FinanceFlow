@@ -49,16 +49,22 @@ export default function BillHistoryScreen({ route, navigation }: any) {
     return new Date(dateStr + 'T00:00:00').toLocaleDateString('pt-BR');
   };
 
-  const getStatusConfig = (status: string) => {
-    switch (status) {
-      case 'paid':
-      case 'aprovado':
-        return { label: 'Pago', color: '#10b981', bg: '#ecfdf5', icon: 'checkmark-circle' as const };
-      case 'overdue':
-        return { label: 'Vencida', color: '#ef4444', bg: '#fef2f2', icon: 'alert-circle' as const };
-      default:
-        return { label: 'Pendente', color: '#f59e0b', bg: '#fffbeb', icon: 'time' as const };
+  const getStatusConfig = (status: string, dueDate: string) => {
+    const isPaid = status === 'paid' || status === 'aprovado';
+    if (isPaid) {
+      return { label: 'Pago', color: '#10b981', bg: '#ecfdf5', icon: 'checkmark-circle' as const };
     }
+
+    // Se não pago, checar se está vencido pela data
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const due = new Date(dueDate + 'T00:00:00');
+
+    if (due < today || status === 'overdue') {
+      return { label: 'Vencida', color: '#ef4444', bg: '#fef2f2', icon: 'alert-circle' as const };
+    }
+
+    return { label: 'Pendente', color: '#f59e0b', bg: '#fffbeb', icon: 'time' as const };
   };
 
   const getDaysUntilDue = (dueDate: string) => {
@@ -87,7 +93,7 @@ export default function BillHistoryScreen({ route, navigation }: any) {
   }
 
   const isPaid = bill.status === 'paid' || bill.status === 'aprovado';
-  const statusConfig = getStatusConfig(bill.status);
+  const statusConfig = getStatusConfig(bill.status, bill.due_date);
   const daysUntil = getDaysUntilDue(bill.due_date);
   const isOverdue = daysUntil < 0 && !isPaid;
 
@@ -224,7 +230,7 @@ export default function BillHistoryScreen({ route, navigation }: any) {
           </View>
 
           {history.map((item) => {
-            const itemStatus = getStatusConfig(item.status);
+            const itemStatus = getStatusConfig(item.status, item.due_date);
             const itemIsPaid = item.status === 'paid' || item.status === 'aprovado';
             return (
               <TouchableOpacity
