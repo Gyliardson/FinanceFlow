@@ -276,6 +276,76 @@ async def generate_recurring_instances():
         raise HTTPException(status_code=500, detail=str(e))
 
 # ===========================================================================
+# Bill Detail & History
+# ===========================================================================
+
+@app.get("/bills/{bill_id}/detail", tags=["Bills"])
+async def get_bill_detail(bill_id: str):
+    """
+    Retorna os detalhes completos de uma fatura e o histórico de pagamentos
+    relacionados (mesma descrição base ou parent_bill_id).
+    """
+    try:
+        supabase = get_supabase_client()
+
+        # Buscar a fatura principal
+        bill_resp = supabase.table("finance_bills").select("*").eq("id", bill_id).execute()
+        if not bill_resp.data:
+            raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+
+        bill = bill_resp.data[0]
+
+        # Buscar faturas relacionadas (histórico)
+        # 1. Pelo parent_bill_id (instâncias de uma recorrente)
+        # 2. Pela descrição base (faturas avulsas com nomes parecidos)
+        related = []
+
+        parent_id = bill.get("parent_bill_id")
+        if parent_id:
+            # Buscar todas as instâncias do mesmo template recorrente
+            siblings = (
+                supabase.table("finance_bills")
+                .select("*")
+                .eq("parent_bill_id", parent_id)
+                .order("due_date", desc=True)
+                .execute()
+            )
+            related = [s for s in siblings.data if s["id"] != bill_id]
+        elif bill.get("is_recurring"):
+            # Se é o próprio template, buscar todas as instâncias geradas
+            children = (
+                supabase.table("finance_bills")
+                .select("*")
+                .eq("parent_bill_id", bill_id)
+                .order("due_date", desc=True)
+                .execute()
+            )
+            related = children.data
+        else:
+            # Fatura avulsa: buscar por descrição similar (base sem " - MM/YYYY")
+            import re
+            base_desc = re.sub(r'\s*-\s*\d{2}/\d{4}$', '', bill["description"]).strip()
+            if base_desc and len(base_desc) >= 3:
+                all_bills = (
+                    supabase.table("finance_bills")
+                    .select("*")
+                    .ilike("description", f"%{base_desc}%")
+                    .order("due_date", desc=True)
+                    .execute()
+                )
+                related = [b for b in all_bills.data if b["id"] != bill_id]
+
+        return {
+            "bill": bill,
+            "history": related,
+            "history_count": len(related)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ===========================================================================
 # Payment & Receipt (Pagamento e Comprovante)
 # ===========================================================================
 
