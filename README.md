@@ -113,3 +113,17 @@ npx expo start
 ## Segurança
 
 Este repositório está configurado para **não versionar** informações sensíveis. Arquivos como `.env` e diretórios de build/dependências (`node_modules`, `venv`) estão devidamente protegidos pelo `.gitignore`. Sempre utilize os arquivos `.env.example` como referência para configurar seu ambiente local.
+
+## Licença
+
+Este projeto é licenciado sob a **FinanceFlow Public License - v1.00**.
+
+-   **Uso Pessoal:** Totalmente livre para estudo e uso próprio. Atribuição é apreciada, mas opcional.
+-   **Uso Comercial:** Permitido, desde que a **atribuição de créditos ao autor seja mantida** de forma visível no produto final.
+-   **Isenção de Responsabilidade:** O software é fornecido "como está". O usuário é responsável por revisar o código e garantir a segurança de seus dados. O autor não se responsabiliza por perdas ou danos.
+
+Para ler os termos completos em Português, Inglês ou Espanhol, acesse o arquivo [LICENSE](./LICENSE).
+
+---
+Desenvolvido por **Gyliardson Keitison**
+[GitHub](https://github.com/Gyliardson) | [LinkedIn](https://www.linkedin.com/in/gyliardson-keitison)
