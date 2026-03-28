@@ -8,7 +8,7 @@ import uuid
 import logging
 from datetime import datetime, date, timedelta
 
-from database import get_supabase_client
+from database import get_supabase_client, get_supabase_storage_client, ensure_receipts_bucket
 from ai_service import extract_invoice_data
 from dasmei_scraper import scrape_dasmei
 from unopar_scraper import scrape_unopar
@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Garantir que o bucket de comprovantes exista
+    ensure_receipts_bucket()
     # O scheduler foi temporariamente desativado, junto com o scraping no Frontend.
     # scheduler_task = asyncio.create_task(start_scheduler())
     yield
@@ -360,6 +362,7 @@ async def pay_bill(bill_id: str, file: UploadFile = File(...)):
     """
     try:
         supabase = get_supabase_client()
+        storage_client = get_supabase_storage_client()
         
         # Verificar se a fatura existe
         bill_resp = supabase.table("finance_bills").select("*").eq("id", bill_id).execute()
@@ -370,23 +373,40 @@ async def pay_bill(bill_id: str, file: UploadFile = File(...)):
         if bill.get("status") == "paid":
             return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
         
-        # Upload do comprovante para o Supabase Storage
+        # Upload do comprovante para o Supabase Storage (usando Service Role Key)
         file_bytes = await file.read()
-        file_ext = file.filename.split('.')[-1] if file.filename and '.' in file.filename else 'jpg'
-        storage_path = f"receipts/{bill_id}_{uuid.uuid4().hex[:8]}.{file_ext}"
+        file_size_kb = len(file_bytes) / 1024
+        logger.info(f"Recebido comprovante para fatura {bill_id}: {file.filename} ({file_size_kb:.1f} KB, tipo: {file.content_type})")
         
+        file_ext = file.filename.split('.')[-1] if file.filename and '.' in file.filename else 'jpg'
+        storage_path = f"{bill_id}_{uuid.uuid4().hex[:8]}.{file_ext}"
+        
+        receipt_url = None
         try:
-            supabase.storage.from_("receipts").upload(
+            storage_client.storage.from_("receipts").upload(
                 path=storage_path,
                 file=file_bytes,
                 file_options={"content-type": file.content_type or "image/jpeg"}
             )
-            receipt_url = supabase.storage.from_("receipts").get_public_url(storage_path)
+            receipt_url = storage_client.storage.from_("receipts").get_public_url(storage_path)
+            logger.info(f"Upload OK! URL: {receipt_url}")
         except Exception as storage_err:
-            logger.warning(f"Falha ao fazer upload do comprovante: {storage_err}. Salvando sem imagem.")
-            receipt_url = None
+            logger.error(
+                f"FALHA no upload do comprovante para fatura {bill_id}. "
+                f"Erro: {storage_err} | Tipo: {type(storage_err).__name__} | "
+                f"Arquivo: {file.filename} ({file_size_kb:.1f} KB)"
+            )
+            # Não engolir o erro silenciosamente — informar o cliente
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Falha ao salvar o comprovante no servidor. "
+                    f"Erro: {str(storage_err)[:200]}. "
+                    f"A fatura NAO foi marcada como paga. Tente novamente."
+                )
+            )
         
-        # Atualizar a fatura como paga
+        # Atualizar a fatura como paga (só chega aqui se o upload funcionou)
         today_str = str(date.today())
         update_data = {
             "status": "paid",
@@ -406,6 +426,7 @@ async def pay_bill(bill_id: str, file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Erro inesperado no pagamento da fatura {bill_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/bills/{bill_id}/pay-no-receipt", tags=["Bills", "Payment"])

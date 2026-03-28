@@ -121,9 +121,9 @@ export default function PaymentScreen({ navigation, route }: any) {
         type: 'image/jpeg',
       } as any);
 
-      await api.post(`/bills/${selectedBill.id}/pay`, formData, {
+      const response = await api.post(`/bills/${selectedBill.id}/pay`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 30000,
+        timeout: 120000, // 2 minutos para upload de imagens grandes
       });
 
       await cancelNotificationsForBill(selectedBill.id);
@@ -135,7 +135,12 @@ export default function PaymentScreen({ navigation, route }: any) {
       );
     } catch (error: any) {
       console.error('Erro pagamento:', error?.response?.data || error.message);
-      Alert.alert('Erro', error?.response?.data?.detail || 'Não foi possível processar o pagamento.');
+      const detail = error?.response?.data?.detail;
+      const isTimeout = error?.code === 'ECONNABORTED';
+      const errorMsg = isTimeout
+        ? 'O envio demorou demais. Verifique sua conexão e tente novamente com uma imagem menor.'
+        : detail || 'Não foi possível processar o pagamento. Tente novamente.';
+      Alert.alert('Erro no Pagamento', errorMsg);
     } finally {
       setUploading(false);
     }
