@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: financeflow-backend
+    env: docker
+    dockerContext: backend
+    dockerfilePath: Dockerfile
+    plan: free
+    region: ohio # Ou a região de sua preferência
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: SUPABASE_URL
+        sync: false # Valor deve ser preenchido no painel do Render
+      - key: SUPABASE_KEY
+        sync: false # Valor deve ser preenchido no painel do Render
+      - key: GOOGLE_API_KEY
+        sync: false # Para os insights de IA
+      - key: PORT
+        value: 8000

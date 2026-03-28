@@ -1,0 +1,37 @@
+name: "FinanceFlow Deploy"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'mobile/**' # Apenas quando houver mudanças no frontend
+
+jobs:
+  update-frontend:
+    name: Expo EAS Update (Frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-path: 'mobile/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: ./mobile
+        run: npm ci
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Publish Update
+        working-directory: ./mobile
+        run: eas update --branch production --message "Auto-deploy via GitHub Actions"
