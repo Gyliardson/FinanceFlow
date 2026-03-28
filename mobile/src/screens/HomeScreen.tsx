@@ -16,7 +16,8 @@ export default function HomeScreen({ navigation }: any) {
   const [bills, setBills] = useState<Bill[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [scrapingDAS, setScrapingDAS] = useState(false);
+  // NOTA: O estado de scrapingDAS foi desativado temporariamente.
+  // const [scrapingDAS, setScrapingDAS] = useState(false);
 
   const fetchBills = async () => {
     try {
@@ -43,6 +44,25 @@ export default function HomeScreen({ navigation }: any) {
     fetchBills();
   };
 
+  /*
+  =============================================================================
+  [FUNCIONALIDADE DESATIVADA] - Scraper de Boletos (DAS MEI, TIM, Unopar)
+  =============================================================================
+  Esta funcionalidade de scraping (busca automática) foi desenvolvida para compor
+  o portfólio do projeto, demonstrando a capacidade de construir web scrapers
+  complexos integrados ao backend (ex: bypass de captcha, navegação em SPAs).
+  
+  Por questões de custos de hospedagem (visto que scrapers que utilizam navegadores 
+  headless exigem mais memória RAM do que os planos gratuitos do Render, por exemplo, 
+  disponibilizam), essas integrações estão desativadas por padrão.
+
+  Caso decida rodar este projeto em uma máquina/VPS com recursos adequados, 
+  você pode descomentar a função e o botão abaixo para reativar e utilizar
+  a automação sem problemas.
+  =============================================================================
+  */
+  
+  /*
   const handleScrapeDASMEI = async () => {
     setScrapingDAS(true);
     try {
@@ -62,6 +82,7 @@ export default function HomeScreen({ navigation }: any) {
       setScrapingDAS(false);
     }
   };
+  */
 
   const renderBill = ({ item }: { item: Bill }) => {
     const isPaid = item.status === 'paid' || item.status === 'aprovado';
@@ -89,7 +110,14 @@ export default function HomeScreen({ navigation }: any) {
         <Text style={styles.subtitle}>Suas Faturas</Text>
       </View>
 
-      {/* Botão de automação DAS MEI */}
+      {/* 
+      =============================================================================
+      [BOTÃO DO SCRAPER DESATIVADO]
+      Leia o comentário na função handleScrapeDASMEI acima para entender o motivo
+      e saiba como reativar para testes em ambientes com memória RAM adequada.
+      =============================================================================
+      */}
+      {/* 
       <TouchableOpacity 
         style={[styles.dasButton, scrapingDAS && styles.dasButtonDisabled]} 
         onPress={handleScrapeDASMEI}
@@ -107,6 +135,7 @@ export default function HomeScreen({ navigation }: any) {
           </View>
         )}
       </TouchableOpacity>
+      */}
       
       {loading ? (
         <ActivityIndicator size="large" color="#3498db" style={styles.loader} />
@@ -136,7 +165,7 @@ export default function HomeScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8f9fa' },
   header: { 
-    padding: 20, paddingTop: 50, backgroundColor: '#3498db', 
+    padding: 16, paddingTop: 45, paddingBottom: 25, backgroundColor: '#3498db', 
     borderBottomLeftRadius: 20, borderBottomRightRadius: 20, elevation: 5 
   },
   title: { fontSize: 28, fontWeight: 'bold', color: '#fff' },
@@ -170,7 +199,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   loader: { flex: 1, justifyContent: 'center' },
-  listContainer: { padding: 16, paddingBottom: 100 },
+  listContainer: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 100 },
   card: { 
     backgroundColor: '#fff', padding: 16, borderRadius: 12, marginBottom: 16, 
     elevation: 3, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 5, shadowOffset: { width: 0, height: 2 } 

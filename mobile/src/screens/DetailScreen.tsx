@@ -214,13 +214,24 @@ export default function DetailScreen({ navigation }: any) {
         <TextInput style={styles.input} keyboardType="numeric" value={amount} onChangeText={handleAmountChange} placeholder="0,00" />
 
         <Text style={styles.inputLabel}>Data de Pagamento (DD/MM/AAAA)*</Text>
-        <TouchableOpacity onPress={() => setShowDatePicker(true)}>
-          <View pointerEvents="none">
-            <TextInput style={styles.input} value={dueDate} placeholder="Toque para selecionar a data" editable={false} />
-          </View>
-        </TouchableOpacity>
+        {Platform.OS === 'web' ? (
+          <TextInput 
+            style={styles.input} 
+            value={dueDate} 
+            onChangeText={handleDateChange} 
+            placeholder="DD/MM/AAAA" 
+            keyboardType="numeric"
+            maxLength={10}
+          />
+        ) : (
+          <TouchableOpacity onPress={() => setShowDatePicker(true)}>
+            <View pointerEvents="none">
+              <TextInput style={styles.input} value={dueDate} placeholder="Toque para selecionar a data" editable={false} />
+            </View>
+          </TouchableOpacity>
+        )}
 
-        {showDatePicker && (
+        {showDatePicker && Platform.OS !== 'web' && (
           <DateTimePicker
             value={dateObj}
             mode="date"
@@ -256,7 +267,7 @@ const styles = StyleSheet.create({
   header: { padding: 25, backgroundColor: '#fff', elevation: 2, marginBottom: 15, borderBottomLeftRadius: 20, borderBottomRightRadius: 20 },
   title: { fontSize: 26, fontWeight: '800', color: '#2c3e50', marginBottom: 15 },
   switchRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  switchLabel: { fontSize: 13, color: '#34495e', marginHorizontal: 8, fontWeight: '600' },
+  switchLabel: { fontSize: 11, color: '#34495e', marginHorizontal: 5, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
   tipText: { fontSize: 12, color: '#7f8c8d' },
   ocrBox: { padding: 20, marginHorizontal: 20, backgroundColor: '#e8f4f8', borderRadius: 15, marginBottom: 15, borderWidth: 1, borderColor: '#d1e8ef' },
   buttonRow: { flexDirection: 'row', justifyContent: 'space-between' },
