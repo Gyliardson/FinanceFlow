@@ -6,7 +6,7 @@ import re
 import random
 from datetime import datetime
 from playwright.async_api import async_playwright
-from playwright_stealth.stealth import Stealth
+from playwright_stealth import Stealth
 from dotenv import load_dotenv
 
 load_dotenv()

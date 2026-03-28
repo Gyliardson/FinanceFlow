@@ -10,16 +10,15 @@ from dasmei_scraper import scrape_dasmei
 from unopar_scraper import scrape_unopar
 from imap_scraper import scrape_vivo_email
 from tim_scraper import scrape_tim
-from scheduler import start_scheduler
+# from scheduler import start_scheduler
 from typing import Optional
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Inicia a task em background do scheduler
-    scheduler_task = asyncio.create_task(start_scheduler())
+    # O scheduler foi temporariamente desativado, junto com o scraping no Frontend.
+    # scheduler_task = asyncio.create_task(start_scheduler())
     yield
-    # Cancela no momento do shutdown
-    scheduler_task.cancel()
+    # scheduler_task.cancel()
 
 app = FastAPI(
     title="FinanceFlow API",
