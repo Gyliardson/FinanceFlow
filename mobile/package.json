@@ -19,6 +19,7 @@
     "expo-document-picker": "~14.0.8",
     "expo-image-picker": "~17.0.10",
     "expo-navigation-bar": "~5.0.10",
+    "expo-notifications": "~0.32.16",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
     "react-dom": "19.1.0",
