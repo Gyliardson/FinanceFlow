@@ -1,6 +1,10 @@
 # FinanceFlow
 
-> **Automação de Boletos e Notificações**
+<p align="center">
+  <img src="assets/banner.png" alt="FinanceFlow Logo" width="100%">
+</p>
+
+> **Controle Financeiro Automatizado & Inteligente**
 
 ![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi)
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
@@ -37,10 +41,11 @@ O sistema é dividido em duas partes principais que se comunicam via API REST:
 - **Gestão Segura:** Arquitetura que não expõe dados sensíveis.
 
 ### Exemplos de Módulos de Scraping Educacionais
+
 O repositório inclui **4 exemplos práticos** de Scrapers/Coletores para demonstrar como o sistema pode lidar com diferentes arquiteturas web e regras de negócios na hora de capturar faturas. **Estes exemplos foram desenvolvidos com fins educacionais e de demonstração do portfólio.** Quem realizar o clone/fork do projeto é encorajado a modificar, remover, ou criar novos scrapers que atendam às suas preferências bancárias e necessidades pessoais.
 
 > [!WARNING]
-> **Aviso sobre Hospedagem e Playwright:** Os scrapers baseados em navegador (`TIM`, `DASMEI`, `Unopar`) utilizam o Playwright no modo visual (`headless=False`) com o `pyvirtualdisplay` para burlar bloqueios antibot complexos (hCaptcha, Canvas fingerprint). Isso exige uma infraestrutura com no mínimo **1GB a 2GB de RAM** (instâncias VPS, Oracle Cloud/AWS, etc). Hospedagens na camada gratuita (como o Render com 512MB RAM) sofrerão *Out of Memory (OOM)*. Por esse motivo, esses scrapers são listados como um "plus estrutural", inativos em deploys minúsculos, mas totalmente funcionais caso você queira clonar o repositório e hospedá-los em um ambiente mais robusto.
+> **Aviso sobre Hospedagem e Playwright:** Os scrapers baseados em navegador (`TIM`, `DASMEI`, `Unopar`) utilizam o Playwright no modo visual (`headless=False`) com o `pyvirtualdisplay` para burlar bloqueios antibot complexos (hCaptcha, Canvas fingerprint). Isso exige uma infraestrutura com no mínimo **1GB a 2GB de RAM** (instâncias VPS, Oracle Cloud/AWS, etc). Hospedagens na camada gratuita (como o Render com 512MB RAM) sofrerão _Out of Memory (OOM)_. Por esse motivo, esses scrapers são listados como um "plus estrutural", inativos em deploys minúsculos, mas totalmente funcionais caso você queira clonar o repositório e hospedá-los em um ambiente mais robusto.
 
 1. **DASMEI (Site Governamental / Playwright Headless)**: Scraper que fura sistemas restritos usando apenas CNPJ público, ignorando headers falsos e resolvendo navegação invisível.
 2. **TIM Móvel (Portal com Canvas/Flutter)**: Automação completa para o app/web Meu TIM usando `playwright-stealth`. Lida com logins, contorna banners de cookies e valida faturas usando OCR inteligente da tela, superando os desafios do CanvasKit que oculta os elementos do DOM.
@@ -50,6 +55,7 @@ O repositório inclui **4 exemplos práticos** de Scrapers/Coletores para demons
 ## Como Rodar
 
 ### Pré-requisitos
+
 - [Python 3.10+](https://www.python.org/)
 - [Node.js 18+](https://nodejs.org/)
 - Conta no [Supabase](https://supabase.com/)
@@ -59,16 +65,19 @@ O repositório inclui **4 exemplos práticos** de Scrapers/Coletores para demons
 ### Configuração do Ambiente
 
 1. Clone o repositório:
+
 ```bash
 git clone https://github.com/Gyliardson/NotificaContas.git financeflow
 cd financeflow
 ```
 
 2. **Banco de Dados (Supabase):**
+
 - Crie um projeto no Supabase.
 - Abra o painel **SQL Editor** na web e execute o script localizado em `backend/supabase_schema.sql` para criar a estrutura e permissões do banco.
 
 3. **Backend:**
+
 ```bash
 cd backend
 python -m venv venv
@@ -82,6 +91,7 @@ playwright install
 ```
 
 Crie o arquivo `.env` na pasta `backend` baseado no `.env.example` e preencha as chaves:
+
 ```env
 SUPABASE_URL="sua-url-aqui"
 SUPABASE_KEY="sua-chave-aqui"
@@ -89,26 +99,64 @@ GEMINI_API_KEY="sua-chave-gemini-aqui"
 ```
 
 3. **Mobile:**
+
 ```bash
 cd mobile
 npm install
 # ou yarn install
 ```
+
 Crie o arquivo `.env` na pasta `mobile` baseado no `.env.example`.
 
 ### Executando o Projeto
 
 - Backend:
+
 ```bash
 cd backend
 venv\Scripts\activate
 uvicorn main:app --reload
 ```
+
 - Mobile:
+
 ```bash
 cd mobile
 npx expo start
 ```
+
+## Guia de Deploy (v1.00)
+
+Este projeto está configurado para deploy automático via GitHub.
+
+### 1. Backend (Render)
+
+O backend utiliza **Docker** para garantir consistência.
+
+1. Crie um **Web Service** no [Dashboard do Render](https://dashboard.render.com).
+2. Conecte este repositório do GitHub.
+3. Configure o **Root Directory** para `backend`.
+4. Render detectará o `Dockerfile` automaticamente.
+5. Adicione as **Environment Variables** no painel:
+   - `ENVIRONMENT`: `production`
+   - `PORT`: `8000`
+   - `SUPABASE_URL`: (Seu URL do Supabase)
+   - `SUPABASE_KEY`: (Sua Service Role Key ou Anon Key)
+   - `GOOGLE_API_KEY`: (Sua chave do Gemini)
+
+### 2. Frontend (Expo EAS)
+
+O frontend utiliza **EAS Build/Update** com GitHub Actions.
+
+1. Instale o EAS CLI: `npm install -g eas-cli`.
+2. Rode `eas login` e `eas build:configure` na pasta `mobile`.
+3. Obtenha seu **EXPO_TOKEN** no painel da Expo.
+4. No GitHub: Vá em **Settings > Secrets and variables > Actions** e adicione:
+   - `EXPO_TOKEN`: (Seu token da Expo)
+5. Ao dar `push` na branch `main`, o GitHub Actions disparará um **EAS Update** automaticamente para todos os seus APKs instalados.
+
+> [!TIP]
+> Para gerar o APK inicial, rode `eas build --platform android --profile production`.
 
 ## Segurança
 
@@ -118,12 +166,13 @@ Este repositório está configurado para **não versionar** informações sensí
 
 Este projeto é licenciado sob a **FinanceFlow Public License - v1.00**.
 
--   **Uso Pessoal:** Totalmente livre para estudo e uso próprio. Atribuição é apreciada, mas opcional.
--   **Uso Comercial:** Permitido, desde que a **atribuição de créditos ao autor seja mantida** de forma visível no produto final.
--   **Isenção de Responsabilidade:** O software é fornecido "como está". O usuário é responsável por revisar o código e garantir a segurança de seus dados. O autor não se responsabiliza por perdas ou danos.
+- **Uso Pessoal:** Totalmente livre para estudo e uso próprio. Atribuição é apreciada, mas opcional.
+- **Uso Comercial:** Permitido, desde que a **atribuição de créditos ao autor seja mantida** de forma visível no produto final.
+- **Isenção de Responsabilidade:** O software é fornecido "como está". O usuário é responsável por revisar o código e garantir a segurança de seus dados. O autor não se responsabiliza por perdas ou danos.
 
 Para ler os termos completos em Português, Inglês ou Espanhol, acesse o arquivo [LICENSE](./LICENSE).
 
 ---
+
 Desenvolvido por **Gyliardson Keitison**
 [GitHub](https://github.com/Gyliardson) | [LinkedIn](https://www.linkedin.com/in/gyliardson-keitison)
