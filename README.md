@@ -14,6 +14,8 @@
 ![Gemini](https://img.shields.io/badge/Google_Gemini-8E75B2?style=for-the-badge&logo=google-gemini&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
 
+[![FinanceFlow Deploy](https://github.com/Gyliardson/FinanceFlow/actions/workflows/deploy-frontend.yml/badge.svg)](https://github.com/Gyliardson/FinanceFlow/actions/workflows/deploy-frontend.yml)
+
 ---
 
 **[Português (BR)](#português) | [English](#english)**
@@ -98,7 +100,7 @@ O repositório inclui **4 exemplos práticos** de scrapers/coletores para demons
 ### Pré-requisitos
 
 - [Python 3.10+](https://www.python.org/)
-- [Node.js 18+](https://nodejs.org/)
+- [Node.js 20+](https://nodejs.org/)
 - [Expo CLI](https://expo.dev/)
 - Conta no [Supabase](https://supabase.com/)
 - Chave de API do [Google Gemini](https://ai.google.dev/)
@@ -285,7 +287,7 @@ The repository includes **4 practical examples** of scrapers/collectors to demon
 ### Prerequisites
 
 - [Python 3.10+](https://www.python.org/)
-- [Node.js 18+](https://nodejs.org/)
+- [Node.js 20+](https://nodejs.org/)
 - [Expo CLI](https://expo.dev/)
 - [Supabase](https://supabase.com/) Account
 - [Google Gemini](https://ai.google.dev/) API Key
@@ -465,7 +467,11 @@ FinanceFlow/
 
 ## Segurança | Security
 
+Este repositório utiliza uma camada de **Segurança Estática (API Key)**. Todas as requisições entre o aplicativo e o servidor são validadas através de um header `X-API-KEY`. Esta chave é injetada automaticamente durante o build de produção via **EAS Secrets** e **GitHub Secrets**, garantindo que as credenciais nunca fiquem expostas no código público.
+
 Este repositório está configurado para **não versionar** informações sensíveis. Arquivos como `.env` e diretórios de build/dependências (`node_modules`, `venv`) estão protegidos pelo `.gitignore`. Sempre utilize os arquivos `.env.example` como referência para configurar seu ambiente local.
+
+This repository uses a **Static Security Layer (API Key)**. All requests between the app and the server are validated via an `X-API-KEY` header. This key is automatically injected during production builds via **EAS Secrets** and **GitHub Secrets**, ensuring credentials are never exposed in public code.
 
 This repository is configured to **never version-control** sensitive data. Files such as `.env` and build/dependency directories (`node_modules`, `venv`) are protected by `.gitignore`. Always use the `.env.example` files as a reference to configure your local environment.
 
