@@ -67,10 +67,12 @@ export default function RecurringBillScreen({ navigation }: any) {
 
       const response = await api.post('/recurring-bills', payload);
       
-      // Agendar notificações para a primeira instância
+      // Agendar notificações para a primeira instância em background
       if (response.data?.data?.[0]) {
         const newBill = response.data.data[0];
-        await scheduleNotificationsForBill(newBill.id, title.trim(), newBill.due_date);
+        scheduleNotificationsForBill(newBill.id, title.trim(), newBill.due_date).catch(err => {
+          console.warn('Erro fatal ao agendar notificações em background:', err);
+        });
       }
       
       Alert.alert(

@@ -95,7 +95,7 @@ export default function PaymentScreen({ navigation, route }: any) {
               setUploading(true);
               try {
                 await api.post(`/bills/${selectedBill.id}/pay-no-receipt`);
-                await cancelNotificationsForBill(selectedBill.id);
+                cancelNotificationsForBill(selectedBill.id).catch(console.warn);
                 Alert.alert('✅ Pago!', `"${selectedBill.description}" foi registrada como paga!`, [
                   { text: 'OK', onPress: () => navigation.goBack() }
                 ]);
@@ -126,7 +126,7 @@ export default function PaymentScreen({ navigation, route }: any) {
         timeout: 120000, // 2 minutos para upload de imagens grandes
       });
 
-      await cancelNotificationsForBill(selectedBill.id);
+      cancelNotificationsForBill(selectedBill.id).catch(console.warn);
 
       Alert.alert(
         '✅ Pagamento Registrado!',

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -146,7 +146,7 @@ async def add_bill(req: BillCreateRequest):
 # ===========================================================================
 
 @app.post("/recurring-bills", tags=["Recurring Bills"])
-async def create_recurring_bill(req: RecurringBillCreateRequest):
+async def create_recurring_bill(req: RecurringBillCreateRequest, background_tasks: BackgroundTasks):
     """
     Cria um template de conta recorrente. Não cria a instância do mês — 
     isso é feito automaticamente via /recurring-bills/generate.
@@ -187,6 +187,10 @@ async def create_recurring_bill(req: RecurringBillCreateRequest):
             "recurring_day": req.recurring_day,
         }
         response = supabase.table("finance_bills").insert(data).execute()
+        
+        # Dispara a geração de instâncias em segundo plano para não travar a UI do celular
+        background_tasks.add_task(generate_recurring_instances)
+            
         return {"status": "success", "data": response.data}
     except HTTPException:
         raise
@@ -216,66 +220,73 @@ async def generate_recurring_instances():
     """
     Examina todos os templates recorrentes e gera instâncias pendentes 
     para o mês atual, se ainda não existem.
+    Otimizado para evitar múltiplas consultas ao banco dentro de loops (N+1).
     """
     try:
         supabase = get_supabase_client()
         today = date.today()
+        month_suffix = f"{today.month:02d}/{today.year}"
         
-        # Buscar todos os templates recorrentes
-        templates = (
+        # 1. Buscar todos os templates recorrentes
+        templates_resp = (
             supabase.table("finance_bills")
             .select("*")
             .eq("is_recurring", True)
             .execute()
         )
+        templates = templates_resp.data or []
+        
+        if not templates:
+            return {"status": "success", "message": "Nenhum template recorrente encontrado."}
+
+        # 2. Buscar todas as instâncias já geradas para este mês
+        # Filtrar por descrições que terminam com o sufixo do mês atual
+        existing_resp = (
+            supabase.table("finance_bills")
+            .select("description")
+            .ilike("description", f"% - {month_suffix}")
+            .execute()
+        )
+        existing_descriptions = {item["description"] for item in (existing_resp.data or [])}
         
         generated = []
+        to_insert = []
         
-        for template in templates.data:
+        import calendar
+        last_day = calendar.monthrange(today.year, today.month)[1]
+
+        # 3. Identificar quais instâncias precisam ser criadas
+        for template in templates:
             recurring_day = template.get("recurring_day", 1)
-            
-            # Calcula data de vencimento para o mês atual
-            import calendar
-            last_day = calendar.monthrange(today.year, today.month)[1]
             due_day = min(recurring_day, last_day)
             
-            try:
-                month_due = date(today.year, today.month, due_day)
-            except ValueError:
-                month_due = date(today.year, today.month, last_day)
+            month_due = date(today.year, today.month, due_day)
+            month_label = f"{template['description']} - {month_suffix}"
             
-            # Verificar se já existe instância para esse mês
-            month_label = f"{template['description']} - {today.month:02d}/{today.year}"
-            existing = (
-                supabase.table("finance_bills")
-                .select("id")
-                .eq("description", month_label)
-                .execute()
-            )
-            
-            if existing.data:
-                continue  # Já existe, pula
-            
-            # Criar instância do mês
-            instance = {
-                "description": month_label,
-                "amount": template["amount"],
-                "due_date": str(month_due),
-                "status": "pending",
-                "parent_bill_id": template["id"],
-                "is_recurring": False,
-            }
-            result = supabase.table("finance_bills").insert(instance).execute()
-            if result.data:
-                generated.append(result.data[0])
+            if month_label not in existing_descriptions:
+                instance = {
+                    "description": month_label,
+                    "amount": template["amount"],
+                    "due_date": str(month_due),
+                    "status": "pending",
+                    "parent_bill_id": template["id"],
+                    "is_recurring": False,
+                }
+                to_insert.append(instance)
+
+        # 4. Inserção em massa (Bulk Insert) se houver algo novo
+        if to_insert:
+            result = supabase.table("finance_bills").insert(to_insert).execute()
+            generated = result.data or []
         
         return {
             "status": "success",
-            "message": f"{len(generated)} instância(s) gerada(s) para {today.month:02d}/{today.year}.",
+            "message": f"{len(generated)} nova(s) instância(s) gerada(s) para {month_suffix}.",
             "generated": generated
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Erro ao gerar instâncias recorrentes: {e}")
+        return {"status": "error", "message": str(e)}
 
 # ===========================================================================
 # Bill Detail & History

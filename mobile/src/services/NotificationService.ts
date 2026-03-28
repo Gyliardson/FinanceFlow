@@ -10,6 +10,8 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
   }),
 });
 
@@ -109,7 +111,7 @@ export async function scheduleNotificationsForBill(
 ): Promise<string[]> {
   if (Platform.OS === 'web') return [];
 
-  const scheduledIds: string[] = [];
+  const promises: Promise<string | void>[] = [];
   const due = new Date(dueDate + 'T00:00:00');
   const now = new Date();
 
@@ -124,24 +126,22 @@ export async function scheduleNotificationsForBill(
     const msgIndex = 3 - daysBefore; // 0, 1, 2
     const msg = MESSAGES_BEFORE[msgIndex];
 
-    try {
-      const id = await Notifications.scheduleNotificationAsync({
-        content: {
-          title: msg.title,
-          body: msg.body(billName, daysBefore),
-          data: { billId, type: 'reminder' },
-          sound: 'default',
-        },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.DATE,
-          date: triggerDate,
-          channelId: 'bills',
-        },
-      });
-      scheduledIds.push(id);
-    } catch (err) {
+    const promise = Notifications.scheduleNotificationAsync({
+      content: {
+        title: msg.title,
+        body: msg.body(billName, daysBefore),
+        data: { billId, type: 'reminder' },
+        sound: 'default',
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: triggerDate,
+        channelId: 'bills',
+      },
+    }).catch(err => {
       console.warn(`Erro ao agendar notificação T-${daysBefore}:`, err);
-    }
+    });
+    promises.push(promise);
   }
 
   // --- Notificações no dia do vencimento ---
@@ -159,25 +159,26 @@ export async function scheduleNotificationsForBill(
 
     const msg = MESSAGES_DUE_DAY[period];
 
-    try {
-      const id = await Notifications.scheduleNotificationAsync({
-        content: {
-          title: msg.title,
-          body: msg.body(billName),
-          data: { billId, type: 'urgent' },
-          sound: 'default',
-        },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.DATE,
-          date: triggerDate,
-          channelId: 'bills',
-        },
-      });
-      scheduledIds.push(id);
-    } catch (err) {
+    const promise = Notifications.scheduleNotificationAsync({
+      content: {
+        title: msg.title,
+        body: msg.body(billName),
+        data: { billId, type: 'urgent' },
+        sound: 'default',
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: triggerDate,
+        channelId: 'bills',
+      },
+    }).catch(err => {
       console.warn(`Erro ao agendar notificação ${period}:`, err);
-    }
+    });
+    promises.push(promise);
   }
+
+  const results = await Promise.all(promises);
+  const scheduledIds = results.filter((id): id is string => typeof id === 'string');
 
   console.log(`[Notificações] Agendadas ${scheduledIds.length} para "${billName}" (venc: ${dueDate})`);
   return scheduledIds;
@@ -192,12 +193,21 @@ export async function cancelNotificationsForBill(billId: string): Promise<void> 
 
   try {
     const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
+    const cancelPromises: Promise<void>[] = [];
+    
     for (const notification of allScheduled) {
       if (notification.content.data?.billId === billId) {
-        await Notifications.cancelScheduledNotificationAsync(notification.identifier);
+        cancelPromises.push(
+          Notifications.cancelScheduledNotificationAsync(notification.identifier)
+        );
       }
     }
-    console.log(`[Notificações] Canceladas para billId: ${billId}`);
+    
+    if (cancelPromises.length > 0) {
+      await Promise.all(cancelPromises);
+    }
+    
+    console.log(`[Notificações] Canceladas (${cancelPromises.length}) para billId: ${billId}`);
   } catch (err) {
     console.warn('Erro ao cancelar notificações:', err);
   }
