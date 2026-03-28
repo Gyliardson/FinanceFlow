@@ -3,6 +3,8 @@ import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
   ActivityIndicator, RefreshControl, Animated, Modal, TextInput, Alert, ScrollView
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetworkStatus from '../components/NetworkStatus';
 import api from '../services/api';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -30,13 +32,19 @@ export default function HomeScreen({ navigation }: any) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('pending');
+  const [isOffline, setIsOffline] = useState(false);
 
   const fetchBills = async () => {
     try {
       const response = await api.get('/bills');
       setAllBills(response.data.data || []);
+      await AsyncStorage.setItem('@bills_cache', JSON.stringify(response.data.data || []));
+      setIsOffline(false);
     } catch (error) {
       console.error("Erro ao buscar boletos:", error);
+      setIsOffline(true);
+      const cached = await AsyncStorage.getItem('@bills_cache');
+      if (cached) setAllBills(JSON.parse(cached));
     }
   };
 
@@ -48,11 +56,21 @@ export default function HomeScreen({ navigation }: any) {
         setInitialBalance(s.initial_balance?.toFixed(2).replace('.', ',') || '');
         setEmergencyGoal(s.emergency_fund_goal?.toFixed(2).replace('.', ',') || '');
         setInitialDate(s.initial_balance_date || '');
+        await AsyncStorage.setItem('@settings_cache', JSON.stringify(s));
       } else {
         setConfigModalVisible(true);
       }
+      setIsOffline(false);
     } catch (e) {
       console.error(e);
+      setIsOffline(true);
+      const cached = await AsyncStorage.getItem('@settings_cache');
+      if (cached) {
+        const s = JSON.parse(cached);
+        setInitialBalance(s.initial_balance?.toFixed(2).replace('.', ',') || '');
+        setEmergencyGoal(s.emergency_fund_goal?.toFixed(2).replace('.', ',') || '');
+        setInitialDate(s.initial_balance_date || '');
+      }
     }
   };
 
@@ -332,6 +350,9 @@ export default function HomeScreen({ navigation }: any) {
           </View>
         )}
       </View>
+
+      {/* Network Status */}
+      <NetworkStatus isOffline={isOffline} onRetry={loadAllData} />
 
       {/* Month Filter */}
       <View style={styles.monthFilter}>

@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 import asyncio
 import os
@@ -10,6 +10,9 @@ from datetime import datetime, date, timedelta
 
 from database import get_supabase_client, get_supabase_storage_client, ensure_receipts_bucket
 from ai_service import extract_invoice_data, generate_financial_insights
+# ===========================================================================
+# Módulos de Scraping (Inativos - Apenas para Portfólio/Demonstração)
+# ===========================================================================
 # from dasmei_scraper import scrape_dasmei
 # from unopar_scraper import scrape_unopar
 # from imap_scraper import scrape_vivo_email
@@ -53,17 +56,17 @@ class HealthResponse(BaseModel):
     message: str
 
 class BillCreateRequest(BaseModel):
-    description: str
-    amount: float
+    description: str = Field(..., max_length=150)
+    amount: float = Field(..., gt=0, le=1000000)
     due_date: str
-    barcode: Optional[str] = None
+    barcode: Optional[str] = Field(None, max_length=255)
     status: str = "pending"
 
 class RecurringBillCreateRequest(BaseModel):
     """Request body para criar uma conta recorrente (template)."""
-    title: str
-    description: Optional[str] = None
-    amount: float
+    title: str = Field(..., max_length=100)
+    description: Optional[str] = Field(None, max_length=255)
+    amount: float = Field(..., gt=0, le=1000000)
     recurring_day: int  # Dia do mês (1-31)
     frequency: str = "monthly"  # 'monthly', 'weekly', etc.
 
@@ -74,20 +77,20 @@ class BillValidationRequest(BaseModel):
     ocr_barcode: Optional[str] = None
 
 class IncomeCreateRequest(BaseModel):
-    title: str
-    amount: float
+    title: str = Field(..., max_length=100)
+    amount: float = Field(..., gt=0, le=1000000)
     date: str
-    description: Optional[str] = None
+    description: Optional[str] = Field(None, max_length=255)
     type: str = "salary"
     is_recurring: bool = False
 
 class SettingsUpdateRequest(BaseModel):
-    initial_balance: float
+    initial_balance: float = Field(..., ge=-1000000, le=1000000)
     initial_balance_date: str
-    emergency_fund_goal: float
+    emergency_fund_goal: float = Field(..., ge=0, le=1000000)
 
 class ReserveAddRequest(BaseModel):
-    amount: float
+    amount: float = Field(..., gt=0, le=1000000)
 
 
 # ===========================================================================
@@ -736,7 +739,7 @@ async def add_to_reserve(req: ReserveAddRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ===========================================================================
-# Scraping Routes (Desativadas - Portfolio) - Comentadas para deploy v1.00 no Render
+# Scraping Routes (Inativos - Apenas para Portfólio/Demonstração) - Comentadas para deploy v1.00 no Render
 # ===========================================================================
 
 # @app.post("/scrape/dasmei", tags=["Scraping"])

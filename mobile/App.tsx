@@ -8,9 +8,8 @@ import { requestNotificationPermissions } from './src/services/NotificationServi
 
 export default function App() {
   useEffect(() => {
-    // Modo imersivo Android (esconder barra de navegação)
     if (Platform.OS === 'android') {
-      NavigationBar.setBehaviorAsync('sticky-immersive');
+      NavigationBar.setBehaviorAsync('inset-swipe');
       NavigationBar.setVisibilityAsync('hidden');
     }
 

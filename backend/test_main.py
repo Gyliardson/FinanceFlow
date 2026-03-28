@@ -58,35 +58,35 @@ def test_upload_receipt(mock_extract):
     assert json_resp["message"] == "Arquivo processado com sucesso."
     assert json_resp["ocr_result"]["amount"] == 150.00
 
-@patch("main.scrape_unopar")
-@patch("main.get_supabase_client")
-def test_scrape_unopar_route(mock_supabase, mock_scrape_unopar):
-    # Mock supabase existing check
-    mock_execute_select = mock_supabase.return_value.table.return_value.select.return_value.eq.return_value.execute
-    mock_execute_select.return_value.data = [] # None existing
-
-    # Mock supabase insert
-    mock_execute_insert = mock_supabase.return_value.table.return_value.insert.return_value.execute
-    mock_execute_insert.return_value.data = [{"id": "uuid-123", "amount": 650.0}]
-
-    mock_scrape_unopar.return_value = {
-        "status": "success",
-        "description": "Mensalidade Unopar - 03/2026",
-        "amount": 650.0,
-        "due_date": "2026-03-10",
-        "barcode": "34191.09008 00000.000000 00000.000000 1 00000000000000",
-        "message": "Boleto lido"
-    }
-
-    from main import app
-    from fastapi.testclient import TestClient
-    c = TestClient(app)
-    
-    response = c.post("/scrape/unopar")
-    assert response.status_code == 200
-    res_json = response.json()
-    assert res_json["status"] == "success"
-    assert res_json["bill_data"][0]["amount"] == 650.0
+# @patch("main.scrape_unopar")
+# @patch("main.get_supabase_client")
+# def test_scrape_unopar_route(mock_supabase, mock_scrape_unopar):
+#     # Mock supabase existing check
+#     mock_execute_select = mock_supabase.return_value.table.return_value.select.return_value.eq.return_value.execute
+#     mock_execute_select.return_value.data = [] # None existing
+# 
+#     # Mock supabase insert
+#     mock_execute_insert = mock_supabase.return_value.table.return_value.insert.return_value.execute
+#     mock_execute_insert.return_value.data = [{"id": "uuid-123", "amount": 650.0}]
+# 
+#     mock_scrape_unopar.return_value = {
+#         "status": "success",
+#         "description": "Mensalidade Unopar - 03/2026",
+#         "amount": 650.0,
+#         "due_date": "2026-03-10",
+#         "barcode": "34191.09008 00000.000000 00000.000000 1 00000000000000",
+#         "message": "Boleto lido"
+#     }
+# 
+#     from main import app
+#     from fastapi.testclient import TestClient
+#     c = TestClient(app)
+#     
+#     response = c.post("/scrape/unopar")
+#     assert response.status_code == 200
+#     res_json = response.json()
+#     assert res_json["status"] == "success"
+#     assert res_json["bill_data"][0]["amount"] == 650.0
 
 @patch("main.get_supabase_client")
 def test_validate_bill(mock_supabase):

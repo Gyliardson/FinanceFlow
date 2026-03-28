@@ -19,7 +19,9 @@ export default function IncomeScreen({ navigation }: any) {
   const handleAmountChange = (text: string) => {
     const numericValue = text.replace(/[^0-9]/g, '');
     if (numericValue) {
-      const val = (Number(numericValue) / 100).toFixed(2);
+      let valNum = Number(numericValue) / 100;
+      if (valNum > 1000000) valNum = 1000000;
+      const val = valNum.toFixed(2);
       setAmount(val.replace('.', ','));
     } else {
       setAmount('');
@@ -183,6 +185,7 @@ export default function IncomeScreen({ navigation }: any) {
               placeholder="Ex: Salário, iFood..."
               value={title}
               onChangeText={setTitle}
+              maxLength={100}
             />
 
             <Text style={styles.label}>Valor*</Text>
@@ -203,6 +206,7 @@ export default function IncomeScreen({ navigation }: any) {
               placeholder="Ex: Pagamento semanal..."
               value={description}
               onChangeText={setDescription}
+              maxLength={255}
             />
 
             <View style={styles.modalActions}>

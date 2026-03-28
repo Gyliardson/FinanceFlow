@@ -14,7 +14,9 @@ export default function RecurringBillScreen({ navigation }: any) {
   const handleAmountChange = (text: string) => {
     const numericValue = text.replace(/[^0-9]/g, '');
     if (numericValue) {
-      const val = (Number(numericValue) / 100).toFixed(2);
+      let valNum = Number(numericValue) / 100;
+      if (valNum > 1000000) valNum = 1000000;
+      const val = valNum.toFixed(2);
       setAmount(val.replace('.', ','));
     } else {
       setAmount('');
@@ -108,6 +110,7 @@ export default function RecurringBillScreen({ navigation }: any) {
           onChangeText={setTitle}
           placeholder="Ex: Internet Vivo, Aluguel, Netflix..."
           placeholderTextColor="#95a5a6"
+          maxLength={100}
         />
 
         <Text style={styles.inputLabel}>Descrição (opcional)</Text>
@@ -118,6 +121,7 @@ export default function RecurringBillScreen({ navigation }: any) {
           placeholder="Anotações extras, número do contrato, etc."
           placeholderTextColor="#95a5a6"
           multiline
+          maxLength={255}
         />
 
         <Text style={styles.inputLabel}>Valor Mensal (R$) *</Text>

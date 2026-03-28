@@ -21,7 +21,9 @@ export default function DetailScreen({ navigation }: any) {
   const handleAmountChange = (text: string) => {
     const numericValue = text.replace(/[^0-9]/g, '');
     if (numericValue) {
-      const val = (Number(numericValue) / 100).toFixed(2);
+      let valNum = Number(numericValue) / 100;
+      if (valNum > 1000000) valNum = 1000000;
+      const val = valNum.toFixed(2);
       setAmount(val.replace('.', ','));
     } else {
       setAmount('');
@@ -208,7 +210,7 @@ export default function DetailScreen({ navigation }: any) {
 
       <View style={styles.form}>
         <Text style={styles.inputLabel}>Nome ou Descrição Mnemônica da Despesa*</Text>
-        <TextInput style={styles.input} value={description} onChangeText={setDescription} placeholder="Ex: Gasto com IPTU ou Plano TIM" />
+        <TextInput style={styles.input} value={description} onChangeText={setDescription} placeholder="Ex: Gasto com IPTU ou Plano TIM" maxLength={150} />
 
         <Text style={styles.inputLabel}>Custo real (R$)*</Text>
         <TextInput style={styles.input} keyboardType="numeric" value={amount} onChangeText={handleAmountChange} placeholder="0,00" />
@@ -252,7 +254,7 @@ export default function DetailScreen({ navigation }: any) {
         )}
 
         <Text style={styles.inputLabel}>Sequência Numérica ou chave Pix</Text>
-        <TextInput style={[styles.input, { height: 90, textAlignVertical: 'top' }]} multiline value={barcode} onChangeText={setBarcode} placeholder="Números ou linha digitável" />
+        <TextInput style={[styles.input, { height: 90, textAlignVertical: 'top' }]} multiline value={barcode} onChangeText={setBarcode} placeholder="Números ou linha digitável" maxLength={255} />
 
         <TouchableOpacity style={styles.saveButton} onPress={handleSaveBill} disabled={loadingSave || loadingOCR}>
           {loadingSave ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>Adicionar Oficialmente</Text>}
