@@ -66,3 +66,49 @@ def extract_invoice_data(file_bytes: bytes, mime_type: str) -> dict:
             "message": "Falha ao processar o documento com IA.",
             "details": str(e)
         }
+
+def generate_financial_insights(financial_data: dict) -> dict:
+    """
+    Analisa os dados financeiros do usuário (saldo, sobra, metas)
+    e gera um conselho de especialista com foco em Reserva de Emergência e CDB.
+    """
+    if not API_KEY:
+        raise ValueError("Chave de API do Gemini ausente na configuração.")
+
+    try:
+        model = genai.GenerativeModel("gemini-3-flash-preview")
+        
+        prompt = f"""
+        Atue como um consultor financeiro institucional e rigoroso.
+        Abaixo está o retrato financeiro atual do usuário:
+        
+        - Saldo Atual Real: R$ {financial_data.get('current_balance', 0):.2f}
+        - Sobra Estimada (após contas pendentes do mês): R$ {financial_data.get('estimated_surplus', 0):.2f}
+        - Meta da Reserva de Emergência: R$ {financial_data.get('emergency_fund_goal', 0):.2f}
+        
+        Regras de recomendação:
+        1. A prioridade absoluta é alcançar a "Meta da Reserva de Emergência".
+        2. Se o usuário ainda não tiver a segurança necessária, sugira direcionar a maior parte (ou toda) a sobra para compor a Reserva.
+        3. Se a meta da Reserva estiver atingida ou excedida pelo Saldo Atual, sugira colocar a "Sobra Estimada" em investimentos de médio/longo prazo com boa rentabilidade segura, como CDBs.
+        
+        INSTRUÇÕES DE TOM E FORMATO (OBRIGATÓRIO):
+        - Seja estritamente profissional, técnico e objetivo.
+        - Não use emojis, gírias ou cumprimentos.
+        - Limite a resposta a um MÁXIMO de 3 a 4 frases curtas.
+        - Vá direto ao ponto matemático e consultivo.
+        """
+        
+        response = model.generate_content(prompt)
+        
+        return {
+            "status": "success",
+            "insight": response.text.strip()
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao gerar insight financeiro via Gemini: {str(e)}")
+        return {
+            "status": "error",
+            "message": "Falha ao gerar o insight financeiro.",
+            "details": str(e)
+        }

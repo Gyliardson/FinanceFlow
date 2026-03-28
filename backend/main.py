@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, date, timedelta
 
 from database import get_supabase_client, get_supabase_storage_client, ensure_receipts_bucket
-from ai_service import extract_invoice_data
+from ai_service import extract_invoice_data, generate_financial_insights
 from dasmei_scraper import scrape_dasmei
 from unopar_scraper import scrape_unopar
 from imap_scraper import scrape_vivo_email
@@ -72,6 +72,23 @@ class BillValidationRequest(BaseModel):
     ocr_amount: Optional[float] = None
     ocr_due_date: Optional[str] = None
     ocr_barcode: Optional[str] = None
+
+class IncomeCreateRequest(BaseModel):
+    title: str
+    amount: float
+    date: str
+    description: Optional[str] = None
+    type: str = "salary"
+    is_recurring: bool = False
+
+class SettingsUpdateRequest(BaseModel):
+    initial_balance: float
+    initial_balance_date: str
+    emergency_fund_goal: float
+
+class ReserveAddRequest(BaseModel):
+    amount: float
+
 
 # ===========================================================================
 # Health & Basic Routes
@@ -167,8 +184,9 @@ async def create_recurring_bill(req: RecurringBillCreateRequest, background_task
             last_day = calendar.monthrange(today.year, today.month)[1]
             first_due = date(today.year, today.month, last_day)
         
-        if first_due < today:
-            # Se o dia já passou no mês atual, pula para o próximo mês
+        if first_due <= today:
+            # Se o dia já passou no mês atual (ou é hoje), pula para o próximo mês
+            # Isso evita que o sistema crie faturas "vencidas" logo no cadastro inicial.
             if today.month == 12:
                 first_due = date(today.year + 1, 1, min(req.recurring_day, 31))
             else:
@@ -239,15 +257,18 @@ async def generate_recurring_instances():
         if not templates:
             return {"status": "success", "message": "Nenhum template recorrente encontrado."}
 
-        # 2. Buscar todas as instâncias já geradas para este mês
-        # Filtrar por descrições que terminam com o sufixo do mês atual
+        # 2. Buscar TODAS as instâncias geradas (para evitar duplicatas independente do mês alvo)
         existing_resp = (
             supabase.table("finance_bills")
-            .select("description")
-            .ilike("description", f"% - {month_suffix}")
+            .select("description", "due_date", "parent_bill_id")
+            .not_.is_("parent_bill_id", "null")
             .execute()
         )
-        existing_descriptions = {item["description"] for item in (existing_resp.data or [])}
+        # Criar um set de (parent_id, due_date) para busca rápida
+        existing_instances = {
+            (item["parent_bill_id"], item["due_date"]) 
+            for item in (existing_resp.data or [])
+        }
         
         generated = []
         to_insert = []
@@ -258,16 +279,33 @@ async def generate_recurring_instances():
         # 3. Identificar quais instâncias precisam ser criadas
         for template in templates:
             recurring_day = template.get("recurring_day", 1)
-            due_day = min(recurring_day, last_day)
             
-            month_due = date(today.year, today.month, due_day)
-            month_label = f"{template['description']} - {month_suffix}"
+            # Verificar data do mês atual
+            last_day_this = calendar.monthrange(today.year, today.month)[1]
+            due_this_month = date(today.year, today.month, min(recurring_day, last_day_this))
             
-            if month_label not in existing_descriptions:
+            # Regra: se hoje < dia do vencimento, gera para este mês.
+            # Se hoje >= dia do vencimento, pula para o próximo mês.
+            if today < due_this_month:
+                target_date = due_this_month
+            else:
+                # Calcular próximo mês
+                if today.month == 12:
+                    y, m = today.year + 1, 1
+                else:
+                    y, m = today.year, today.month + 1
+                last_day_next = calendar.monthrange(y, m)[1]
+                target_date = date(y, m, min(recurring_day, last_day_next))
+
+            target_suffix = f"{target_date.month:02d}/{target_date.year}"
+            month_label = f"{template['description']} - {target_suffix}"
+            
+            # Verificar se esta instância específica (mesmo template e mesma data) já existe
+            if (template["id"], str(target_date)) not in existing_instances:
                 instance = {
                     "description": month_label,
                     "amount": template["amount"],
-                    "due_date": str(month_due),
+                    "due_date": str(target_date),
                     "status": "pending",
                     "parent_bill_id": template["id"],
                     "is_recurring": False,
@@ -470,6 +508,227 @@ async def pay_bill_no_receipt(bill_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ===========================================================================
+# Incomes & Settings
+# ===========================================================================
+
+@app.get("/incomes", tags=["Incomes"])
+async def get_incomes():
+    try:
+        supabase = get_supabase_client()
+        response = supabase.table("finance_incomes").select("*").order("date", desc=True).execute()
+        return {"data": response.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/incomes", tags=["Incomes"])
+async def add_income(req: IncomeCreateRequest):
+    try:
+        supabase = get_supabase_client()
+        data = req.model_dump()
+        response = supabase.table("finance_incomes").insert(data).execute()
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/settings", tags=["Settings"])
+async def get_settings():
+    try:
+        supabase = get_supabase_client()
+        response = supabase.table("finance_user_settings").select("*").limit(1).execute()
+        if not response.data:
+            return {"data": None}
+        return {"data": response.data[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/settings", tags=["Settings"])
+async def update_settings(req: SettingsUpdateRequest):
+    try:
+        supabase = get_supabase_client()
+        response = supabase.table("finance_user_settings").select("id").limit(1).execute()
+        data = req.model_dump()
+        
+        # O backend atualiza `updated_at` automaticamente caso pudesse, mas vamo setar manually só p garantir
+        data["updated_at"] = str(datetime.now())
+
+        if response.data:
+            updated = supabase.table("finance_user_settings").update(data).eq("id", response.data[0]["id"]).execute()
+            return {"status": "success", "data": updated.data[0]}
+        else:
+            inserted = supabase.table("finance_user_settings").insert(data).execute()
+            return {"status": "success", "data": inserted.data[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+def _calculate_financials(supabase, settings):
+    initial_balance = float(settings.get("initial_balance", 0.0))
+    emergency_fund_goal = float(settings.get("emergency_fund_goal", 0.0))
+    emergency_fund_balance = float(settings.get("emergency_fund_balance", 0.0))
+    initial_date = settings.get("initial_balance_date", "2000-01-01")
+    
+    incomes_resp = supabase.table("finance_incomes").select("amount").gte("date", initial_date).execute()
+    total_income = sum(float(inc["amount"]) for inc in (incomes_resp.data or []))
+    
+    paid_bills_resp = supabase.table("finance_bills").select("amount").eq("status", "paid").gte("payment_date", initial_date).execute()
+    total_paid = sum(float(b["amount"]) for b in (paid_bills_resp.data or []))
+    
+    current_balance = initial_balance + total_income - total_paid - emergency_fund_balance
+    
+    today = date.today()
+    import calendar
+    last_day = calendar.monthrange(today.year, today.month)[1]
+    end_of_month = date(today.year, today.month, last_day)
+    
+    pending_bills_resp = supabase.table("finance_bills").select("amount").in_("status", ["pending", "overdue"]).lte("due_date", str(end_of_month)).execute()
+    total_pending = sum(float(b["amount"]) for b in (pending_bills_resp.data or []))
+    
+    estimated_surplus = current_balance - total_pending
+    return {
+        "current_balance": current_balance,
+        "estimated_surplus": estimated_surplus,
+        "emergency_fund_goal": emergency_fund_goal,
+        "emergency_fund_balance": emergency_fund_balance
+    }
+
+@app.get("/insights", tags=["Insights"])
+async def get_insights():
+    """
+    Retorna o insight atual. Se não houver insight para o mês, gera um via IA e faz o cache.
+    """
+    try:
+        supabase = get_supabase_client()
+        settings_resp = supabase.table("finance_user_settings").select("*").limit(1).execute()
+        if not settings_resp.data:
+            raise HTTPException(status_code=400, detail="Configurações (Saldo Inicial) não encontradas. Configure o saldo inicial primeiro.")
+        
+        settings = settings_resp.data[0]
+        fin_data = _calculate_financials(supabase, settings)
+        
+        latest_date_str = settings.get("latest_insight_date")
+        latest_text = settings.get("latest_insight_text")
+        today = date.today()
+        
+        # Check cache
+        if latest_date_str and latest_text:
+            try:
+                # Trata datetime ISO se houver, ou apenas date YYYY-MM-DD
+                ld = datetime.fromisoformat(latest_date_str)
+                if ld.year == today.year and ld.month == today.month:
+                    return {
+                        "status": "success",
+                        "data": {
+                            "current_balance": fin_data["current_balance"],
+                            "estimated_surplus": fin_data["estimated_surplus"],
+                            "emergency_fund_goal": fin_data["emergency_fund_goal"],
+                            "emergency_fund_balance": fin_data["emergency_fund_balance"],
+                            "insight": latest_text
+                        }
+                    }
+            except Exception as e:
+                logger.warning(f"Falha ao interpretar data de insight '{latest_date_str}': {e}")
+                
+        # Cache nulo ou vencido -> gera novo
+        insight_result = generate_financial_insights(fin_data)
+        if insight_result.get("status") == "error":
+            raise HTTPException(status_code=500, detail=insight_result.get("message"))
+            
+        new_text = insight_result.get("insight")
+        
+        # Update Cache
+        supabase.table("finance_user_settings").update({
+            "latest_insight_text": new_text,
+            "latest_insight_date": today.isoformat()
+        }).eq("id", settings["id"]).execute()
+            
+        return {
+            "status": "success",
+            "data": {
+                "current_balance": fin_data["current_balance"],
+                "estimated_surplus": fin_data["estimated_surplus"],
+                "emergency_fund_goal": fin_data["emergency_fund_goal"],
+                "emergency_fund_balance": fin_data["emergency_fund_balance"],
+                "insight": new_text
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro no endpoint GET insights: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/insights/refresh", tags=["Insights"])
+async def refresh_insights():
+    """
+    Força a geração de um novo insight via IA, ignorando o cache, e atualiza o banco de dados.
+    """
+    try:
+        supabase = get_supabase_client()
+        settings_resp = supabase.table("finance_user_settings").select("*").limit(1).execute()
+        if not settings_resp.data:
+            raise HTTPException(status_code=400, detail="Configurações (Saldo Inicial) não encontradas.")
+        
+        settings = settings_resp.data[0]
+        fin_data = _calculate_financials(supabase, settings)
+        
+        insight_result = generate_financial_insights(fin_data)
+        if insight_result.get("status") == "error":
+            raise HTTPException(status_code=500, detail=insight_result.get("message"))
+            
+        new_text = insight_result.get("insight")
+        today = date.today()
+        
+        # Update Cache
+        supabase.table("finance_user_settings").update({
+            "latest_insight_text": new_text,
+            "latest_insight_date": today.isoformat()
+        }).eq("id", settings["id"]).execute()
+            
+        return {
+            "status": "success",
+            "data": {
+                "current_balance": fin_data["current_balance"],
+                "estimated_surplus": fin_data["estimated_surplus"],
+                "emergency_fund_goal": fin_data["emergency_fund_goal"],
+                "emergency_fund_balance": fin_data["emergency_fund_balance"],
+                "insight": new_text
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro no endpoint POST insights/refresh: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/insights/reserve", tags=["Insights"])
+async def add_to_reserve(req: ReserveAddRequest):
+    """
+    Adiciona um valor à reserva de emergência e deduz logicamente do saldo atual.
+    """
+    try:
+        supabase = get_supabase_client()
+        settings_resp = supabase.table("finance_user_settings").select("*").limit(1).execute()
+        if not settings_resp.data:
+            raise HTTPException(status_code=400, detail="Configurações (Saldo Inicial) não encontradas.")
+        
+        settings = settings_resp.data[0]
+        current_reserve = float(settings.get("emergency_fund_balance", 0.0))
+        new_reserve = current_reserve + req.amount
+        
+        updated = supabase.table("finance_user_settings").update({
+            "emergency_fund_balance": new_reserve
+        }).eq("id", settings["id"]).execute()
+        
+        return {
+            "status": "success",
+            "message": "Fundo de reserva atualizado com sucesso.",
+            "data": updated.data[0]
+        }
+    except Exception as e:
+        logger.error(f"Erro no endpoint POST insights/reserve: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ===========================================================================

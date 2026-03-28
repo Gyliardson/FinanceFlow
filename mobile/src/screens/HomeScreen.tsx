@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
-  ActivityIndicator, RefreshControl, Animated
+  ActivityIndicator, RefreshControl, Animated, Modal, TextInput, Alert, ScrollView
 } from 'react-native';
 import api from '../services/api';
 import { Ionicons } from '@expo/vector-icons';
@@ -31,34 +31,79 @@ export default function HomeScreen({ navigation }: any) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('pending');
 
-  // Filter state
-  const now = new Date();
-  const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
-  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
-
-  const fetchBills = useCallback(async () => {
+  const fetchBills = async () => {
     try {
       const response = await api.get('/bills');
       setAllBills(response.data.data || []);
     } catch (error) {
       console.error("Erro ao buscar boletos:", error);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
     }
+  };
+
+  const fetchSettings = async () => {
+    try {
+      const resp = await api.get('/settings');
+      if (resp.data && resp.data.data) {
+        const s = resp.data.data;
+        setInitialBalance(s.initial_balance?.toFixed(2).replace('.', ',') || '');
+        setEmergencyGoal(s.emergency_fund_goal?.toFixed(2).replace('.', ',') || '');
+        setInitialDate(s.initial_balance_date || '');
+      } else {
+        setConfigModalVisible(true);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const loadAllData = useCallback(async () => {
+    setLoading(true);
+    await Promise.all([fetchBills(), fetchSettings()]);
+    setLoading(false);
+    setRefreshing(false);
   }, []);
+
+  // Config State
+  const [configModalVisible, setConfigModalVisible] = useState(false);
+  const [initialBalance, setInitialBalance] = useState('');
+  const [emergencyGoal, setEmergencyGoal] = useState('');
+  const [initialDate, setInitialDate] = useState('');
+
+  // Filter state
+  const now = new Date();
+  const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
+  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
 
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
-      setLoading(true);
-      fetchBills();
+      loadAllData();
     });
     return unsubscribe;
-  }, [navigation, fetchBills]);
+  }, [navigation, loadAllData]);
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchBills();
+    loadAllData();
+  };
+
+  const saveSettings = async () => {
+    if (!initialBalance || !emergencyGoal) {
+      Alert.alert("Aviso", "Preencha ambos os valores.");
+      return;
+    }
+    const bal = parseFloat(initialBalance.replace(',','.'));
+    const goal = parseFloat(emergencyGoal.replace(',','.'));
+    try {
+      await api.post('/settings', {
+        initial_balance: bal,
+        emergency_fund_goal: goal,
+        initial_balance_date: initialDate || new Date().toISOString().split('T')[0]
+      });
+      setConfigModalVisible(false);
+      loadAllData();
+    } catch (error) {
+      Alert.alert("Erro", "Não foi possível salvar configurações.");
+    }
   };
 
   const getDaysUntilDue = (dueDate: string) => {
@@ -135,6 +180,24 @@ export default function HomeScreen({ navigation }: any) {
   };
 
   const isCurrentMonth = selectedMonth === now.getMonth() && selectedYear === now.getFullYear();
+
+  // ---------- Currency Formatting ----------
+  const formatCurrency = (value: string) => {
+    const numericValue = value.replace(/[^0-9]/g, '');
+    if (numericValue) {
+      const val = (Number(numericValue) / 100).toFixed(2);
+      return val.replace('.', ',');
+    }
+    return '';
+  };
+
+  const handleBalanceChange = (text: string) => {
+    setInitialBalance(formatCurrency(text));
+  };
+
+  const handleGoalChange = (text: string) => {
+    setEmergencyGoal(formatCurrency(text));
+  };
 
   // ---------- Render ----------
 
@@ -222,8 +285,8 @@ export default function HomeScreen({ navigation }: any) {
     { key: 'all', label: 'Todas', count: filteredByDate.length, icon: 'list' },
   ];
 
-  return (
-    <View style={styles.container}>
+  const renderHeader = () => (
+    <View>
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerTop}>
@@ -231,6 +294,12 @@ export default function HomeScreen({ navigation }: any) {
             <Text style={styles.title}>FinanceFlow</Text>
             <Text style={styles.subtitle}>Controle Financeiro</Text>
           </View>
+          <TouchableOpacity 
+            style={styles.settingsBtn} 
+            onPress={() => setConfigModalVisible(true)}
+          >
+            <Ionicons name="settings-sharp" size={22} color="#fff" />
+          </TouchableOpacity>
         </View>
 
         {/* Summary Cards */}
@@ -313,36 +382,39 @@ export default function HomeScreen({ navigation }: any) {
 
       {/* Quick Actions */}
       <View style={styles.quickActions}>
-        <TouchableOpacity
-          style={styles.quickBtn}
-          onPress={() => navigation.navigate('RecurringBill')}
-        >
+        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('Income')}>
+          <View style={[styles.quickBtnIcon, { backgroundColor: '#fdf4ff' }]}>
+            <Ionicons name="cash" size={16} color="#c026d3" />
+          </View>
+          <Text style={styles.quickBtnText}>Rendas</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('Insights')}>
+          <View style={[styles.quickBtnIcon, { backgroundColor: '#fff1f2' }]}>
+            <Ionicons name="heart" size={16} color="#e11d48" />
+          </View>
+          <Text style={styles.quickBtnText}>Saúde</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('RecurringBill')}>
           <View style={[styles.quickBtnIcon, { backgroundColor: '#f5f3ff' }]}>
             <Ionicons name="repeat" size={16} color="#8b5cf6" />
           </View>
-          <Text style={styles.quickBtnText}>Recorrente</Text>
+          <Text style={styles.quickBtnText}>Fixo</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.quickBtn}
-          onPress={() => navigation.navigate('Payment')}
-        >
-          <View style={[styles.quickBtnIcon, { backgroundColor: '#ecfdf5' }]}>
-            <Ionicons name="wallet" size={16} color="#10b981" />
-          </View>
-          <Text style={styles.quickBtnText}>Pagar</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.quickBtn}
-          onPress={() => navigation.navigate('Details')}
-        >
+        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('Details')}>
           <View style={[styles.quickBtnIcon, { backgroundColor: '#eff6ff' }]}>
             <Ionicons name="add" size={16} color="#3b82f6" />
           </View>
           <Text style={styles.quickBtnText}>Nova</Text>
         </TouchableOpacity>
       </View>
+    </View>
+  );
+
+  return (
+    <View style={styles.container}>
 
       {/* Bill List */}
       {loading ? (
@@ -352,6 +424,7 @@ export default function HomeScreen({ navigation }: any) {
           data={sortedBills}
           keyExtractor={(item) => item.id}
           renderItem={renderBill}
+          ListHeaderComponent={renderHeader}
           contentContainerStyle={styles.listContainer}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#6366f1']} />}
           ListEmptyComponent={
@@ -382,6 +455,54 @@ export default function HomeScreen({ navigation }: any) {
       >
         <Ionicons name="add" size={28} color="#fff" />
       </TouchableOpacity>
+
+      <Modal visible={configModalVisible} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <Text style={styles.modalTitle}>Configuração Inicial</Text>
+            <Text style={styles.modalSub}>
+              Para usar os recursos avançados de finanças, precisaremos de um ponto de partida.
+            </Text>
+            
+            <Text style={styles.modalLabel}>Qual o seu saldo agora?</Text>
+            <View style={styles.inputWrapper}>
+              <Text style={styles.currencyPrefix}>R$</Text>
+              <TextInput
+                style={styles.modalInputAmount}
+                keyboardType="numeric"
+                placeholder="0,00"
+                value={initialBalance}
+                onChangeText={handleBalanceChange}
+              />
+            </View>
+
+            <Text style={styles.modalLabel}>Qual sua meta para Reserva de Emergência?</Text>
+            <View style={styles.inputWrapper}>
+              <Text style={styles.currencyPrefix}>R$</Text>
+              <TextInput
+                style={styles.modalInputAmount}
+                keyboardType="numeric"
+                placeholder="0,00"
+                value={emergencyGoal}
+                onChangeText={handleGoalChange}
+              />
+            </View>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setConfigModalVisible(false)}
+              >
+                <Text style={styles.cancelBtnText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalBtn, { flex: 2, marginTop: 0 }]} onPress={saveSettings}>
+                <Text style={styles.modalBtnText}>Salvar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
@@ -411,6 +532,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+  },
+  settingsBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   title: {
     fontSize: 26,
@@ -715,5 +844,153 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.4,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
+  },
+
+  // Wallet
+  walletCard: {
+    backgroundColor: '#fff',
+    marginHorizontal: 16,
+    marginTop: 14,
+    borderRadius: 14,
+    padding: 16,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  walletHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  walletTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#1e293b',
+    marginLeft: 6,
+  },
+  walletRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  walletLabel: {
+    fontSize: 12,
+    color: '#64748b',
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  walletValue: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#1e293b',
+  },
+  insightBox: {
+    backgroundColor: '#fffbeb',
+    borderRadius: 8,
+    padding: 10,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  insightText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#92400e',
+    lineHeight: 18,
+  },
+
+  // Config Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 24,
+    elevation: 10,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#1e293b',
+    marginBottom: 8,
+  },
+  modalSub: {
+    fontSize: 13,
+    color: '#64748b',
+    marginBottom: 20,
+    lineHeight: 18,
+  },
+  modalLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#475569',
+    marginBottom: 6,
+    marginTop: 12,
+  },
+  modalInput: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    padding: 14,
+    fontSize: 15,
+    color: '#1e293b',
+    minHeight: 52,
+  },
+  modalInputAmount: {
+    flex: 1,
+    padding: 14,
+    fontSize: 15,
+    color: '#1e293b',
+  },
+  inputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingLeft: 12,
+  },
+  currencyPrefix: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#64748b',
+    marginRight: 4,
+  },
+  modalBtn: {
+    backgroundColor: '#4f46e5',
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 24,
+  },
+  modalBtnText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 16,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 24,
+    gap: 12,
+  },
+  cancelBtn: {
+    flex: 1,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+  },
+  cancelBtnText: {
+    color: '#64748b',
+    fontWeight: '700',
   },
 });

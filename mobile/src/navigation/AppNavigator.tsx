@@ -5,6 +5,8 @@ import DetailScreen from '../screens/DetailScreen';
 import RecurringBillScreen from '../screens/RecurringBillScreen';
 import PaymentScreen from '../screens/PaymentScreen';
 import BillHistoryScreen from '../screens/BillHistoryScreen';
+import IncomeScreen from '../screens/IncomeScreen';
+import InsightsScreen from '../screens/InsightsScreen';
 
 const Stack = createStackNavigator();
 
@@ -38,6 +40,22 @@ export default function AppNavigator() {
         component={BillHistoryScreen} 
         options={{ 
           title: 'Detalhes da Conta',
+          headerStyle: { backgroundColor: '#4f46e5' },
+        }} 
+      />
+      <Stack.Screen 
+        name="Income" 
+        component={IncomeScreen} 
+        options={{ 
+          title: 'Minhas Rendas',
+          headerStyle: { backgroundColor: '#10b981' },
+        }} 
+      />
+      <Stack.Screen 
+        name="Insights" 
+        component={InsightsScreen} 
+        options={{ 
+          title: 'Saúde Financeira',
           headerStyle: { backgroundColor: '#4f46e5' },
         }} 
       />
