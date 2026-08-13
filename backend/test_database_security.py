@@ -13,6 +13,24 @@ def test_storage_client_requires_service_role(monkeypatch):
         database.get_supabase_storage_client()
 
 
+def test_user_scoped_client_requires_access_token():
+    with pytest.raises(ValueError, match="access token"):
+        database.get_user_supabase_client("")
+
+
+@patch("database.create_client")
+def test_user_scoped_client_sets_postgrest_bearer_token(mock_create_client, monkeypatch):
+    monkeypatch.setattr(database, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(database, "SUPABASE_KEY", "publishable-test-key")
+    client = mock_create_client.return_value
+
+    result = database.get_user_supabase_client("verified-user-jwt")
+
+    mock_create_client.assert_called_once_with("https://example.supabase.co", "publishable-test-key")
+    client.postgrest.auth.assert_called_once_with("verified-user-jwt")
+    assert result is client
+
+
 @patch("database.get_supabase_storage_client")
 def test_new_receipt_bucket_is_created_private(mock_get_storage):
     client = mock_get_storage.return_value
