@@ -32,6 +32,35 @@ def test_calculate_balances_supports_negative_balance_without_float_drift():
     assert result["estimated_surplus"] == Decimal("-0.60")
 
 
+def test_calculate_balances_handles_large_allowed_values_exactly():
+    result = calculate_balances(
+        initial_balance="1000000.00",
+        incomes=["1000000.00", "999999.99"],
+        paid_bills=["999999.98"],
+        emergency_fund_balance="500000.01",
+        pending_bills=["750000.00", "0.01"],
+    )
+
+    assert result == {
+        "current_balance": Decimal("1500000.00"),
+        "estimated_surplus": Decimal("749999.99"),
+    }
+
+
+def test_calculate_balances_normalizes_each_external_money_value_before_totalling():
+    result = calculate_balances(
+        initial_balance="0",
+        incomes=["0.005", "0.005"],
+        paid_bills=[],
+        emergency_fund_balance="0",
+        pending_bills=[],
+    )
+
+    # Each independently supplied monetary value crosses the currency boundary
+    # before aggregation, so each 0.005 becomes 0.01 under ROUND_HALF_UP.
+    assert result["current_balance"] == Decimal("0.02")
+
+
 def test_add_to_reserve_rounds_once_at_currency_boundary():
     assert add_to_reserve("10.00", "0.005") == Decimal("10.01")
 
