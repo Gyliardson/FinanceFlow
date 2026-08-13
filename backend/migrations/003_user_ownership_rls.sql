@@ -3,18 +3,21 @@
 -- Security posture after this migration:
 -- * anonymous Data API access has no permissive policy;
 -- * authenticated users may only access rows whose owner_id equals auth.uid();
--- * existing rows with NULL owner_id become inaccessible until explicitly backfilled;
+-- * new authenticated inserts default owner_id to auth.uid(), while RLS prevents
+--   clients from forging another user's owner_id;
+-- * existing rows receive NULL because the migration runs without an end-user JWT
+--   and therefore remain inaccessible until explicitly backfilled;
 -- * owner_id remains nullable temporarily so an operator can perform an auditable
 --   service-role/manual backfill before migration 004 enforces NOT NULL.
 
 ALTER TABLE finance_bills
-    ADD COLUMN IF NOT EXISTS owner_id UUID REFERENCES auth.users(id) ON DELETE CASCADE;
+    ADD COLUMN IF NOT EXISTS owner_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE;
 
 ALTER TABLE finance_incomes
-    ADD COLUMN IF NOT EXISTS owner_id UUID REFERENCES auth.users(id) ON DELETE CASCADE;
+    ADD COLUMN IF NOT EXISTS owner_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE;
 
 ALTER TABLE finance_user_settings
-    ADD COLUMN IF NOT EXISTS owner_id UUID REFERENCES auth.users(id) ON DELETE CASCADE;
+    ADD COLUMN IF NOT EXISTS owner_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE;
 
 CREATE INDEX IF NOT EXISTS ix_finance_bills_owner_id
     ON finance_bills(owner_id);
