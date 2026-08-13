@@ -5,6 +5,9 @@ import pytest
 import database
 from request_context import bind_request_client, reset_request_client
 
+OWNER_ID = "11111111-1111-1111-1111-111111111111"
+BILL_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
 
 def test_storage_client_requires_service_role(monkeypatch):
     monkeypatch.setattr(database, "SUPABASE_URL", "https://example.supabase.co")
@@ -42,6 +45,28 @@ def test_bound_request_client_takes_precedence_over_anonymous_client(mock_create
         reset_request_client(token)
 
     mock_create_client.assert_not_called()
+
+
+def test_receipt_object_key_is_owner_and_bill_scoped():
+    key = database.build_receipt_object_key(OWNER_ID, BILL_ID, ".PDF")
+
+    owner, bill, filename = key.split("/")
+    assert owner == OWNER_ID
+    assert bill == BILL_ID
+    assert filename.endswith(".pdf")
+    assert len(filename.removesuffix(".pdf")) == 32
+
+
+def test_receipt_object_key_rejects_invalid_identifiers():
+    with pytest.raises(ValueError):
+        database.build_receipt_object_key("not-a-uuid", BILL_ID, "pdf")
+    with pytest.raises(ValueError):
+        database.build_receipt_object_key(OWNER_ID, "not-a-uuid", "pdf")
+
+
+def test_receipt_object_key_rejects_invalid_extension():
+    with pytest.raises(ValueError, match="extension"):
+        database.build_receipt_object_key(OWNER_ID, BILL_ID, "pdf!")
 
 
 @patch("database.get_supabase_storage_client")
