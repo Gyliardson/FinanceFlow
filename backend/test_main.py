@@ -26,6 +26,13 @@ def test_health_check():
 def test_protected_route_rejects_missing_api_key():
     response = client.get("/bills")
     assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized – invalid or missing API key."}
+
+
+def test_protected_route_rejects_invalid_api_key():
+    response = client.get("/bills", headers={"X-API-KEY": "wrong-key"})
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized – invalid or missing API key."}
 
 
 @patch("main.get_supabase_client")
