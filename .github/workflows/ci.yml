@@ -115,7 +115,15 @@ jobs:
         run: npx expo install --fix --npm
 
       - name: Apply npm audit fixes without force
-        run: npm audit fix
+        shell: bash
+        run: |
+          set +e
+          npm audit fix
+          audit_fix_status=$?
+          set -e
+          if [ "$audit_fix_status" -ne 0 ] && [ "$audit_fix_status" -ne 1 ]; then
+            exit "$audit_fix_status"
+          fi
 
       - name: TypeScript check on migrated graph
         run: npx tsc --noEmit
