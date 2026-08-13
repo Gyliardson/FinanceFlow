@@ -114,6 +114,11 @@ jobs:
           CI: '1'
         run: npx expo install --fix --npm
 
+      - name: Install required native peers
+        env:
+          CI: '1'
+        run: npx expo install expo-font react-native-gesture-handler --npm
+
       - name: Apply npm audit fixes without force
         shell: bash
         run: |
