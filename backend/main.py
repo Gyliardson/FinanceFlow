@@ -8,10 +8,18 @@ import asyncio
 import os
 import uuid
 import logging
+from decimal import Decimal
 from datetime import datetime, date, timedelta
 
 from database import get_supabase_client, get_supabase_storage_client, ensure_receipts_bucket
 from ai_service import extract_invoice_data, generate_financial_insights
+from financial_math import (
+    add_to_reserve as calculate_reserve_addition,
+    amounts_within_percentage,
+    calculate_balances,
+)
+from money import money, money_to_storage
+from recurrence import recurring_due_date
 
 # ===========================================================================
 # Static API Key Authentication Middleware
@@ -45,6 +53,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+MAX_MONEY = Decimal("1000000.00")
+MIN_SIGNED_MONEY = Decimal("-1000000.00")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -84,7 +95,7 @@ class HealthResponse(BaseModel):
 
 class BillCreateRequest(BaseModel):
     description: str = Field(..., max_length=150)
-    amount: float = Field(..., gt=0, le=1000000)
+    amount: Decimal = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
     due_date: str
     barcode: Optional[str] = Field(None, max_length=255)
     status: str = "pending"
@@ -93,31 +104,31 @@ class RecurringBillCreateRequest(BaseModel):
     """Request body para criar uma conta recorrente (template)."""
     title: str = Field(..., max_length=100)
     description: Optional[str] = Field(None, max_length=255)
-    amount: float = Field(..., gt=0, le=1000000)
+    amount: Decimal = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
     recurring_day: int  # Dia do mês (1-31)
     frequency: str = "monthly"  # 'monthly', 'weekly', etc.
 
 class BillValidationRequest(BaseModel):
     bill_id: str
-    ocr_amount: Optional[float] = None
+    ocr_amount: Optional[Decimal] = None
     ocr_due_date: Optional[str] = None
     ocr_barcode: Optional[str] = None
 
 class IncomeCreateRequest(BaseModel):
     title: str = Field(..., max_length=100)
-    amount: float = Field(..., gt=0, le=1000000)
+    amount: Decimal = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
     date: str
     description: Optional[str] = Field(None, max_length=255)
     type: str = "salary"
     is_recurring: bool = False
 
 class SettingsUpdateRequest(BaseModel):
-    initial_balance: float = Field(..., ge=-1000000, le=1000000)
+    initial_balance: Decimal = Field(..., ge=MIN_SIGNED_MONEY, le=MAX_MONEY)
     initial_balance_date: str
-    emergency_fund_goal: float = Field(..., ge=0, le=1000000)
+    emergency_fund_goal: Decimal = Field(..., ge=Decimal("0.00"), le=MAX_MONEY)
 
 class ReserveAddRequest(BaseModel):
-    amount: float = Field(..., gt=0, le=1000000)
+    amount: Decimal = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
 
 
 # ===========================================================================
@@ -182,7 +193,7 @@ async def add_bill(req: BillCreateRequest):
         supabase = get_supabase_client()
         data = {
             "description": req.description,
-            "amount": req.amount,
+            "amount": money_to_storage(req.amount),
             "due_date": req.due_date,
             "barcode": req.barcode if req.barcode else None,
             "status": req.status
@@ -207,30 +218,11 @@ async def create_recurring_bill(req: RecurringBillCreateRequest, background_task
     
     try:
         supabase = get_supabase_client()
-        
-        # Calcula a primeira data de vencimento (próximo mês ou mês atual caso o dia ainda não tenha passado)
-        today = date.today()
-        try:
-            first_due = date(today.year, today.month, req.recurring_day)
-        except ValueError:
-            # Mês não tem esse dia (ex: 31 em fevereiro): usa último dia do mês
-            import calendar
-            last_day = calendar.monthrange(today.year, today.month)[1]
-            first_due = date(today.year, today.month, last_day)
-        
-        if first_due <= today:
-            # Se o dia já passou no mês atual (ou é hoje), pula para o próximo mês
-            # Isso evita que o sistema crie faturas "vencidas" logo no cadastro inicial.
-            if today.month == 12:
-                first_due = date(today.year + 1, 1, min(req.recurring_day, 31))
-            else:
-                import calendar
-                last_day_next = calendar.monthrange(today.year, today.month + 1)[1]
-                first_due = date(today.year, today.month + 1, min(req.recurring_day, last_day_next))
+        first_due = recurring_due_date(req.recurring_day, date.today())
         
         data = {
             "description": req.title,
-            "amount": req.amount,
+            "amount": money_to_storage(req.amount),
             "due_date": str(first_due),
             "barcode": req.description,  # Usar campo barcode para guardar a descrição extra
             "status": "pending",
@@ -306,31 +298,11 @@ async def generate_recurring_instances():
         
         generated = []
         to_insert = []
-        
-        import calendar
-        last_day = calendar.monthrange(today.year, today.month)[1]
 
         # 3. Identificar quais instâncias precisam ser criadas
         for template in templates:
             recurring_day = template.get("recurring_day", 1)
-            
-            # Verificar data do mês atual
-            last_day_this = calendar.monthrange(today.year, today.month)[1]
-            due_this_month = date(today.year, today.month, min(recurring_day, last_day_this))
-            
-            # Regra: se hoje < dia do vencimento, gera para este mês.
-            # Se hoje >= dia do vencimento, pula para o próximo mês.
-            if today < due_this_month:
-                target_date = due_this_month
-            else:
-                # Calcular próximo mês
-                if today.month == 12:
-                    y, m = today.year + 1, 1
-                else:
-                    y, m = today.year, today.month + 1
-                last_day_next = calendar.monthrange(y, m)[1]
-                target_date = date(y, m, min(recurring_day, last_day_next))
-
+            target_date = recurring_due_date(recurring_day, today)
             target_suffix = f"{target_date.month:02d}/{target_date.year}"
             month_label = f"{template['description']} - {target_suffix}"
             
@@ -338,7 +310,7 @@ async def generate_recurring_instances():
             if (template["id"], str(target_date)) not in existing_instances:
                 instance = {
                     "description": month_label,
-                    "amount": template["amount"],
+                    "amount": money_to_storage(template["amount"]),
                     "due_date": str(target_date),
                     "status": "pending",
                     "parent_bill_id": template["id"],
@@ -562,6 +534,7 @@ async def add_income(req: IncomeCreateRequest):
     try:
         supabase = get_supabase_client()
         data = req.model_dump()
+        data["amount"] = money_to_storage(req.amount)
         response = supabase.table("finance_incomes").insert(data).execute()
         return {"status": "success", "data": response.data}
     except Exception as e:
@@ -584,6 +557,8 @@ async def update_settings(req: SettingsUpdateRequest):
         supabase = get_supabase_client()
         response = supabase.table("finance_user_settings").select("id").limit(1).execute()
         data = req.model_dump()
+        data["initial_balance"] = money_to_storage(req.initial_balance)
+        data["emergency_fund_goal"] = money_to_storage(req.emergency_fund_goal)
         
         # O backend atualiza `updated_at` automaticamente caso pudesse, mas vamo setar manually só p garantir
         data["updated_at"] = str(datetime.now())
@@ -598,18 +573,12 @@ async def update_settings(req: SettingsUpdateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 def _calculate_financials(supabase, settings):
-    initial_balance = float(settings.get("initial_balance", 0.0))
-    emergency_fund_goal = float(settings.get("emergency_fund_goal", 0.0))
-    emergency_fund_balance = float(settings.get("emergency_fund_balance", 0.0))
     initial_date = settings.get("initial_balance_date", "2000-01-01")
+    emergency_fund_goal = money(settings.get("emergency_fund_goal", "0.00"))
+    emergency_fund_balance = money(settings.get("emergency_fund_balance", "0.00"))
     
     incomes_resp = supabase.table("finance_incomes").select("amount").gte("date", initial_date).execute()
-    total_income = sum(float(inc["amount"]) for inc in (incomes_resp.data or []))
-    
     paid_bills_resp = supabase.table("finance_bills").select("amount").eq("status", "paid").gte("payment_date", initial_date).execute()
-    total_paid = sum(float(b["amount"]) for b in (paid_bills_resp.data or []))
-    
-    current_balance = initial_balance + total_income - total_paid - emergency_fund_balance
     
     today = date.today()
     import calendar
@@ -617,12 +586,17 @@ def _calculate_financials(supabase, settings):
     end_of_month = date(today.year, today.month, last_day)
     
     pending_bills_resp = supabase.table("finance_bills").select("amount").in_("status", ["pending", "overdue"]).lte("due_date", str(end_of_month)).execute()
-    total_pending = sum(float(b["amount"]) for b in (pending_bills_resp.data or []))
-    
-    estimated_surplus = current_balance - total_pending
+
+    balances = calculate_balances(
+        initial_balance=settings.get("initial_balance", "0.00"),
+        incomes=[inc["amount"] for inc in (incomes_resp.data or [])],
+        paid_bills=[bill["amount"] for bill in (paid_bills_resp.data or [])],
+        emergency_fund_balance=emergency_fund_balance,
+        pending_bills=[bill["amount"] for bill in (pending_bills_resp.data or [])],
+    )
     return {
-        "current_balance": current_balance,
-        "estimated_surplus": estimated_surplus,
+        "current_balance": balances["current_balance"],
+        "estimated_surplus": balances["estimated_surplus"],
         "emergency_fund_goal": emergency_fund_goal,
         "emergency_fund_balance": emergency_fund_balance
     }
@@ -749,11 +723,13 @@ async def add_to_reserve(req: ReserveAddRequest):
             raise HTTPException(status_code=400, detail="Configurações (Saldo Inicial) não encontradas.")
         
         settings = settings_resp.data[0]
-        current_reserve = float(settings.get("emergency_fund_balance", 0.0))
-        new_reserve = current_reserve + req.amount
+        new_reserve = calculate_reserve_addition(
+            settings.get("emergency_fund_balance", "0.00"),
+            req.amount,
+        )
         
         updated = supabase.table("finance_user_settings").update({
-            "emergency_fund_balance": new_reserve
+            "emergency_fund_balance": money_to_storage(new_reserve)
         }).eq("id", settings["id"]).execute()
         
         return {
@@ -968,9 +944,7 @@ async def validate_bill(req: BillValidationRequest):
         # --- Motor Base de Validação Heurística ---
         is_amount_valid = False
         if req.ocr_amount is not None:
-            val_diff = abs(float(bill["amount"]) - req.ocr_amount)
-            if val_diff <= float(bill["amount"]) * 0.05:
-                is_amount_valid = True
+            is_amount_valid = amounts_within_percentage(bill["amount"], req.ocr_amount)
                 
         is_date_valid = False
         if req.ocr_due_date is not None and bill.get("due_date"):
