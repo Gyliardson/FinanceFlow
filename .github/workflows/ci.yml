@@ -114,6 +114,9 @@ jobs:
           CI: '1'
         run: npx expo install --fix --npm
 
+      - name: Apply npm audit fixes without force
+        run: npm audit fix
+
       - name: TypeScript check on migrated graph
         run: npx tsc --noEmit
 
