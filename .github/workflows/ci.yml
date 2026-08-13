@@ -169,6 +169,35 @@ jobs:
           generated_count=$(psql -Atc "SELECT count(*) FROM finance_bills WHERE parent_bill_id = 'template-race' AND due_date = DATE '2026-09-10';")
           test "$generated_count" = "1"
 
+      - name: Bulk conflict rolls back and retry recovers missing instance
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO finance_bills (id, parent_bill_id, due_date, is_recurring)
+          VALUES
+            ('template-partial', NULL, DATE '2026-08-01', true),
+            ('partial-existing', 'template-partial', DATE '2026-09-20', false);
+          SQL
+
+          if psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO finance_bills (id, parent_bill_id, due_date, is_recurring)
+          VALUES
+            ('partial-conflict', 'template-partial', DATE '2026-09-20', false),
+            ('partial-new', 'template-partial', DATE '2026-10-20', false);
+          SQL
+          then
+            echo 'Bulk insert unexpectedly succeeded despite a uniqueness conflict.' >&2
+            exit 1
+          fi
+
+          rolled_back_count=$(psql -Atc "SELECT count(*) FROM finance_bills WHERE id = 'partial-new';")
+          test "$rolled_back_count" = "0"
+
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills (id, parent_bill_id, due_date, is_recurring) VALUES ('partial-retry', 'template-partial', DATE '2026-10-20', false);"
+          recovered_count=$(psql -Atc "SELECT count(*) FROM finance_bills WHERE parent_bill_id = 'template-partial' AND due_date = DATE '2026-10-20';")
+          test "$recovered_count" = "1"
+
       - name: Upload PostgreSQL race diagnostics
         if: always()
         uses: actions/upload-artifact@v4
