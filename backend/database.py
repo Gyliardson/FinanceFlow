@@ -1,5 +1,7 @@
 import logging
 import os
+import re
+import uuid
 
 from dotenv import load_dotenv
 from supabase import Client, create_client
@@ -12,6 +14,7 @@ logger = logging.getLogger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+_RECEIPT_EXTENSION = re.compile(r"^[a-z0-9]{1,8}$")
 
 
 def _require_public_config() -> tuple[str, str]:
@@ -52,6 +55,16 @@ def get_user_supabase_client(access_token: str) -> Client:
     client = create_client(url, key)
     client.postgrest.auth(access_token)
     return client
+
+
+def build_receipt_object_key(owner_id: str, bill_id: str, extension: str) -> str:
+    """Build an opaque receipt key from validated identifiers, never a user filename."""
+    safe_owner = str(uuid.UUID(str(owner_id)))
+    safe_bill = str(uuid.UUID(str(bill_id)))
+    safe_extension = extension.lower().lstrip(".")
+    if not _RECEIPT_EXTENSION.fullmatch(safe_extension):
+        raise ValueError("Unsupported receipt file extension.")
+    return f"{safe_owner}/{safe_bill}/{uuid.uuid4().hex}.{safe_extension}"
 
 
 def get_supabase_storage_client() -> Client:
