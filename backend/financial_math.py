@@ -34,3 +34,27 @@ def add_to_reserve(current_reserve: MoneyInput, amount: MoneyInput) -> Decimal:
     if increment <= 0:
         raise ValueError("Reserve increment must be greater than zero")
     return money(money(current_reserve) + increment)
+
+
+def amounts_within_percentage(
+    reference: MoneyInput,
+    observed: MoneyInput,
+    *,
+    tolerance: Decimal = Decimal("0.05"),
+) -> bool:
+    """Compare two monetary values with exact decimal percentage arithmetic.
+
+    FinanceFlow uses this for OCR-vs-record validation. Inputs cross the same
+    canonical currency boundary as persisted money before comparison, and the
+    tolerance itself is Decimal so no binary-float error can move a value across
+    the acceptance boundary.
+    """
+    reference_amount = money(reference)
+    observed_amount = money(observed)
+    if reference_amount < 0:
+        raise ValueError("Reference amount must not be negative")
+    if tolerance < 0:
+        raise ValueError("Tolerance must not be negative")
+
+    difference = abs(reference_amount - observed_amount)
+    return difference <= reference_amount * tolerance
