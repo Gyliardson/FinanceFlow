@@ -201,7 +201,7 @@ jobs:
           INSERT INTO finance_incomes(id,owner_id) VALUES ('income-a','$user_a'),('income-b','$user_b');
           INSERT INTO finance_user_settings(id,owner_id) VALUES ('settings-a','$user_a'),('settings-b','$user_b');
           SQL
-          visible=$(psql -Atv ON_ERROR_STOP=1 <<SQL
+          visible=$(psql -Atqv ON_ERROR_STOP=1 <<SQL
           SELECT set_config('request.jwt.claim.sub','$user_a',false);
           SET ROLE rls_probe;
           SELECT string_agg(id,',' ORDER BY id) FROM finance_bills;
@@ -215,7 +215,7 @@ jobs:
           INSERT INTO finance_bills(id,owner_id) VALUES ('forged-bill','$user_b');
           SQL
           then exit 1; fi
-          changed=$(psql -Atv ON_ERROR_STOP=1 <<SQL
+          changed=$(psql -Atqv ON_ERROR_STOP=1 <<SQL
           SELECT set_config('request.jwt.claim.sub','$user_a',false);
           SET ROLE rls_probe;
           UPDATE finance_bills SET id='tampered-bill-b' WHERE id='bill-b';
@@ -305,3 +305,5 @@ jobs:
           fetch-depth: 0
       - name: Scan repository history for secrets
         uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
