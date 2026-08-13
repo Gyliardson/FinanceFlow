@@ -84,6 +84,56 @@ jobs:
       - name: TypeScript check
         run: npx tsc --noEmit
 
+  expo57-probe:
+    name: Expo SDK 57 migration probe
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.13.0'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install current dependencies
+        run: npm ci
+
+      - name: Move core runtime to Expo SDK 57
+        env:
+          CI: '1'
+        run: npm install expo@~57.0.12 react@19.2.3 react-dom@19.2.3 react-native@0.86.0
+
+      - name: Align Expo-managed dependencies
+        env:
+          CI: '1'
+        run: npx expo install --fix --npm
+
+      - name: TypeScript check on migrated graph
+        run: npx tsc --noEmit
+
+      - name: Expo doctor
+        run: npx expo-doctor
+
+      - name: Audit migrated mobile dependencies
+        run: npm audit --audit-level=high --json > npm-audit-expo57.json
+
+      - name: Upload migration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: expo57-migration-probe
+          path: |
+            mobile/package.json
+            mobile/package-lock.json
+            mobile/npm-audit-expo57.json
+          if-no-files-found: warn
+
   dependency-audit:
     name: Dependency audit
     runs-on: ubuntu-latest
