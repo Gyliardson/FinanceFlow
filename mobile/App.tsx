@@ -9,7 +9,7 @@ import { requestNotificationPermissions } from './src/services/NotificationServi
 export default function App() {
   useEffect(() => {
     if (Platform.OS === 'android') {
-      NavigationBar.setHidden(true);
+      NavigationBar.setVisibilityAsync('hidden');
     }
 
     // Solicitar permissão de notificações
