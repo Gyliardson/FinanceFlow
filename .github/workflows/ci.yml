@@ -81,18 +81,42 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Python audit tooling
+        run: python -m pip install --upgrade pip pip-audit
+
       - name: Audit Python dependencies
-        run: |
-          python -m pip install --upgrade pip pip-audit
-          pip-audit -r backend/requirements.txt
+        run: pip-audit -r backend/requirements.txt --format json --output pip-audit.json
+
+      - name: Upload Python audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: pip-audit.json
+          if-no-files-found: warn
 
       - name: Setup Node.js
+        if: always()
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: mobile/package-lock.json
 
-      - name: Audit mobile dependencies
+      - name: Install mobile dependencies for audit
+        if: always()
         working-directory: mobile
-        run: npm audit --audit-level=high
+        run: npm ci --ignore-scripts
+
+      - name: Audit mobile dependencies
+        if: always()
+        working-directory: mobile
+        run: npm audit --audit-level=high --json > npm-audit.json
+
+      - name: Upload mobile audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: mobile/npm-audit.json
+          if-no-files-found: warn
