@@ -4,6 +4,8 @@ import os
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+from request_context import get_request_client
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -19,11 +21,14 @@ def _require_public_config() -> tuple[str, str]:
 
 
 def get_supabase_client() -> Client:
-    """Return the publishable-key Data/Auth client.
+    """Return the authenticated request client when available.
 
-    The publishable key is not a secret. Data access is safe only when an
-    authenticated user context and restrictive RLS/owner predicates are applied.
+    Outside a protected request this falls back to a publishable-key client,
+    which remains constrained by RLS and has no service-role privileges.
     """
+    request_client = get_request_client()
+    if request_client is not None:
+        return request_client
     url, key = _require_public_config()
     return create_client(url, key)
 
