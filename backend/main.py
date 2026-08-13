@@ -1,18 +1,19 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
-from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
-import asyncio
+from datetime import date, datetime
+from decimal import Decimal
+import logging
 import os
 import uuid
-import logging
-from decimal import Decimal
-from datetime import datetime, date, timedelta
+from typing import Annotated, Optional
 
-from database import get_supabase_client, get_supabase_storage_client, ensure_receipts_bucket
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, BeforeValidator, Field
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
 from ai_service import extract_invoice_data, generate_financial_insights
+from database import get_supabase_client, get_supabase_storage_client, ensure_receipts_bucket
 from financial_math import (
     add_to_reserve as calculate_reserve_addition,
     amounts_within_percentage,
@@ -21,16 +22,18 @@ from financial_math import (
 from money import money, money_to_storage
 from recurrence import recurring_due_date
 
-# ===========================================================================
-# Static API Key Authentication Middleware
-# ===========================================================================
-API_KEY = os.getenv("API_SECRET_KEY", "")
+logger = logging.getLogger(__name__)
 
-# Routes that don't require authentication (health checks)
+API_KEY = os.getenv("API_SECRET_KEY", "")
 PUBLIC_PATHS = {"/", "/health", "/healthz", "/docs", "/openapi.json", "/redoc"}
+MAX_MONEY = Decimal("1000000.00")
+MIN_SIGNED_MONEY = Decimal("-1000000.00")
+CanonicalMoney = Annotated[Decimal, BeforeValidator(money)]
+
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
-    """Rejects any request without a valid X-API-KEY header (except public routes)."""
+    """Reject requests without a valid API key, except public health/docs routes."""
+
     async def dispatch(self, request: Request, call_next):
         if request.url.path in PUBLIC_PATHS or request.method == "OPTIONS":
             return await call_next(request)
@@ -39,137 +42,110 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if not API_KEY or provided_key != API_KEY:
             return JSONResponse(
                 status_code=401,
-                content={"detail": "Unauthorized – invalid or missing API key."}
+                content={"detail": "Unauthorized – invalid or missing API key."},
             )
         return await call_next(request)
-# ===========================================================================
-# Módulos de Scraping (Inativos - Apenas para Portfólio/Demonstração)
-# ===========================================================================
-# from dasmei_scraper import scrape_dasmei
-# from unopar_scraper import scrape_unopar
-# from imap_scraper import scrape_vivo_email
-# from tim_scraper import scrape_tim
-# from scheduler import start_scheduler
-from typing import Optional
 
-logger = logging.getLogger(__name__)
-
-MAX_MONEY = Decimal("1000000.00")
-MIN_SIGNED_MONEY = Decimal("-1000000.00")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Garantir que o bucket de comprovantes exista
     ensure_receipts_bucket()
-    # O scheduler foi temporariamente desativado, junto com o scraping no Frontend.
-    # scheduler_task = asyncio.create_task(start_scheduler())
+    # External scrapers/scheduler remain intentionally inactive. They are not
+    # registered as routes in the portfolio runtime.
     yield
-    # scheduler_task.cancel()
+
 
 app = FastAPI(
     title="FinanceFlow API",
     description="Backend API para automação e notificação de contas a pagar.",
     version="0.2.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
-# CORS config to allow mobile app to consume the API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restringir em produção
+    allow_origins=["*"],  # Restricted-origin policy is tracked with the auth/privacy work in #8.
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# API Key authentication (must be added AFTER CORS to allow preflight OPTIONS requests)
 app.add_middleware(APIKeyMiddleware)
 
-# ===========================================================================
-# Models
-# ===========================================================================
 
 class HealthResponse(BaseModel):
     status: str
     message: str
 
+
 class BillCreateRequest(BaseModel):
     description: str = Field(..., max_length=150)
-    amount: Decimal = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
+    amount: CanonicalMoney = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
     due_date: str
     barcode: Optional[str] = Field(None, max_length=255)
     status: str = "pending"
 
+
 class RecurringBillCreateRequest(BaseModel):
-    """Request body para criar uma conta recorrente (template)."""
     title: str = Field(..., max_length=100)
     description: Optional[str] = Field(None, max_length=255)
-    amount: Decimal = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
-    recurring_day: int  # Dia do mês (1-31)
-    frequency: str = "monthly"  # 'monthly', 'weekly', etc.
+    amount: CanonicalMoney = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
+    recurring_day: int = Field(..., ge=1, le=31)
+    frequency: str = "monthly"
+
 
 class BillValidationRequest(BaseModel):
     bill_id: str
-    ocr_amount: Optional[Decimal] = None
+    ocr_amount: Optional[CanonicalMoney] = None
     ocr_due_date: Optional[str] = None
     ocr_barcode: Optional[str] = None
 
+
 class IncomeCreateRequest(BaseModel):
     title: str = Field(..., max_length=100)
-    amount: Decimal = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
+    amount: CanonicalMoney = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
     date: str
     description: Optional[str] = Field(None, max_length=255)
     type: str = "salary"
     is_recurring: bool = False
 
+
 class SettingsUpdateRequest(BaseModel):
-    initial_balance: Decimal = Field(..., ge=MIN_SIGNED_MONEY, le=MAX_MONEY)
+    initial_balance: CanonicalMoney = Field(..., ge=MIN_SIGNED_MONEY, le=MAX_MONEY)
     initial_balance_date: str
-    emergency_fund_goal: Decimal = Field(..., ge=Decimal("0.00"), le=MAX_MONEY)
+    emergency_fund_goal: CanonicalMoney = Field(..., ge=Decimal("0.00"), le=MAX_MONEY)
+
 
 class ReserveAddRequest(BaseModel):
-    amount: Decimal = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
+    amount: CanonicalMoney = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
 
-
-# ===========================================================================
-# Health & Basic Routes
-# ===========================================================================
 
 @app.get("/", tags=["Health"])
 async def root():
     return {"message": "Bem-vindo à API do FinanceFlow"}
 
+
 @app.get("/healthz", tags=["Health"], response_model=HealthResponse)
 async def healthz_check():
     return HealthResponse(status="ok", message="Backend FinanceFlow operando normalmente")
 
+
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
-    """Verifica se a API está no ar."""
     return HealthResponse(status="ok", message="A API está operante e saudável.")
 
-# ===========================================================================
-# Bills (CRUD)
-# ===========================================================================
 
 @app.get("/bills", tags=["Bills"])
 async def get_bills():
-    """
-    Retorna as faturas cadastradas no Supabase. 
-    Inclui tanto avulsas quanto instâncias geradas de recorrentes.
-    """
     try:
         supabase = get_supabase_client()
         response = supabase.table("finance_bills").select("*").order("due_date", desc=True).execute()
         return {"data": response.data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.get("/bills/pending", tags=["Bills"])
 async def get_pending_bills():
-    """
-    Retorna apenas as faturas pendentes (não pagas) para a tela de conciliação.
-    """
     try:
         supabase = get_supabase_client()
         response = (
@@ -180,15 +156,12 @@ async def get_pending_bills():
             .execute()
         )
         return {"data": response.data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.post("/add-bill", tags=["Bills"])
 async def add_bill(req: BillCreateRequest):
-    """
-    Cadastra uma fatura inteiramente nova extraída via OCR de celular, 
-    ou simplesmente criada de modo estritamente manual pelo usuário mobile (Fase 5).
-    """
     try:
         supabase = get_supabase_client()
         data = {
@@ -196,56 +169,40 @@ async def add_bill(req: BillCreateRequest):
             "amount": money_to_storage(req.amount),
             "due_date": req.due_date,
             "barcode": req.barcode if req.barcode else None,
-            "status": req.status
+            "status": req.status,
         }
         response = supabase.table("finance_bills").insert(data).execute()
         return {"status": "success", "data": response.data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-# ===========================================================================
-# Recurring Bills (Contas Recorrentes)
-# ===========================================================================
 
 @app.post("/recurring-bills", tags=["Recurring Bills"])
 async def create_recurring_bill(req: RecurringBillCreateRequest, background_tasks: BackgroundTasks):
-    """
-    Cria um template de conta recorrente. Não cria a instância do mês — 
-    isso é feito automaticamente via /recurring-bills/generate.
-    """
-    if req.recurring_day < 1 or req.recurring_day > 31:
-        raise HTTPException(status_code=400, detail="O dia deve estar entre 1 e 31.")
-    
     try:
         supabase = get_supabase_client()
         first_due = recurring_due_date(req.recurring_day, date.today())
-        
         data = {
             "description": req.title,
             "amount": money_to_storage(req.amount),
             "due_date": str(first_due),
-            "barcode": req.description,  # Usar campo barcode para guardar a descrição extra
+            "barcode": req.description,
             "status": "pending",
             "is_recurring": True,
             "frequency": req.frequency,
             "recurring_day": req.recurring_day,
         }
         response = supabase.table("finance_bills").insert(data).execute()
-        
-        # Dispara a geração de instâncias em segundo plano para não travar a UI do celular
         background_tasks.add_task(generate_recurring_instances)
-            
         return {"status": "success", "data": response.data}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.get("/recurring-bills", tags=["Recurring Bills"])
 async def get_recurring_bills():
-    """
-    Retorna os templates de contas recorrentes.
-    """
     try:
         supabase = get_supabase_client()
         response = (
@@ -256,22 +213,16 @@ async def get_recurring_bills():
             .execute()
         )
         return {"data": response.data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.post("/recurring-bills/generate", tags=["Recurring Bills"])
 async def generate_recurring_instances():
-    """
-    Examina todos os templates recorrentes e gera instâncias pendentes 
-    para o mês atual, se ainda não existem.
-    Otimizado para evitar múltiplas consultas ao banco dentro de loops (N+1).
-    """
+    """Generate missing recurring children; PostgreSQL uniqueness is the final idempotency authority."""
     try:
         supabase = get_supabase_client()
         today = date.today()
-        month_suffix = f"{today.month:02d}/{today.year}"
-        
-        # 1. Buscar todos os templates recorrentes
         templates_resp = (
             supabase.table("finance_bills")
             .select("*")
@@ -279,87 +230,64 @@ async def generate_recurring_instances():
             .execute()
         )
         templates = templates_resp.data or []
-        
         if not templates:
             return {"status": "success", "message": "Nenhum template recorrente encontrado."}
 
-        # 2. Buscar TODAS as instâncias geradas (para evitar duplicatas independente do mês alvo)
         existing_resp = (
             supabase.table("finance_bills")
             .select("description", "due_date", "parent_bill_id")
             .not_.is_("parent_bill_id", "null")
             .execute()
         )
-        # Criar um set de (parent_id, due_date) para busca rápida
         existing_instances = {
-            (item["parent_bill_id"], item["due_date"]) 
+            (item["parent_bill_id"], item["due_date"])
             for item in (existing_resp.data or [])
         }
-        
-        generated = []
-        to_insert = []
 
-        # 3. Identificar quais instâncias precisam ser criadas
+        to_insert = []
         for template in templates:
-            recurring_day = template.get("recurring_day", 1)
-            target_date = recurring_due_date(recurring_day, today)
+            target_date = recurring_due_date(template.get("recurring_day", 1), today)
             target_suffix = f"{target_date.month:02d}/{target_date.year}"
-            month_label = f"{template['description']} - {target_suffix}"
-            
-            # Verificar se esta instância específica (mesmo template e mesma data) já existe
-            if (template["id"], str(target_date)) not in existing_instances:
-                instance = {
-                    "description": month_label,
+            if (template["id"], str(target_date)) in existing_instances:
+                continue
+            to_insert.append(
+                {
+                    "description": f"{template['description']} - {target_suffix}",
                     "amount": money_to_storage(template["amount"]),
                     "due_date": str(target_date),
                     "status": "pending",
                     "parent_bill_id": template["id"],
                     "is_recurring": False,
                 }
-                to_insert.append(instance)
+            )
 
-        # 4. Inserção em massa (Bulk Insert) se houver algo novo
+        generated = []
         if to_insert:
             result = supabase.table("finance_bills").insert(to_insert).execute()
             generated = result.data or []
-        
+
         return {
             "status": "success",
-            "message": f"{len(generated)} nova(s) instância(s) gerada(s) para {month_suffix}.",
-            "generated": generated
+            "message": f"{len(generated)} nova(s) instância(s) recorrente(s) gerada(s).",
+            "generated": generated,
         }
-    except Exception as e:
-        logger.error(f"Erro ao gerar instâncias recorrentes: {e}")
-        return {"status": "error", "message": str(e)}
+    except Exception as exc:
+        logger.error("Erro ao gerar instâncias recorrentes: %s", exc)
+        return {"status": "error", "message": str(exc)}
 
-# ===========================================================================
-# Bill Detail & History
-# ===========================================================================
 
 @app.get("/bills/{bill_id}/detail", tags=["Bills"])
 async def get_bill_detail(bill_id: str):
-    """
-    Retorna os detalhes completos de uma fatura e o histórico de pagamentos
-    relacionados (mesma descrição base ou parent_bill_id).
-    """
     try:
         supabase = get_supabase_client()
-
-        # Buscar a fatura principal
         bill_resp = supabase.table("finance_bills").select("*").eq("id", bill_id).execute()
         if not bill_resp.data:
             raise HTTPException(status_code=404, detail="Fatura não encontrada.")
 
         bill = bill_resp.data[0]
-
-        # Buscar faturas relacionadas (histórico)
-        # 1. Pelo parent_bill_id (instâncias de uma recorrente)
-        # 2. Pela descrição base (faturas avulsas com nomes parecidos)
-        related = []
-
         parent_id = bill.get("parent_bill_id")
+        related = []
         if parent_id:
-            # Buscar todas as instâncias do mesmo template recorrente
             siblings = (
                 supabase.table("finance_bills")
                 .select("*")
@@ -367,9 +295,8 @@ async def get_bill_detail(bill_id: str):
                 .order("due_date", desc=True)
                 .execute()
             )
-            related = [s for s in siblings.data if s["id"] != bill_id]
+            related = [row for row in siblings.data if row["id"] != bill_id]
         elif bill.get("is_recurring"):
-            # Se é o próprio template, buscar todas as instâncias geradas
             children = (
                 supabase.table("finance_bills")
                 .select("*")
@@ -379,9 +306,9 @@ async def get_bill_detail(bill_id: str):
             )
             related = children.data
         else:
-            # Fatura avulsa: buscar por descrição similar (base sem " - MM/YYYY")
             import re
-            base_desc = re.sub(r'\s*-\s*\d{2}/\d{4}$', '', bill["description"]).strip()
+
+            base_desc = re.sub(r"\s*-\s*\d{2}/\d{4}$", "", bill["description"]).strip()
             if base_desc and len(base_desc) >= 3:
                 all_bills = (
                     supabase.table("finance_bills")
@@ -390,135 +317,109 @@ async def get_bill_detail(bill_id: str):
                     .order("due_date", desc=True)
                     .execute()
                 )
-                related = [b for b in all_bills.data if b["id"] != bill_id]
+                related = [row for row in all_bills.data if row["id"] != bill_id]
 
-        return {
-            "bill": bill,
-            "history": related,
-            "history_count": len(related)
-        }
+        return {"bill": bill, "history": related, "history_count": len(related)}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-# ===========================================================================
-# Payment & Receipt (Pagamento e Comprovante)
-# ===========================================================================
 
 @app.post("/bills/{bill_id}/pay", tags=["Bills", "Payment"])
 async def pay_bill(bill_id: str, file: UploadFile = File(...)):
-    """
-    Marca uma fatura como paga e faz upload do comprovante no Supabase Storage.
-    
-    1. Faz upload da imagem para o bucket 'receipts'
-    2. Salva a URL no campo receipt_url
-    3. Atualiza status para 'paid' e registra payment_date
-    """
     try:
         supabase = get_supabase_client()
         storage_client = get_supabase_storage_client()
-        
-        # Verificar se a fatura existe
         bill_resp = supabase.table("finance_bills").select("*").eq("id", bill_id).execute()
         if not bill_resp.data:
             raise HTTPException(status_code=404, detail="Fatura não encontrada.")
-        
+
         bill = bill_resp.data[0]
         if bill.get("status") == "paid":
             return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
-        
-        # Upload do comprovante para o Supabase Storage (usando Service Role Key)
+
         file_bytes = await file.read()
         file_size_kb = len(file_bytes) / 1024
-        logger.info(f"Recebido comprovante para fatura {bill_id}: {file.filename} ({file_size_kb:.1f} KB, tipo: {file.content_type})")
-        
-        file_ext = file.filename.split('.')[-1] if file.filename and '.' in file.filename else 'jpg'
+        logger.info(
+            "Recebido comprovante para fatura %s: %s (%.1f KB, tipo: %s)",
+            bill_id,
+            file.filename,
+            file_size_kb,
+            file.content_type,
+        )
+        file_ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "jpg"
         storage_path = f"{bill_id}_{uuid.uuid4().hex[:8]}.{file_ext}"
-        
-        receipt_url = None
+
         try:
             storage_client.storage.from_("receipts").upload(
                 path=storage_path,
                 file=file_bytes,
-                file_options={"content-type": file.content_type or "image/jpeg"}
+                file_options={"content-type": file.content_type or "image/jpeg"},
             )
             receipt_url = storage_client.storage.from_("receipts").get_public_url(storage_path)
-            logger.info(f"Upload OK! URL: {receipt_url}")
+            logger.info("Upload OK! URL: %s", receipt_url)
         except Exception as storage_err:
             logger.error(
-                f"FALHA no upload do comprovante para fatura {bill_id}. "
-                f"Erro: {storage_err} | Tipo: {type(storage_err).__name__} | "
-                f"Arquivo: {file.filename} ({file_size_kb:.1f} KB)"
+                "FALHA no upload do comprovante para fatura %s. Erro: %s | Tipo: %s | Arquivo: %s (%.1f KB)",
+                bill_id,
+                storage_err,
+                type(storage_err).__name__,
+                file.filename,
+                file_size_kb,
             )
-            # Não engolir o erro silenciosamente — informar o cliente
             raise HTTPException(
                 status_code=500,
                 detail=(
-                    f"Falha ao salvar o comprovante no servidor. "
+                    "Falha ao salvar o comprovante no servidor. "
                     f"Erro: {str(storage_err)[:200]}. "
-                    f"A fatura NAO foi marcada como paga. Tente novamente."
-                )
-            )
-        
-        # Atualizar a fatura como paga (só chega aqui se o upload funcionou)
+                    "A fatura NAO foi marcada como paga. Tente novamente."
+                ),
+            ) from storage_err
+
         today_str = str(date.today())
-        update_data = {
-            "status": "paid",
-            "payment_date": today_str,
-        }
-        if receipt_url:
-            update_data["receipt_url"] = receipt_url
-        
-        supabase.table("finance_bills").update(update_data).eq("id", bill_id).execute()
-        
+        supabase.table("finance_bills").update(
+            {"status": "paid", "payment_date": today_str, "receipt_url": receipt_url}
+        ).eq("id", bill_id).execute()
         return {
             "status": "success",
             "message": f"Fatura '{bill['description']}' marcada como PAGA!",
             "receipt_url": receipt_url,
-            "payment_date": today_str
+            "payment_date": today_str,
         }
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Erro inesperado no pagamento da fatura {bill_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("Erro inesperado no pagamento da fatura %s: %s", bill_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.post("/bills/{bill_id}/pay-no-receipt", tags=["Bills", "Payment"])
 async def pay_bill_no_receipt(bill_id: str):
-    """
-    Marca uma fatura como paga SEM comprovante (para uso rápido).
-    """
     try:
         supabase = get_supabase_client()
-        
         bill_resp = supabase.table("finance_bills").select("*").eq("id", bill_id).execute()
         if not bill_resp.data:
             raise HTTPException(status_code=404, detail="Fatura não encontrada.")
-        
+
         bill = bill_resp.data[0]
         if bill.get("status") == "paid":
             return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
-        
+
         today_str = str(date.today())
-        supabase.table("finance_bills").update({
-            "status": "paid",
-            "payment_date": today_str
-        }).eq("id", bill_id).execute()
-        
+        supabase.table("finance_bills").update(
+            {"status": "paid", "payment_date": today_str}
+        ).eq("id", bill_id).execute()
         return {
             "status": "success",
             "message": f"Fatura '{bill['description']}' paga com sucesso!",
-            "payment_date": today_str
+            "payment_date": today_str,
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-# ===========================================================================
-# Incomes & Settings
-# ===========================================================================
 
 @app.get("/incomes", tags=["Incomes"])
 async def get_incomes():
@@ -526,8 +427,9 @@ async def get_incomes():
         supabase = get_supabase_client()
         response = supabase.table("finance_incomes").select("*").order("date", desc=True).execute()
         return {"data": response.data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.post("/incomes", tags=["Incomes"])
 async def add_income(req: IncomeCreateRequest):
@@ -537,19 +439,19 @@ async def add_income(req: IncomeCreateRequest):
         data["amount"] = money_to_storage(req.amount)
         response = supabase.table("finance_incomes").insert(data).execute()
         return {"status": "success", "data": response.data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.get("/settings", tags=["Settings"])
 async def get_settings():
     try:
         supabase = get_supabase_client()
         response = supabase.table("finance_user_settings").select("*").limit(1).execute()
-        if not response.data:
-            return {"data": None}
-        return {"data": response.data[0]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"data": response.data[0] if response.data else None}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.post("/settings", tags=["Settings"])
 async def update_settings(req: SettingsUpdateRequest):
@@ -559,424 +461,247 @@ async def update_settings(req: SettingsUpdateRequest):
         data = req.model_dump()
         data["initial_balance"] = money_to_storage(req.initial_balance)
         data["emergency_fund_goal"] = money_to_storage(req.emergency_fund_goal)
-        
-        # O backend atualiza `updated_at` automaticamente caso pudesse, mas vamo setar manually só p garantir
         data["updated_at"] = str(datetime.now())
 
         if response.data:
-            updated = supabase.table("finance_user_settings").update(data).eq("id", response.data[0]["id"]).execute()
+            updated = (
+                supabase.table("finance_user_settings")
+                .update(data)
+                .eq("id", response.data[0]["id"])
+                .execute()
+            )
             return {"status": "success", "data": updated.data[0]}
-        else:
-            inserted = supabase.table("finance_user_settings").insert(data).execute()
-            return {"status": "success", "data": inserted.data[0]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+        inserted = supabase.table("finance_user_settings").insert(data).execute()
+        return {"status": "success", "data": inserted.data[0]}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 def _calculate_financials(supabase, settings):
     initial_date = settings.get("initial_balance_date", "2000-01-01")
     emergency_fund_goal = money(settings.get("emergency_fund_goal", "0.00"))
     emergency_fund_balance = money(settings.get("emergency_fund_balance", "0.00"))
-    
-    incomes_resp = supabase.table("finance_incomes").select("amount").gte("date", initial_date).execute()
-    paid_bills_resp = supabase.table("finance_bills").select("amount").eq("status", "paid").gte("payment_date", initial_date).execute()
-    
+
+    incomes_resp = (
+        supabase.table("finance_incomes").select("amount").gte("date", initial_date).execute()
+    )
+    paid_bills_resp = (
+        supabase.table("finance_bills")
+        .select("amount")
+        .eq("status", "paid")
+        .gte("payment_date", initial_date)
+        .execute()
+    )
+
     today = date.today()
     import calendar
-    last_day = calendar.monthrange(today.year, today.month)[1]
-    end_of_month = date(today.year, today.month, last_day)
-    
-    pending_bills_resp = supabase.table("finance_bills").select("amount").in_("status", ["pending", "overdue"]).lte("due_date", str(end_of_month)).execute()
+
+    end_of_month = date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+    pending_bills_resp = (
+        supabase.table("finance_bills")
+        .select("amount")
+        .in_("status", ["pending", "overdue"])
+        .lte("due_date", str(end_of_month))
+        .execute()
+    )
 
     balances = calculate_balances(
         initial_balance=settings.get("initial_balance", "0.00"),
-        incomes=[inc["amount"] for inc in (incomes_resp.data or [])],
-        paid_bills=[bill["amount"] for bill in (paid_bills_resp.data or [])],
+        incomes=[item["amount"] for item in (incomes_resp.data or [])],
+        paid_bills=[item["amount"] for item in (paid_bills_resp.data or [])],
         emergency_fund_balance=emergency_fund_balance,
-        pending_bills=[bill["amount"] for bill in (pending_bills_resp.data or [])],
+        pending_bills=[item["amount"] for item in (pending_bills_resp.data or [])],
     )
     return {
         "current_balance": balances["current_balance"],
         "estimated_surplus": balances["estimated_surplus"],
         "emergency_fund_goal": emergency_fund_goal,
-        "emergency_fund_balance": emergency_fund_balance
+        "emergency_fund_balance": emergency_fund_balance,
     }
+
 
 @app.get("/insights", tags=["Insights"])
 async def get_insights():
-    """
-    Retorna o insight atual. Se não houver insight para o mês, gera um via IA e faz o cache.
-    """
     try:
         supabase = get_supabase_client()
         settings_resp = supabase.table("finance_user_settings").select("*").limit(1).execute()
         if not settings_resp.data:
-            raise HTTPException(status_code=400, detail="Configurações (Saldo Inicial) não encontradas. Configure o saldo inicial primeiro.")
-        
+            raise HTTPException(
+                status_code=400,
+                detail="Configurações (Saldo Inicial) não encontradas. Configure o saldo inicial primeiro.",
+            )
+
         settings = settings_resp.data[0]
         fin_data = _calculate_financials(supabase, settings)
-        
         latest_date_str = settings.get("latest_insight_date")
         latest_text = settings.get("latest_insight_text")
         today = date.today()
-        
-        # Check cache
+
         if latest_date_str and latest_text:
             try:
-                # Trata datetime ISO se houver, ou apenas date YYYY-MM-DD
-                ld = datetime.fromisoformat(latest_date_str)
-                if ld.year == today.year and ld.month == today.month:
+                latest_date = datetime.fromisoformat(latest_date_str)
+                if latest_date.year == today.year and latest_date.month == today.month:
                     return {
                         "status": "success",
-                        "data": {
-                            "current_balance": fin_data["current_balance"],
-                            "estimated_surplus": fin_data["estimated_surplus"],
-                            "emergency_fund_goal": fin_data["emergency_fund_goal"],
-                            "emergency_fund_balance": fin_data["emergency_fund_balance"],
-                            "insight": latest_text
-                        }
+                        "data": {**fin_data, "insight": latest_text},
                     }
-            except Exception as e:
-                logger.warning(f"Falha ao interpretar data de insight '{latest_date_str}': {e}")
-                
-        # Cache nulo ou vencido -> gera novo
+            except Exception as exc:
+                logger.warning("Falha ao interpretar data de insight '%s': %s", latest_date_str, exc)
+
         insight_result = generate_financial_insights(fin_data)
         if insight_result.get("status") == "error":
             raise HTTPException(status_code=500, detail=insight_result.get("message"))
-            
+
         new_text = insight_result.get("insight")
-        
-        # Update Cache
-        supabase.table("finance_user_settings").update({
-            "latest_insight_text": new_text,
-            "latest_insight_date": today.isoformat()
-        }).eq("id", settings["id"]).execute()
-            
-        return {
-            "status": "success",
-            "data": {
-                "current_balance": fin_data["current_balance"],
-                "estimated_surplus": fin_data["estimated_surplus"],
-                "emergency_fund_goal": fin_data["emergency_fund_goal"],
-                "emergency_fund_balance": fin_data["emergency_fund_balance"],
-                "insight": new_text
-            }
-        }
-        
+        supabase.table("finance_user_settings").update(
+            {"latest_insight_text": new_text, "latest_insight_date": today.isoformat()}
+        ).eq("id", settings["id"]).execute()
+        return {"status": "success", "data": {**fin_data, "insight": new_text}}
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Erro no endpoint GET insights: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("Erro no endpoint GET insights: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.post("/insights/refresh", tags=["Insights"])
 async def refresh_insights():
-    """
-    Força a geração de um novo insight via IA, ignorando o cache, e atualiza o banco de dados.
-    """
     try:
         supabase = get_supabase_client()
         settings_resp = supabase.table("finance_user_settings").select("*").limit(1).execute()
         if not settings_resp.data:
             raise HTTPException(status_code=400, detail="Configurações (Saldo Inicial) não encontradas.")
-        
+
         settings = settings_resp.data[0]
         fin_data = _calculate_financials(supabase, settings)
-        
         insight_result = generate_financial_insights(fin_data)
         if insight_result.get("status") == "error":
             raise HTTPException(status_code=500, detail=insight_result.get("message"))
-            
+
         new_text = insight_result.get("insight")
         today = date.today()
-        
-        # Update Cache
-        supabase.table("finance_user_settings").update({
-            "latest_insight_text": new_text,
-            "latest_insight_date": today.isoformat()
-        }).eq("id", settings["id"]).execute()
-            
-        return {
-            "status": "success",
-            "data": {
-                "current_balance": fin_data["current_balance"],
-                "estimated_surplus": fin_data["estimated_surplus"],
-                "emergency_fund_goal": fin_data["emergency_fund_goal"],
-                "emergency_fund_balance": fin_data["emergency_fund_balance"],
-                "insight": new_text
-            }
-        }
+        supabase.table("finance_user_settings").update(
+            {"latest_insight_text": new_text, "latest_insight_date": today.isoformat()}
+        ).eq("id", settings["id"]).execute()
+        return {"status": "success", "data": {**fin_data, "insight": new_text}}
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Erro no endpoint POST insights/refresh: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("Erro no endpoint POST insights/refresh: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
 
 @app.post("/insights/reserve", tags=["Insights"])
 async def add_to_reserve(req: ReserveAddRequest):
-    """
-    Adiciona um valor à reserva de emergência e deduz logicamente do saldo atual.
-    """
     try:
         supabase = get_supabase_client()
         settings_resp = supabase.table("finance_user_settings").select("*").limit(1).execute()
         if not settings_resp.data:
             raise HTTPException(status_code=400, detail="Configurações (Saldo Inicial) não encontradas.")
-        
+
         settings = settings_resp.data[0]
         new_reserve = calculate_reserve_addition(
-            settings.get("emergency_fund_balance", "0.00"),
-            req.amount,
+            settings.get("emergency_fund_balance", "0.00"), req.amount
         )
-        
-        updated = supabase.table("finance_user_settings").update({
-            "emergency_fund_balance": money_to_storage(new_reserve)
-        }).eq("id", settings["id"]).execute()
-        
+        updated = (
+            supabase.table("finance_user_settings")
+            .update({"emergency_fund_balance": money_to_storage(new_reserve)})
+            .eq("id", settings["id"])
+            .execute()
+        )
         return {
             "status": "success",
             "message": "Fundo de reserva atualizado com sucesso.",
-            "data": updated.data[0]
+            "data": updated.data[0],
         }
-    except Exception as e:
-        logger.error(f"Erro no endpoint POST insights/reserve: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Erro no endpoint POST insights/reserve: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-# ===========================================================================
-# Scraping Routes (Inativos - Apenas para Portfólio/Demonstração) - Comentadas para deploy v1.00 no Render
-# ===========================================================================
-
-# @app.post("/scrape/dasmei", tags=["Scraping"])
-# async def trigger_dasmei_scraping():
-#     """
-#     Aciona a rotina Playwright para buscar faturas pendentes do MEI
-#     usando a variável TARGET_CNPJ.
-#     """
-#     try:
-#         from datetime import datetime
-#         supabase = get_supabase_client()
-#         
-#         now = datetime.now()
-#         if now.month == 1:
-#             target_month = 12
-#             target_year = now.year - 1
-#         else:
-#             target_month = now.month - 1
-#             target_year = now.year
-#             
-#         current_month_label = f"Guia DAS MEI - {target_month:02d}/{target_year}"
-#         
-#         existing = supabase.table("finance_bills").select("id").eq("description", current_month_label).execute()
-#         if existing.data:
-#             return {
-#                 "status": "info",
-#                 "message": f"A {current_month_label} já foi extraída anteriormente e consta no banco de dados."
-#             }
-#
-#         resultado = await scrape_dasmei()
-#         if resultado.get("status") == "error":
-#             raise HTTPException(status_code=400, detail=resultado.get("message"))
-#             
-#         data = {
-#             "description": resultado.get("description", current_month_label),
-#             "amount": resultado.get("amount"),
-#             "due_date": resultado.get("due_date"),
-#             "barcode": resultado.get("barcode"),
-#             "status": "pending"
-#         }
-#         db_response = supabase.table("finance_bills").insert(data).execute()
-#         
-#         return {
-#             "status": "success", 
-#             "message": resultado.get("message"),
-#             "bill_data": db_response.data
-#         }
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Erro interno de scraping: {str(e)}")
-#
-# @app.post("/scrape/unopar", tags=["Scraping"])
-# async def trigger_unopar_scraping():
-#     """
-#     Aciona a rotina Playwright para buscar boletos pendentes da faculdade Unopar.
-#     """
-#     try:
-#         from datetime import datetime
-#         supabase = get_supabase_client()
-#         
-#         now = datetime.now()
-#         current_month_label = f"Mensalidade Unopar - {now.month:02d}/{now.year}"
-#         
-#         existing = supabase.table("finance_bills").select("id").eq("description", current_month_label).execute()
-#         if existing.data:
-#             return {
-#                 "status": "info",
-#                 "message": f"A {current_month_label} já foi extraída anteriormente e consta no banco de dados."
-#             }
-#
-#         resultado = await scrape_unopar()
-#         if resultado.get("status") == "error":
-#             raise HTTPException(status_code=400, detail=resultado.get("message"))
-#             
-#         data = {
-#             "description": resultado.get("description", current_month_label),
-#             "amount": resultado.get("amount"),
-#             "due_date": resultado.get("due_date"),
-#             "barcode": resultado.get("barcode"),
-#             "status": "pending"
-#         }
-#         db_response = supabase.table("finance_bills").insert(data).execute()
-#         
-#         return {
-#             "status": "success", 
-#             "message": resultado.get("message"),
-#             "bill_data": db_response.data
-#         }
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Erro interno de scraping: {str(e)}")
-#
-# @app.post("/scrape/email/vivo", tags=["Scraping"])
-# async def trigger_vivo_email_scraping():
-#     """
-#     Aciona a rotina IMAP para buscar faturas na conta de E-mail.
-#     """
-#     resultado = await scrape_vivo_email()
-#     if resultado.get("status") == "error":
-#         raise HTTPException(status_code=400, detail=resultado.get("message"))
-#     return resultado
-#
-# @app.post("/scrape/tim", tags=["Scraping"])
-# async def trigger_tim_scraping():
-#     """
-#     Aciona a rotina Playwright para buscar faturas pendentes do plano TIM Movel.
-#     """
-#     try:
-#         from datetime import datetime
-#         supabase = get_supabase_client()
-#
-#         now = datetime.now()
-#         current_month_label = f"Conta TIM Movel - {now.month:02d}/{now.year}"
-#
-#         existing = supabase.table("finance_bills").select("id").eq("description", current_month_label).execute()
-#         if existing.data:
-#             return {
-#                 "status": "info",
-#                 "message": f"A {current_month_label} ja foi extraida anteriormente e consta no banco de dados."
-#             }
-#
-#         resultado = await scrape_tim()
-#
-#         if resultado.get("status") == "info":
-#             return resultado
-#
-#         if resultado.get("status") == "error":
-#             raise HTTPException(status_code=400, detail=resultado.get("message"))
-#
-#         data = {
-#             "description": resultado.get("description", current_month_label),
-#             "amount": resultado.get("amount"),
-#             "due_date": resultado.get("due_date"),
-#             "barcode": resultado.get("barcode"),
-#             "status": "pending"
-#         }
-#         db_response = supabase.table("finance_bills").insert(data).execute()
-#
-#         return {
-#             "status": "success",
-#             "message": resultado.get("message"),
-#             "bill_data": db_response.data
-#         }
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Erro interno de scraping TIM: {str(e)}")
-
-# ===========================================================================
-# OCR Upload & Validation
-# ===========================================================================
 
 @app.post("/upload-receipt", tags=["Bills", "OCR"])
 async def upload_receipt(file: UploadFile = File(...)):
-    """
-    Recebe um arquivo de imagem ou PDF e envia para a Inteligência Artificial
-    realizar o OCR, extraindo valor, data e linha digitável.
-    """
     allowed_types = ["image/jpeg", "image/png", "image/webp", "application/pdf"]
     if file.content_type not in allowed_types:
-        raise HTTPException(status_code=400, detail="Formato de arquivo não suportado. Envie imagens ou PDF.")
-    
+        raise HTTPException(
+            status_code=400,
+            detail="Formato de arquivo não suportado. Envie imagens ou PDF.",
+        )
+
     try:
         file_bytes = await file.read()
         resultado_ocr = extract_invoice_data(file_bytes, mime_type=file.content_type)
-        
         if resultado_ocr.get("status") == "error":
             error_details = resultado_ocr.get("details", "Sem detalhes adicionais")
-            raise HTTPException(status_code=500, detail=f"{resultado_ocr.get('message')} Erro Técnico: {error_details}")
-            
+            raise HTTPException(
+                status_code=500,
+                detail=f"{resultado_ocr.get('message')} Erro Técnico: {error_details}",
+            )
         return {
             "message": "Arquivo processado com sucesso.",
             "filename": file.filename,
-            "ocr_result": resultado_ocr["extracted_data"]
+            "ocr_result": resultado_ocr["extracted_data"],
         }
-        
-    except ValueError as ve:
-        raise HTTPException(status_code=500, detail=str(ve))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro no processamento do arquivo: {str(e)}")
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro no processamento do arquivo: {str(exc)}",
+        ) from exc
+
 
 @app.post("/validate-bill", tags=["Bills", "Validation"])
 async def validate_bill(req: BillValidationRequest):
-    """
-    Realiza a validação heurística cruzando os dados extraídos do OCR 
-    com os registros oficiais de faturas pendentes no banco de dados (Supabase).
-    """
     try:
         supabase = get_supabase_client()
         response = supabase.table("finance_bills").select("*").eq("id", req.bill_id).execute()
-        
         if not response.data:
             raise HTTPException(status_code=404, detail="Boleto não encontrado no sistema do FinanceFlow.")
-            
+
         bill = response.data[0]
-        
-        # --- Motor Base de Validação Heurística ---
-        is_amount_valid = False
-        if req.ocr_amount is not None:
-            is_amount_valid = amounts_within_percentage(bill["amount"], req.ocr_amount)
-                
-        is_date_valid = False
-        if req.ocr_due_date is not None and bill.get("due_date"):
-            if req.ocr_due_date == str(bill["due_date"]):
-                is_date_valid = True
-                
+        is_amount_valid = (
+            amounts_within_percentage(bill["amount"], req.ocr_amount)
+            if req.ocr_amount is not None
+            else False
+        )
+        is_date_valid = bool(
+            req.ocr_due_date is not None
+            and bill.get("due_date")
+            and req.ocr_due_date == str(bill["due_date"])
+        )
+
         is_barcode_valid = False
         if req.ocr_barcode and bill.get("barcode"):
             clean_ocr = "".join(filter(str.isdigit, req.ocr_barcode))
             clean_db = "".join(filter(str.isdigit, str(bill["barcode"])))
-            if clean_ocr == clean_db and len(clean_ocr) > 0:
-                is_barcode_valid = True
-                
+            is_barcode_valid = clean_ocr == clean_db and len(clean_ocr) > 0
+
         confidence_score = 0
-        if is_amount_valid: confidence_score += 40
-        if is_date_valid: confidence_score += 30
-        if is_barcode_valid: confidence_score += 30
-            
-        is_approved = confidence_score >= 60
+        if is_amount_valid:
+            confidence_score += 40
+        if is_date_valid:
+            confidence_score += 30
+        if is_barcode_valid:
+            confidence_score += 30
 
         return {
             "status": "success",
             "bill_id": req.bill_id,
             "confidence_score": confidence_score,
-            "is_approved": is_approved,
+            "is_approved": confidence_score >= 60,
             "details": {
                 "amount_match": is_amount_valid,
                 "date_match": is_date_valid,
-                "barcode_match": is_barcode_valid
-            }
+                "barcode_match": is_barcode_valid,
+            },
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
