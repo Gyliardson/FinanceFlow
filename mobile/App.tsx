@@ -9,6 +9,7 @@ import { requestNotificationPermissions } from './src/services/NotificationServi
 export default function App() {
   useEffect(() => {
     if (Platform.OS === 'android') {
+      NavigationBar.setBehaviorAsync('inset-swipe');
       NavigationBar.setVisibilityAsync('hidden');
     }
 
