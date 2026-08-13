@@ -61,6 +61,124 @@ jobs:
       - name: Run backend tests
         run: pytest -q
 
+  postgres-recurring:
+    name: PostgreSQL recurring idempotency
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: financeflow
+          POSTGRES_PASSWORD: financeflow
+          POSTGRES_DB: financeflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U financeflow -d financeflow_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: financeflow
+      PGPASSWORD: financeflow
+      PGDATABASE: financeflow_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Create minimal recurring-bill schema
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE finance_bills (
+            id text PRIMARY KEY,
+            parent_bill_id text,
+            due_date date NOT NULL,
+            is_recurring boolean DEFAULT false
+          );
+          SQL
+
+      - name: Migration fails closed without deleting historical duplicates
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO finance_bills (id, parent_bill_id, due_date, is_recurring)
+          VALUES
+            ('template-history', NULL, '2026-08-01', true),
+            ('history-1', 'template-history', '2026-08-15', false),
+            ('history-2', 'template-history', '2026-08-15', false);
+          SQL
+
+          if psql -v ON_ERROR_STOP=1 -f backend/migrations/002_recurring_instance_uniqueness.sql; then
+            echo 'Migration unexpectedly accepted historical duplicate generated bills.' >&2
+            exit 1
+          fi
+
+          duplicate_count=$(psql -Atc "SELECT count(*) FROM finance_bills WHERE parent_bill_id = 'template-history' AND due_date = DATE '2026-08-15';")
+          test "$duplicate_count" = "2"
+
+      - name: Apply uniqueness migration after explicit reconciliation
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          DELETE FROM finance_bills WHERE id = 'history-2';
+          SQL
+          psql -v ON_ERROR_STOP=1 -f backend/migrations/002_recurring_instance_uniqueness.sql
+          psql -Atc "SELECT indexname FROM pg_indexes WHERE tablename = 'finance_bills' AND indexname = 'ux_finance_bills_generated_parent_due';" | grep -qx 'ux_finance_bills_generated_parent_due'
+
+      - name: Concurrent generated inserts produce exactly one row
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills (id, parent_bill_id, due_date, is_recurring) VALUES ('template-race', NULL, DATE '2026-08-01', true);"
+
+          set +e
+          psql -v ON_ERROR_STOP=1 -c "BEGIN; INSERT INTO finance_bills (id, parent_bill_id, due_date, is_recurring) VALUES ('race-a', 'template-race', DATE '2026-09-10', false); SELECT pg_sleep(1); COMMIT;" > race-a.log 2>&1 &
+          pid_a=$!
+          sleep 0.2
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills (id, parent_bill_id, due_date, is_recurring) VALUES ('race-b', 'template-race', DATE '2026-09-10', false);" > race-b.log 2>&1 &
+          pid_b=$!
+          wait "$pid_a"; status_a=$?
+          wait "$pid_b"; status_b=$?
+          set -e
+
+          cat race-a.log
+          cat race-b.log
+
+          if [ "$status_a" -eq 0 ] && [ "$status_b" -eq 0 ]; then
+            echo 'Both concurrent inserts succeeded; uniqueness invariant failed.' >&2
+            exit 1
+          fi
+          if [ "$status_a" -ne 0 ] && [ "$status_b" -ne 0 ]; then
+            echo 'Both concurrent inserts failed; expected one successful writer.' >&2
+            exit 1
+          fi
+
+          generated_count=$(psql -Atc "SELECT count(*) FROM finance_bills WHERE parent_bill_id = 'template-race' AND due_date = DATE '2026-09-10';")
+          test "$generated_count" = "1"
+
+      - name: Retry remains idempotent at database boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills (id, parent_bill_id, due_date, is_recurring) VALUES ('race-retry', 'template-race', DATE '2026-09-10', false);"; then
+            echo 'Retry unexpectedly created a duplicate generated bill.' >&2
+            exit 1
+          fi
+          generated_count=$(psql -Atc "SELECT count(*) FROM finance_bills WHERE parent_bill_id = 'template-race' AND due_date = DATE '2026-09-10';")
+          test "$generated_count" = "1"
+
+      - name: Upload PostgreSQL race diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-recurring-race
+          path: |
+            race-a.log
+            race-b.log
+          if-no-files-found: ignore
+
   mobile:
     name: Mobile typecheck
     runs-on: ubuntu-latest
