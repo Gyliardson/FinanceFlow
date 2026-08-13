@@ -5,21 +5,13 @@
     "description": "Controle Financeiro Automatizado & Inteligente.",
     "version": "1.0.1",
     "orientation": "portrait",
-    "icon": "./assets/splash-icon.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true
     },
     "android": {
-      "adaptiveIcon": {
-        "backgroundColor": "#4F46E5",
-        "foregroundImage": "./assets/splash-icon.png"
-      },
       "predictiveBackGestureEnabled": false,
       "package": "com.gyliardson_keitison.financeflow"
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "@react-native-community/datetimepicker"
