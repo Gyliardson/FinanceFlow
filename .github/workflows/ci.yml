@@ -99,6 +99,27 @@ jobs:
           );
           SQL
 
+      - name: Monetary NUMERIC round-trip is exact
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE finance_money_probe (
+            label text PRIMARY KEY,
+            amount numeric(12,2) NOT NULL
+          );
+          INSERT INTO finance_money_probe (label, amount)
+          VALUES
+            ('cent', '0.01'),
+            ('fraction', '0.30'),
+            ('negative', '-10.01'),
+            ('large', '1000000.00');
+          SQL
+
+          actual=$(psql -Atc "SELECT string_agg(label || ':' || amount::text, ',' ORDER BY label) FROM finance_money_probe;")
+          expected='cent:0.01,fraction:0.30,large:1000000.00,negative:-10.01'
+          test "$actual" = "$expected"
+
       - name: Migration fails closed without deleting historical duplicates
         shell: bash
         run: |
