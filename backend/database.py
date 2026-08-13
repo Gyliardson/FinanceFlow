@@ -34,6 +34,21 @@ def get_supabase_auth_client() -> Client:
     return create_client(url, key)
 
 
+def get_user_supabase_client(access_token: str) -> Client:
+    """Return a Data API client whose PostgREST requests carry a verified user JWT.
+
+    Callers must validate the JWT with Supabase Auth before constructing this
+    client. Supplying the bearer token to PostgREST allows PostgreSQL RLS to
+    evaluate auth.uid() for the authenticated end user.
+    """
+    if not access_token:
+        raise ValueError("A non-empty user access token is required.")
+    url, key = _require_public_config()
+    client = create_client(url, key)
+    client.postgrest.auth(access_token)
+    return client
+
+
 def get_supabase_storage_client() -> Client:
     """Return a server-only client for private receipt storage operations."""
     if not SUPABASE_URL:
