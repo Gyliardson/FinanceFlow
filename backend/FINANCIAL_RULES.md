@@ -8,7 +8,8 @@ This document defines the backend invariants for monetary values and generated r
 - Authoritative Python arithmetic uses `decimal.Decimal`, never binary `float`.
 - The canonical currency scale is **2 decimal places**.
 - Values are normalized with **`ROUND_HALF_UP`** at the explicit currency boundary.
-- Persistence payloads should use canonical fixed-scale decimal strings such as `"10.00"` so JSON serialization cannot introduce binary floating-point drift before PostgreSQL receives the value.
+- API monetary inputs are normalized before product bounds are evaluated. For a positive-money field, a sub-cent input such as `0.004` becomes `0.00` and is rejected rather than being persisted as a zero-valued transaction.
+- Persistence payloads use canonical fixed-scale decimal strings such as `"10.00"` so JSON serialization cannot introduce binary floating-point drift before PostgreSQL receives the value.
 - Non-finite values (`NaN`, `Infinity`, `-Infinity`) are invalid.
 - Existing API product bounds remain in force unless a separate domain decision changes them: positive bill/income/reserve additions and bounded settings values.
 
@@ -22,7 +23,7 @@ This document defines the backend invariants for monetary values and generated r
 | `1.005` | `1.01` |
 | `-1.005` | `-1.01` |
 
-Rounding should happen at defined boundaries, not repeatedly during intermediate arithmetic.
+Rounding happens at defined boundaries, not repeatedly during intermediate arithmetic.
 
 ## Authoritative balance calculation
 
@@ -32,7 +33,7 @@ For a configured start date:
 
 `estimated_surplus = current_balance - pending_or_overdue_bills_due_through_month_end`
 
-Every operand and intermediate total must remain `Decimal` until presentation/serialization. Tests must include zero, negative balances, cent values, mixed input representations, large allowed values, and rounding boundaries.
+Every operand and intermediate total remains `Decimal` until presentation/serialization. Tests include zero, negative balances, cent values, mixed input representations, large allowed values, and rounding boundaries.
 
 ## Recurring-bill calendar rule
 
@@ -56,17 +57,19 @@ Migration 002 is deliberately **fail-closed**. If historical duplicate generated
 
 ### Concurrent requests and retries
 
-Two concurrent attempts to create the same generated instance may race past an application pre-check. The database unique index must allow at most one writer to commit.
+Two concurrent attempts to create the same generated instance may race past an application pre-check. The database unique index allows at most one writer to commit.
 
 A repeated retry of an already-generated `(parent_bill_id, due_date)` must not create another row.
 
-For a multi-row insert, a uniqueness conflict aborts the PostgreSQL statement. Non-conflicting rows from the same failed statement must not be assumed persisted; a later retry should recalculate missing instances and safely create only those still absent.
+For a multi-row insert, a uniqueness conflict aborts the PostgreSQL statement. Non-conflicting rows from the same failed statement must not be assumed persisted; a later retry recalculates missing instances and safely creates only those still absent.
 
 ## Validation evidence
 
-The FinanceFlow CI should prove these invariants with:
+The FinanceFlow CI proves these invariants with:
 
 - exact-money unit tests;
+- API boundary and canonical-payload tests;
+- PostgreSQL `NUMERIC(...,2)` persistence round-trip checks;
 - calendar edge-case tests;
 - disposable PostgreSQL migration tests;
 - historical-duplicate fail-closed behavior;
