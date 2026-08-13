@@ -5,20 +5,15 @@
     "description": "Controle Financeiro Automatizado & Inteligente.",
     "version": "1.0.1",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/splash-icon.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#4F46E5"
-    },
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#4F46E5",
-        "foregroundImage": "./assets/android-icon-foreground.png"
+        "foregroundImage": "./assets/splash-icon.png"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.gyliardson_keitison.financeflow"
