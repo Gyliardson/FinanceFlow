@@ -98,6 +98,12 @@ CREATE POLICY finance_settings_owner_delete
 ON finance_user_settings FOR DELETE TO authenticated
 USING ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
 
+-- auth.uid() is the ownership primitive used by these policies and defaults.
+-- Supabase grants this access in hosted projects; keeping it explicit also makes
+-- the security migration reproducible in disposable PostgreSQL verification.
+GRANT USAGE ON SCHEMA auth TO authenticated;
+GRANT EXECUTE ON FUNCTION auth.uid() TO authenticated;
+
 -- Explicit grants complement RLS. Anonymous users receive no table privileges.
 REVOKE ALL ON finance_bills FROM anon;
 REVOKE ALL ON finance_incomes FROM anon;
