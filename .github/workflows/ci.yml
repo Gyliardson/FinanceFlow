@@ -21,7 +21,6 @@ jobs:
       run:
         working-directory: backend
     env:
-      API_SECRET_KEY: ci-test-key
       SUPABASE_URL: http://127.0.0.1:54321
       SUPABASE_KEY: ci-placeholder
       SUPABASE_SERVICE_ROLE_KEY: ci-placeholder

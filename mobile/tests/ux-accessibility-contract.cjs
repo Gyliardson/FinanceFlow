@@ -6,6 +6,7 @@ const root = path.resolve(__dirname, '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const home = read('src/screens/HomeScreen.tsx');
 const detail = read('src/screens/DetailScreen.tsx');
+const income = read('src/screens/IncomeScreen.tsx');
 
 const requireMatch = (source, pattern, message) => {
   assert.match(source, pattern, message);
@@ -33,5 +34,12 @@ requireMatch(detail, /Revise valor, vencimento e linha digitável antes de confi
 requireMatch(detail, /KeyboardAvoidingView/, 'Creation form must be keyboard-safe');
 assert.doesNotMatch(detail, /console\.(?:log|error)\s*\(/, 'Creation/OCR screen must not log raw provider/request errors');
 assert.doesNotMatch(detail, /Gemini/, 'User-facing creation flow must not be coupled to a specific AI provider');
+
+// Financial date-only values must never round-trip through UTC Date parsing.
+// UTC conversion can move a Brazilian calendar date to the previous/next day.
+requireMatch(income, /const localIsoDate =/, 'Income creation must derive a local date-only value');
+requireMatch(income, /const formatDateOnly =/, 'Income display must format date-only strings without UTC parsing');
+assert.doesNotMatch(income, /toISOString\(\)\.split\(/, 'Income creation must not derive the business date from UTC ISO time');
+assert.doesNotMatch(income, /new Date\(item\.date\)/, 'Stored date-only income values must not be parsed as UTC Date objects');
 
 console.log('Mobile UX/accessibility contract passed.');

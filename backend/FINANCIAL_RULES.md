@@ -1,6 +1,6 @@
 # FinanceFlow Financial Domain Rules
 
-This document defines the backend invariants for monetary values and generated recurring bills. It is intentionally implementation-oriented: tests and database constraints must prove these rules before the portfolio revamp can claim financial correctness.
+This document defines the backend invariants for monetary values, mutable reserve state, payments and generated recurring bills. It is intentionally implementation-oriented: tests and database/application concurrency guards must prove these rules before the portfolio revamp can claim financial correctness.
 
 ## Money representation
 
@@ -25,6 +25,17 @@ This document defines the backend invariants for monetary values and generated r
 
 Rounding happens at defined boundaries, not repeatedly during intermediate arithmetic.
 
+## Financial calendar and timezone
+
+Date-only financial events must not depend on the timezone configured on the CI runner or deployment host.
+
+- The authoritative backend calendar uses the IANA timezone in `FINANCIAL_TIMEZONE`.
+- The portfolio default is `America/Sao_Paulo`, matching the current Brazilian/BRL product baseline.
+- Payment dates, recurring target dates, month-end balance horizons, and monthly insight cache dates use the same `financial_today()` boundary.
+- Explicit datetime values used by tests must be timezone-aware; naive datetimes are rejected rather than interpreted using the machine locale.
+- Mobile values that are semantically `YYYY-MM-DD` are treated as date-only values. They must not be created with UTC `toISOString()` or rendered by parsing `YYYY-MM-DD` through JavaScript `Date`, because either operation can shift the calendar day around timezone boundaries.
+- Changing the product/business timezone is an explicit configuration change and must be accompanied by boundary tests around local midnight and month rollover.
+
 ## Authoritative balance calculation
 
 For a configured start date:
@@ -35,15 +46,44 @@ For a configured start date:
 
 Every operand and intermediate total remains `Decimal` until presentation/serialization. Tests include zero, negative balances, cent values, mixed input representations, large allowed values, and rounding boundaries.
 
+## Payment idempotency
+
+Both payment modes treat `paid` as an idempotent target state.
+
+- New bill creation cannot directly choose `paid` or `overdue`; those are server-owned lifecycle states. This prevents a client from creating a paid row without the payment metadata used by authoritative calculations.
+- Receipt-backed payment performs a compare-and-set update constrained by `status != paid`; a concurrent/zero-row update does not claim a second successful write and uploaded receipt cleanup is attempted on failed persistence.
+- Receipt-less payment uses the same `status != paid` compare-and-set boundary. If another request completes the bill between lookup and update, the losing request reports that the target state is already achieved instead of claiming that it performed a second payment.
+- RLS-scoped lookup/update remains the ownership authority, so a cross-user bill id is indistinguishable from a nonexistent bill.
+
+The initial read is therefore informational/validation work; it is never the final concurrency authority.
+
+## Reserve mutation concurrency
+
+Reserve additions are additive money mutations and must not use an unguarded read-modify-write sequence. Two concurrent additions that both read the same prior balance could otherwise silently lose one contribution.
+
+The current Data API boundary uses bounded optimistic compare-and-set:
+
+1. read the authenticated user's settings and exact current `emergency_fund_balance`;
+2. calculate the next balance using canonical `Decimal` semantics;
+3. update only when both the settings id and exact previously-read balance still match;
+4. if a concurrent writer changed the balance, re-read and retry;
+5. stop after the bounded retry budget and return a conflict rather than loop indefinitely or overwrite money.
+
+A provider/database failure is surfaced as a sanitized availability failure. Missing user settings fail without attempting a write.
+
 ## Recurring-bill calendar rule
+
+Recurring templates currently implement **monthly cadence only**. Unsupported frequency labels are rejected at the API boundary instead of being stored and then processed with misleading monthly behavior.
 
 Monthly recurring bills use a configured day from 1 through 31.
 
 - If that day exists in the target month, use it.
 - If the month is shorter, clamp to the month's last day.
-- If today's date is before the current month's target due date, generate for the current month.
+- If today's financial date is before the current month's target due date, generate for the current month.
 - If today is equal to or after the target due date, generate for the next month.
 - December-to-January and leap/non-leap February are mandatory regression cases.
+
+Template persistence and child generation are separate steps. If template creation succeeds but immediate child generation fails, the API returns explicit partial success with the created template and marks generation as deferred. It must not report total creation failure and encourage a retry that could duplicate the template. The explicit generation route can recover the deferred child generation against the database idempotency boundary.
 
 ## Generated-instance idempotency
 
@@ -69,6 +109,9 @@ The FinanceFlow CI proves these invariants with:
 
 - exact-money unit tests;
 - API boundary and canonical-payload tests;
+- financial-calendar tests around UTC/local midnight and invalid timezone configuration;
+- payment compare-and-set/idempotency tests, including a simulated race;
+- reserve exact-balance compare-and-set, concurrent-change retry and bounded-contention tests;
 - PostgreSQL `NUMERIC(...,2)` persistence round-trip checks;
 - calendar edge-case tests;
 - disposable PostgreSQL migration tests;

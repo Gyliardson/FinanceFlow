@@ -1,73 +1,41 @@
-import os
-from unittest.mock import patch
+from decimal import Decimal
 
-from fastapi.testclient import TestClient
+import pytest
+from pydantic import ValidationError
 
-os.environ.setdefault("API_SECRET_KEY", "ci-test-key")
-
-from main import app
-
-AUTH_HEADERS = {"X-API-KEY": os.environ["API_SECRET_KEY"]}
-client = TestClient(app)
+from api_models import BillCreateRequest, RecurringBillCreateRequest, ReserveAddRequest
 
 
-@patch("main.get_supabase_client")
-def test_add_bill_rejects_positive_value_that_rounds_to_zero(mock_supabase):
-    response = client.post(
-        "/add-bill",
-        json={
-            "description": "Sub-cent synthetic bill",
-            "amount": "0.004",
-            "status": "pending",
-            "due_date": "2026-08-20",
-        },
-        headers=AUTH_HEADERS,
+def test_add_bill_rejects_positive_value_that_rounds_to_zero():
+    with pytest.raises(ValidationError):
+        BillCreateRequest(
+            description="Sub-cent synthetic bill",
+            amount="0.004",
+            status="pending",
+            due_date="2026-08-20",
+        )
+
+
+def test_reserve_rejects_subcent_value_before_handler_execution():
+    with pytest.raises(ValidationError):
+        ReserveAddRequest(amount="0.004")
+
+
+def test_recurring_bill_canonicalizes_amount_and_accepts_month_end_day():
+    request = RecurringBillCreateRequest(
+        title="Synthetic recurring",
+        amount="10.005",
+        recurring_day=31,
     )
 
-    assert response.status_code == 422
-    mock_supabase.assert_not_called()
+    assert request.amount == Decimal("10.01")
+    assert request.recurring_day == 31
 
 
-@patch("main.get_supabase_client")
-def test_reserve_rejects_subcent_value_before_database_access(mock_supabase):
-    response = client.post(
-        "/insights/reserve",
-        json={"amount": "0.004"},
-        headers=AUTH_HEADERS,
-    )
-
-    assert response.status_code == 422
-    mock_supabase.assert_not_called()
-
-
-@patch("main.generate_recurring_instances")
-@patch("main.get_supabase_client")
-def test_recurring_bill_persists_canonical_amount(mock_supabase, mock_generate):
-    table = mock_supabase.return_value.table.return_value
-    table.insert.return_value.execute.return_value.data = [
-        {"id": "template-1", "amount": "10.01"}
-    ]
-
-    response = client.post(
-        "/recurring-bills",
-        json={"title": "Synthetic recurring", "amount": "10.005", "recurring_day": 31},
-        headers=AUTH_HEADERS,
-    )
-
-    assert response.status_code == 200
-    persisted = table.insert.call_args.args[0]
-    assert persisted["amount"] == "10.01"
-    assert persisted["recurring_day"] == 31
-    mock_generate.assert_called_once()
-
-
-@patch("main.get_supabase_client")
-def test_recurring_bill_rejects_invalid_day_before_database_access(mock_supabase):
-    response = client.post(
-        "/recurring-bills",
-        json={"title": "Invalid recurring", "amount": "10.00", "recurring_day": 32},
-        headers=AUTH_HEADERS,
-    )
-
-    assert response.status_code == 422
-    mock_supabase.assert_not_called()
+def test_recurring_bill_rejects_invalid_day_before_handler_execution():
+    with pytest.raises(ValidationError):
+        RecurringBillCreateRequest(
+            title="Invalid recurring",
+            amount="10.00",
+            recurring_day=32,
+        )

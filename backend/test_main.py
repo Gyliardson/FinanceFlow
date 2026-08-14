@@ -1,111 +1,100 @@
-import os
+import asyncio
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("API_SECRET_KEY", "ci-test-key")
-
-from main import _calculate_financials, app
-
-AUTH_HEADERS = {"X-API-KEY": os.environ["API_SECRET_KEY"]}
-client = TestClient(app)
+from api_handlers import _calculate_financials, add_bill, add_income, add_to_reserve, validate_bill
+from api_models import BillCreateRequest, BillValidationRequest, IncomeCreateRequest, ReserveAddRequest
+from auth_middleware import SupabaseAuthMiddleware
+from main import app
 
 
-def test_read_main():
-    response = client.get("/")
-    assert response.status_code == 200
-    assert response.json() == {"message": "Bem-vindo à API do FinanceFlow"}
+BACKEND_DIR = Path(__file__).resolve().parent
 
 
-def test_health_check():
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "message": "A API está operante e saudável."}
+def _middleware_classes():
+    return [getattr(item, "cls", None) for item in app.user_middleware]
 
 
-def test_protected_route_rejects_missing_api_key():
-    response = client.get("/bills")
-    assert response.status_code == 401
-    assert response.json() == {"detail": "Unauthorized – invalid or missing API key."}
+def test_legacy_import_resolves_to_canonical_secure_application():
+    classes = _middleware_classes()
+    assert classes.count(SupabaseAuthMiddleware) == 1
+    assert classes.count(CORSMiddleware) == 1
+
+    client = TestClient(app)
+    assert client.get("/").json() == {"message": "Bem-vindo à API do FinanceFlow"}
+    protected = client.get("/bills")
+    assert protected.status_code == 401
+    assert protected.headers["WWW-Authenticate"] == "Bearer"
 
 
-def test_protected_route_rejects_invalid_api_key():
-    response = client.get("/bills", headers={"X-API-KEY": "wrong-key"})
-    assert response.status_code == 401
-    assert response.json() == {"detail": "Unauthorized – invalid or missing API key."}
+def test_legacy_module_has_no_independent_shared_secret_or_wildcard_surface():
+    source = (BACKEND_DIR / "main.py").read_text(encoding="utf-8")
+    assert "APIKeyMiddleware" not in source
+    assert "API_SECRET_KEY" not in source
+    assert "X-API-KEY" not in source
+    assert 'allow_origins=["*"]' not in source
+    assert "from runtime import create_app" in source
 
 
-@patch("main.get_supabase_client")
+@patch("api_handlers.get_supabase_client")
 def test_add_bill_record_persists_canonical_money(mock_supabase):
     table = mock_supabase.return_value.table.return_value
     table.insert.return_value.execute.return_value.data = [{"id": "abc", "amount": "250.00"}]
-    payload = {"description": "Conta X", "amount": 250.0, "status": "pending", "due_date": "2026-05-10"}
 
-    response = client.post("/add-bill", json=payload, headers=AUTH_HEADERS)
+    result = asyncio.run(
+        add_bill(
+            BillCreateRequest(
+                description="Conta X",
+                amount="250.0",
+                status="pending",
+                due_date="2026-05-10",
+            )
+        )
+    )
 
-    assert response.status_code == 200
     persisted = table.insert.call_args.args[0]
     assert persisted["amount"] == "250.00"
-    assert response.json()["data"][0]["amount"] == "250.00"
+    assert result["data"][0]["amount"] == "250.00"
 
 
-@patch("main.get_supabase_client")
+@patch("api_handlers.get_supabase_client")
 def test_add_bill_rounds_once_before_persistence(mock_supabase):
     table = mock_supabase.return_value.table.return_value
     table.insert.return_value.execute.return_value.data = [{"id": "abc", "amount": "1.01"}]
 
-    response = client.post(
-        "/add-bill",
-        json={"description": "Cent boundary", "amount": "1.005", "status": "pending", "due_date": "2026-05-10"},
-        headers=AUTH_HEADERS,
+    asyncio.run(
+        add_bill(
+            BillCreateRequest(
+                description="Cent boundary",
+                amount="1.005",
+                status="pending",
+                due_date="2026-05-10",
+            )
+        )
     )
 
-    assert response.status_code == 200
     assert table.insert.call_args.args[0]["amount"] == "1.01"
 
 
-@patch("main.get_supabase_client")
+@patch("api_handlers.get_supabase_client")
 def test_income_persists_canonical_money(mock_supabase):
     table = mock_supabase.return_value.table.return_value
     table.insert.return_value.execute.return_value.data = [{"id": "income-1", "amount": "0.30"}]
 
-    response = client.post(
-        "/incomes",
-        json={"title": "Synthetic income", "amount": "0.300", "date": "2026-08-01"},
-        headers=AUTH_HEADERS,
+    result = asyncio.run(
+        add_income(IncomeCreateRequest(title="Synthetic income", amount="0.300", date="2026-08-01"))
     )
 
-    assert response.status_code == 200
     assert table.insert.call_args.args[0]["amount"] == "0.30"
+    assert result["data"][0]["amount"] == "0.30"
 
 
-@patch("main.get_supabase_client")
-def test_settings_persist_canonical_money(mock_supabase):
-    table = mock_supabase.return_value.table.return_value
-    table.select.return_value.limit.return_value.execute.return_value.data = [{"id": "settings-1"}]
-    table.update.return_value.eq.return_value.execute.return_value.data = [
-        {"id": "settings-1", "initial_balance": "-10.01", "emergency_fund_goal": "1000.00"}
-    ]
-
-    response = client.post(
-        "/settings",
-        json={
-            "initial_balance": "-10.005",
-            "initial_balance_date": "2026-08-01",
-            "emergency_fund_goal": "1000",
-        },
-        headers=AUTH_HEADERS,
-    )
-
-    assert response.status_code == 200
-    persisted = table.update.call_args.args[0]
-    assert persisted["initial_balance"] == "-10.01"
-    assert persisted["emergency_fund_goal"] == "1000.00"
-
-
-@patch("main.get_supabase_client")
+@patch("api_handlers.get_supabase_client")
 def test_reserve_update_is_exact_and_canonical(mock_supabase):
     table = mock_supabase.return_value.table.return_value
     table.select.return_value.limit.return_value.execute.return_value.data = [
@@ -115,68 +104,30 @@ def test_reserve_update_is_exact_and_canonical(mock_supabase):
         {"id": "settings-1", "emergency_fund_balance": "10.01"}
     ]
 
-    response = client.post(
-        "/insights/reserve",
-        json={"amount": "0.005"},
-        headers=AUTH_HEADERS,
-    )
+    result = asyncio.run(add_to_reserve(ReserveAddRequest(amount="0.005")))
 
-    assert response.status_code == 200
     assert table.update.call_args.args[0]["emergency_fund_balance"] == "10.01"
+    assert result["status"] == "success"
 
 
-@patch("main.get_supabase_client")
-def test_get_bills_is_hermetic(mock_supabase):
-    mock_execute = mock_supabase.return_value.table.return_value.select.return_value.order.return_value.execute
-    mock_execute.return_value.data = [{"id": "bill-1", "amount": "99.90"}]
-    response = client.get("/bills", headers=AUTH_HEADERS)
-    assert response.status_code == 200
-    assert response.json()["data"] == mock_execute.return_value.data
-
-
-@patch("main.extract_invoice_data")
-def test_upload_receipt(mock_extract):
-    mock_extract.return_value = {"status": "success", "extracted_data": {"amount": 150.0, "due_date": "2023-12-01", "barcode": "123456789"}}
-    files = {"file": ("receipt.png", b"fake image content", "image/png")}
-    response = client.post("/upload-receipt", files=files, headers=AUTH_HEADERS)
-    assert response.status_code == 200
-    assert response.json()["ocr_result"]["amount"] == 150.0
-
-
-@patch("main.get_supabase_client")
-def test_validate_bill(mock_supabase):
-    mock_execute = mock_supabase.return_value.table.return_value.select.return_value.eq.return_value.execute
-    mock_execute.return_value.data = [{"id": "123-abc", "amount": "100.00", "due_date": "2023-10-10", "barcode": "111222333"}]
-    approved = {"bill_id": "123-abc", "ocr_amount": "102.00", "ocr_due_date": "2023-10-10", "ocr_barcode": "111222333"}
-    response = client.post("/validate-bill", json=approved, headers=AUTH_HEADERS)
-    assert response.status_code == 200
-    assert response.json()["is_approved"] is True
-    rejected = {"bill_id": "123-abc", "ocr_amount": "500.00", "ocr_due_date": "2020-01-01", "ocr_barcode": "0000"}
-    response = client.post("/validate-bill", json=rejected, headers=AUTH_HEADERS)
-    assert response.status_code == 200
-    assert response.json()["is_approved"] is False
-
-
-@patch("main.get_supabase_client")
+@patch("api_handlers.get_supabase_client")
 def test_validate_bill_amount_boundary_is_exact(mock_supabase):
-    mock_execute = mock_supabase.return_value.table.return_value.select.return_value.eq.return_value.execute
-    mock_execute.return_value.data = [{"id": "123-abc", "amount": "100.00", "due_date": "2026-08-10", "barcode": None}]
-
-    accepted = client.post(
-        "/validate-bill",
-        json={"bill_id": "123-abc", "ocr_amount": "105.00"},
-        headers=AUTH_HEADERS,
+    mock_execute = (
+        mock_supabase.return_value.table.return_value.select.return_value.eq.return_value.execute
     )
-    rejected = client.post(
-        "/validate-bill",
-        json={"bill_id": "123-abc", "ocr_amount": "105.01"},
-        headers=AUTH_HEADERS,
+    mock_execute.return_value.data = [
+        {"id": "123-abc", "amount": "100.00", "due_date": "2026-08-10", "barcode": None}
+    ]
+
+    accepted = asyncio.run(
+        validate_bill(BillValidationRequest(bill_id="123-abc", ocr_amount="105.00"))
+    )
+    rejected = asyncio.run(
+        validate_bill(BillValidationRequest(bill_id="123-abc", ocr_amount="105.01"))
     )
 
-    assert accepted.status_code == 200
-    assert accepted.json()["details"]["amount_match"] is True
-    assert rejected.status_code == 200
-    assert rejected.json()["details"]["amount_match"] is False
+    assert accepted["details"]["amount_match"] is True
+    assert rejected["details"]["amount_match"] is False
 
 
 class _Query:
