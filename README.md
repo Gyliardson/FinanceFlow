@@ -34,13 +34,16 @@ A arquitetura de produção usa **Supabase Auth** como identidade, PostgreSQL/RL
 
 - API FastAPI com autenticação Bearer baseada em sessão Supabase.
 - RLS/ownership por usuário para tabelas financeiras.
-- Contas avulsas e recorrentes com proteção de idempotência no PostgreSQL.
+- Criação de conta avulsa, receita, adição à reserva e criação de template recorrente com protocolo durável de `Idempotency-Key` no PostgreSQL.
+- Instâncias geradas de recorrência protegidas separadamente por unicidade `(parent_bill_id, due_date)` no banco.
 - Receitas, saldo, reserva e projeções usando regras de dinheiro decimal exato.
 - Pagamento com ou sem comprovante.
+- Pagamento com comprovante reconcilia resultados ambíguos de banco antes de qualquer cleanup do objeto; exception de transporte não é tratada como prova de rollback.
 - Comprovantes em bucket **privado**, identificados por object path opaco e acessados por URL assinada temporária após autorização.
 - OCR de documentos com structured output e validação local antes de qualquer confiança nos dados extraídos.
 - Casos de OCR ilegível/baixa confiança exigem revisão manual em vez de persistência automática.
 - Sessão mobile persistida em armazenamento seguro, refresh/logout e cache financeiro isolado por usuário.
+- Identidades de operações financeiras pendentes persistidas por usuário para reutilização após timeout, reconnect ou restart.
 - Notificações locais de vencimento.
 - Expo SDK 57 / React Native 0.86 com checks de TypeScript, Expo Doctor e export web no CI.
 
@@ -68,7 +71,7 @@ Sites externos podem mudar sem aviso. Esses adapters são deliberadamente tratad
 
 - **FastAPI** — API e validação de domínio.
 - **Supabase Auth** — identidade end-user.
-- **PostgreSQL / Supabase** — persistência financeira e RLS.
+- **PostgreSQL / Supabase** — persistência financeira, RLS e ledger transacional de idempotência.
 - **Supabase Storage** — comprovantes privados.
 - **Google GenAI** — provider de OCR/insights; testes críticos usam providers determinísticos.
 - **Docker** — imagem de produção validada em CI.
@@ -78,6 +81,7 @@ Sites externos podem mudar sem aviso. Esses adapters são deliberadamente tratad
 - **React Native + Expo SDK 57**.
 - Sessão Supabase com Bearer dinâmico para a API.
 - Cache financeiro owner-scoped para modo offline.
+- Operações financeiras pendentes owner-scoped que preservam a mesma `Idempotency-Key` enquanto o resultado está indeterminado.
 - Expo Notifications para lembretes locais.
 - EAS Update/Build para distribuição mobile quando credenciais externas estiverem configuradas.
 
@@ -87,11 +91,21 @@ Sites externos podem mudar sem aviso. Esses adapters são deliberadamente tratad
 - Service-role não é distribuída ao cliente mobile.
 - `owner_id`/RLS são boundaries de autorização no banco.
 - Dinheiro não usa binary float em cálculos autoritativos.
-- Instâncias recorrentes possuem garantia de unicidade no banco para retries/concurrency.
+- Para `POST /add-bill`, `POST /incomes`, `POST /insights/reserve` e `POST /recurring-bills`, a unidade lógica de replay é `auth.uid() + operation type + Idempotency-Key`.
+- O PostgreSQL deriva o fingerprint canônico a partir dos próprios parâmetros; o cliente não envia fingerprint confiável nem `owner_id` ao RPC.
+- Nessas quatro operações, claim da key, efeito financeiro e resultado durável pertencem à mesma transação PostgreSQL.
+- Mesma key + mesmo payload retorna o resultado já comprometido sem repetir o efeito; mesma key + payload diferente falha fechado.
+- Uma nova key representa uma nova intenção e pode repetir conscientemente os mesmos valores de negócio.
+- O mobile conserva a key de uma intenção não resolvida em timeout/network/5xx/reconnect/restart e só a encerra após sucesso confirmado ou rejeição 4xx definitiva não retryable.
+- O runtime atual expõe apenas **adição** à reserva; não existe endpoint de decremento/saque. Qualquer futura retirada deverá usar o mesmo protocolo antes de ser disponibilizada.
+- Instâncias recorrentes geradas possuem garantia de unicidade no banco para retries/concurrency; isso é separado da idempotência da criação do template recorrente.
 - Uploads são limitados e validados por conteúdo real, não somente pelo filename/MIME declarado.
 - Comprovantes não possuem URL pública permanente.
+- Em pagamento com comprovante, cleanup ocorre somente depois de estado autoritativo provar que o objeto não está referenciado.
 - OCR é sugestão: structured output é revalidado localmente antes de uso.
 - CI não depende de Gemini real nem de portais externos reais.
+
+Detalhes e casos de borda estão em [`backend/FINANCIAL_RULES.md`](backend/FINANCIAL_RULES.md).
 
 ## Desenvolvimento
 
@@ -131,9 +145,10 @@ Os workflows do repositório exercitam, conforme o escopo:
 
 - backend pytest e compilação Python;
 - `pip check` e `pip-audit`;
-- PostgreSQL real para recurring/idempotency e ownership/RLS;
+- PostgreSQL real para recurring/generated-child uniqueness e ownership/RLS;
+- PostgreSQL 16 dedicado para replay, commit-then-response-loss equivalente, payload mismatch, isolamento entre owners e concorrência same-key das quatro mutações financeiras duráveis;
 - mobile TypeScript;
-- contrato de autenticação/cache mobile;
+- contrato de autenticação/cache e lifecycle de operação financeira pendente no mobile;
 - Expo Doctor/config/export smoke;
 - build do container backend;
 - npm audit com evidência preservada;
@@ -144,6 +159,12 @@ Para desenvolvimento local do backend:
 ```bash
 cd backend
 pytest -q
+```
+
+Para executar o contrato PostgreSQL de idempotência em um banco descartável compatível com o fixture do CI:
+
+```bash
+bash backend/financial_idempotency_probe.sh
 ```
 
 Para verificação mobile:
@@ -176,6 +197,9 @@ O backend possui Dockerfile/Render configuration; o mobile possui configuração
 - Portais externos não são garantidos nem gates de CI.
 - Os adapters experimentais podem deixar de funcionar quando interfaces externas mudarem.
 - Findings npm residuais de tooling/Expo permanecem visíveis quando não existe caminho compatível seguro; não são ocultados com `--force`/allowlist apenas para obter CI verde.
+- O ledger server-side de idempotência ainda não possui cleanup automático; registros precisam durar no mínimo todo o período em que uma operação mobile pendente possa ser retomada.
+- Enquanto uma operação mobile permanece indeterminada, uma nova submissão com owner/operação/payload idênticos é tratada conservadoramente como retry da intenção pendente. Após conclusão/rejeição definitiva, a mesma combinação de valores pode iniciar nova intenção com nova key.
+- Não existe hoje retirada/decremento de reserva no produto; se essa mutação for adicionada, deverá adotar o mesmo boundary durável antes de ser exposta.
 - Assets e builds nativos remotos dependem de infraestrutura/credenciais externas quando aplicável.
 
 ---
@@ -194,13 +218,16 @@ The production architecture uses **Supabase Auth** for identity, PostgreSQL/RLS 
 
 - FastAPI API protected by Supabase-session Bearer authentication.
 - Per-user ownership/RLS for financial tables.
-- One-time and recurring bills with PostgreSQL idempotency guarantees.
+- Ordinary bill creation, income creation, reserve addition, and recurring-template creation protected by a durable PostgreSQL `Idempotency-Key` protocol.
+- Generated recurring children protected separately by `(parent_bill_id, due_date)` database uniqueness.
 - Income, balances, reserves and projections using exact decimal-money rules.
 - Receipt and receipt-less payment flows.
+- Receipt-backed payment reconciles ambiguous database outcomes before storage cleanup; a transport exception is not treated as proof of rollback.
 - Receipts stored in a **private** bucket and exposed only through short-lived authorized signed access.
 - OCR with structured output plus local validation before extracted data is trusted.
 - Unreadable/low-confidence OCR requires manual review instead of automatic persistence.
 - Mobile secure session persistence, refresh/logout and owner-scoped offline financial cache.
+- Owner-scoped pending financial operation identities survive timeout/reconnect/restart until the outcome becomes definitive.
 - Local due-date notifications.
 - Expo SDK 57 / React Native 0.86 with TypeScript, Expo Doctor and web-export smoke checks.
 
@@ -228,7 +255,7 @@ External sites can change without notice. Explicit failure/degradation is prefer
 
 - **FastAPI** — API/domain validation.
 - **Supabase Auth** — end-user identity.
-- **PostgreSQL / Supabase** — financial persistence and RLS.
+- **PostgreSQL / Supabase** — financial persistence, RLS, and transactional idempotency ledger.
 - **Supabase Storage** — private receipts.
 - **Google GenAI** — OCR/insight provider; critical tests use deterministic providers.
 - **Docker** — production image validated by CI.
@@ -238,6 +265,7 @@ External sites can change without notice. Explicit failure/degradation is prefer
 - **React Native + Expo SDK 57**.
 - Supabase session lifecycle and dynamic API Bearer token.
 - Owner-scoped financial cache for offline operation.
+- Owner-scoped pending operation identities that preserve the same `Idempotency-Key` while an outcome is indeterminate.
 - Expo Notifications for local reminders.
 - EAS Build/Update when external credentials/infrastructure are configured.
 
@@ -247,11 +275,21 @@ External sites can change without notice. Explicit failure/degradation is prefer
 - Service-role credentials never belong in the mobile client.
 - Database authorization is enforced through ownership/RLS.
 - Authoritative money calculations avoid binary float.
-- Recurring instances are protected by a database uniqueness boundary under retries/concurrency.
+- For `POST /add-bill`, `POST /incomes`, `POST /insights/reserve`, and `POST /recurring-bills`, replay identity is `auth.uid() + operation type + Idempotency-Key`.
+- PostgreSQL derives the canonical fingerprint from its mutation parameters; callers do not supply a trusted fingerprint or owner id.
+- For those four operations, key claim, financial effect, and durable replay result share one PostgreSQL transaction.
+- Same key + same logical payload replays the durable result without another effect; same key + different payload fails closed.
+- A new key represents a new intentional operation even if business values equal a prior completed operation.
+- Mobile keeps an unresolved key after network loss, 5xx, reconnect, or restart, and closes it only after confirmed success or a definitive non-retryable 4xx rejection.
+- The current product exposes reserve **addition only**; no reserve-withdrawal/decrement endpoint exists. Any future decrement must adopt the same durable protocol before exposure.
+- Generated recurring instances use a separate database uniqueness boundary under retries/concurrency.
 - Uploads are bounded and validated from actual content, not filename/MIME alone.
 - Receipts do not have permanent public URLs.
+- Receipt cleanup occurs only after authoritative state proves the uploaded object is unreferenced.
 - OCR output is untrusted until locally schema-validated.
 - CI does not depend on live Gemini calls or real third-party portals.
+
+See [`backend/FINANCIAL_RULES.md`](backend/FINANCIAL_RULES.md) for the detailed domain contract.
 
 ## Development
 
@@ -290,9 +328,10 @@ Repository workflows cover, as applicable:
 
 - backend pytest/Python compilation;
 - `pip check` and `pip-audit`;
-- disposable PostgreSQL recurring/idempotency and ownership/RLS checks;
+- disposable PostgreSQL recurring/generated-child and ownership/RLS checks;
+- dedicated PostgreSQL 16 replay, ambiguous-response equivalent, payload-mismatch, owner-isolation and same-key concurrency proof for all four durable financial mutations;
 - mobile TypeScript;
-- mobile auth/cache contract;
+- mobile auth/cache/pending-operation lifecycle contract;
 - Expo Doctor/config/web-export smoke;
 - backend container build;
 - npm audit evidence;
@@ -303,6 +342,12 @@ Backend locally:
 ```bash
 cd backend
 pytest -q
+```
+
+The PostgreSQL idempotency probe can be run against a disposable database compatible with the CI fixture:
+
+```bash
+bash backend/financial_idempotency_probe.sh
 ```
 
 Mobile locally:
@@ -335,6 +380,9 @@ The backend includes Docker/Render configuration and the mobile app includes Exp
 - Third-party portals are not availability guarantees or CI gates.
 - Experimental adapters can break when external interfaces change.
 - Residual npm findings remain visible when the upstream Expo/tooling graph has no compatible safe upgrade path; they are not hidden with forced downgrades or blanket allowlists.
+- The server idempotency ledger has no automatic cleanup yet; records must outlive the entire supported mobile pending-operation retry window.
+- While a mobile operation remains indeterminate, the same owner/operation/payload is conservatively treated as a retry of that pending intent. After definitive completion/rejection, equal business values can start a new intent with a new key.
+- Reserve withdrawal/decrement is not currently a product endpoint; any future mutation of that class must use the durable protocol before exposure.
 - Remote native builds and external deployment still depend on operator credentials/infrastructure where applicable.
 
 ## License

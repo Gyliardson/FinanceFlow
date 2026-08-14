@@ -1,6 +1,6 @@
 # FinanceFlow Financial Domain Rules
 
-This document defines the backend invariants for monetary values, mutable reserve state, payments and generated recurring bills. It is intentionally implementation-oriented: tests and database/application concurrency guards must prove these rules before the portfolio revamp can claim financial correctness.
+This document defines the backend invariants for monetary values, financial mutation identity, payments and recurring bills. Tests and database/application concurrency guards must prove these rules before the portfolio revamp can claim financial correctness.
 
 ## Money representation
 
@@ -11,7 +11,7 @@ This document defines the backend invariants for monetary values, mutable reserv
 - API monetary inputs are normalized before product bounds are evaluated. For a positive-money field, a sub-cent input such as `0.004` becomes `0.00` and is rejected rather than being persisted as a zero-valued transaction.
 - Persistence payloads use canonical fixed-scale decimal strings such as `"10.00"` so JSON serialization cannot introduce binary floating-point drift before PostgreSQL receives the value.
 - Non-finite values (`NaN`, `Infinity`, `-Infinity`) are invalid.
-- Existing API product bounds remain in force unless a separate domain decision changes them: positive bill/income/reserve additions and bounded settings values.
+- Existing API product bounds remain in force unless a separate domain decision changes them.
 
 ### Rounding examples
 
@@ -46,30 +46,95 @@ For a configured start date:
 
 Every operand and intermediate total remains `Decimal` until presentation/serialization. Tests include zero, negative balances, cent values, mixed input representations, large allowed values, and rounding boundaries.
 
-## Payment idempotency
+## Durable online mutation idempotency
 
-Both payment modes treat `paid` as an idempotent target state.
+The following **non-convergent financial POST mutations** use the durable `Idempotency-Key` protocol:
 
-- New bill creation cannot directly choose `paid` or `overdue`; those are server-owned lifecycle states. This prevents a client from creating a paid row without the payment metadata used by authoritative calculations.
-- Receipt-backed payment performs a compare-and-set update constrained by `status != paid`; a concurrent/zero-row update does not claim a second successful write and uploaded receipt cleanup is attempted on failed persistence.
-- Receipt-less payment uses the same `status != paid` compare-and-set boundary. If another request completes the bill between lookup and update, the losing request reports that the target state is already achieved instead of claiming that it performed a second payment.
-- RLS-scoped lookup/update remains the ownership authority, so a cross-user bill id is indistinguishable from a nonexistent bill.
+1. reserve addition (`POST /insights/reserve`);
+2. ordinary bill creation (`POST /add-bill`);
+3. income creation (`POST /incomes`);
+4. recurring-template creation (`POST /recurring-bills`).
 
-The initial read is therefore informational/validation work; it is never the final concurrency authority.
+The logical identity is:
 
-## Reserve mutation concurrency
+`authenticated owner + operation type + Idempotency-Key`
 
-Reserve additions are additive money mutations and must not use an unguarded read-modify-write sequence. Two concurrent additions that both read the same prior balance could otherwise silently lose one contribution.
+The product currently exposes reserve **addition only**. There is no reserve-withdrawal/decrement endpoint. A future decrement mutation must adopt this same durable boundary before it is exposed; it is not silently treated as supported today.
 
-The current Data API boundary uses bounded optimistic compare-and-set:
+### Database-owned payload fingerprint
 
-1. read the authenticated user's settings and exact current `emergency_fund_balance`;
-2. calculate the next balance using canonical `Decimal` semantics;
-3. update only when both the settings id and exact previously-read balance still match;
-4. if a concurrent writer changed the balance, re-read and retry;
-5. stop after the bounded retry budget and return a conflict rather than loop indefinitely or overwrite money.
+The canonical request fingerprint is computed **inside PostgreSQL**, not supplied by the mobile client or trusted from the FastAPI caller. Each RPC canonicalizes its own logical parameters and derives a SHA-256 fingerprint from that canonical payload.
 
-A provider/database failure is surfaced as a sanitized availability failure. Missing user settings fail without attempting a write.
+Consequences:
+
+- the caller cannot choose a fingerprint to make a changed payload look equivalent;
+- owner identity is always `auth.uid()` and is not an RPC argument;
+- equivalent decimal spellings such as `10`, `10.0` and `10.00` canonicalize to the same logical amount;
+- the derived first due date of a recurring template is intentionally excluded from that template's fingerprint, because retrying the same unresolved intent after a calendar rollover must replay the already-committed template rather than become a false mismatch.
+
+### Transaction boundary
+
+Migration `006_financial_idempotency.sql` provides PostgreSQL `SECURITY INVOKER` RPCs that coordinate three things in the **same transaction**:
+
+1. claim the owner/operation/key row;
+2. apply the financial effect;
+3. persist the durable result used by later replay.
+
+This deliberately avoids the unsafe pattern `check key -> mutate -> insert replay record` as separate operations.
+
+A transaction that rolls back leaves neither a completed effect nor a durable replay result. If the database transaction commits but the client loses the response, both the financial effect and replay result are already durable; the caller retries the same unresolved intent with the same key and PostgreSQL returns the committed result without another effect.
+
+### Replay contract
+
+- same owner + operation + key + equivalent canonical payload → return the durable result; apply the financial effect once;
+- same owner + operation + key + different payload → reject explicitly/fail closed;
+- the same opaque key used by another authenticated owner is independent and cannot reveal or deduplicate the first owner's operation;
+- a **new key** deliberately represents a new business intent, even when all business values equal a prior completed operation.
+
+The ledger is owner-scoped by RLS and the mutation functions are `SECURITY INVOKER`; `auth.uid()` remains the ownership authority.
+
+### Mobile operation lifecycle
+
+For these four operations the mobile client creates/persists the operation identity **before transport**. Pending records are owner-scoped in AsyncStorage.
+
+- new unresolved user intent → one new operation key;
+- concurrent transport attempts for that same unresolved intent → same key;
+- timeout, connection reset, app reconnect, HTTP 5xx, `408`, `425`, or `429` → outcome may be ambiguous, so retain the key;
+- app/module restart → the unresolved owner-scoped key is loaded again;
+- confirmed success → clear the pending identity;
+- definitive non-retryable 4xx rejection → close that rejected identity;
+- after confirmed completion, intentionally repeating the same business values is a new intent and receives a new key.
+
+While a mobile operation is still indeterminate, the same owner/operation/canonical payload is conservatively treated as the same unresolved intent. This prevents an accidental duplicate during uncertainty. If a user truly needs an identical second business operation, the first one must reach a definitive outcome before the mobile client starts the second identity.
+
+The mobile pending-operation retention window is currently 90 days. Server replay records are not automatically deleted by migration 006; they remain durable until an explicit operator-managed lifecycle policy is introduced. The server therefore does not expire a key while a supported mobile pending record can still legitimately retry it.
+
+Logout does not erase unresolved operation identities globally. They remain owner-scoped so a later login by the same owner can safely reconcile an ambiguous outcome, while another owner cannot reuse or observe them.
+
+## Payment convergence and ambiguous receipt commits
+
+Payment endpoints have a **different contract** from the four `Idempotency-Key` mutations above. Do not describe all payment behavior generically as key-based idempotency.
+
+### Receipt-less payment
+
+The target state is `paid`. The final update is compare-and-set constrained by `status != paid`. If another request completes the same bill between lookup and update, the losing request converges to the already-achieved paid state rather than claiming a second financial write.
+
+### Receipt-backed payment
+
+Receipt-backed payment also uses a `status != paid` compare-and-set, but storage makes the failure model different. An exception returned by the Data API is **not proof of database rollback**.
+
+The fail-safe sequence is:
+
+1. validate and upload the private, owner/bill-scoped receipt;
+2. attempt the RLS-scoped payment mutation;
+3. if the mutation result is lost or otherwise ambiguous, re-read the authoritative RLS-scoped bill;
+4. if the bill committed `paid` with this exact `receipt_path`, retain the object and resolve to the committed payment;
+5. if reconciliation itself is unavailable or the row still references this object in an unexpected partial state, retain the object rather than destroying possibly committed evidence;
+6. delete the uploaded object only after authoritative state proves that this attempt's object is not referenced.
+
+A later retry after `COMMIT -> response failure` converges to the already-committed receipt/payment without a second upload. Tests explicitly distinguish this from `FAIL BEFORE COMMIT`.
+
+RLS-scoped lookup/update remains the ownership authority, so a cross-user bill id is indistinguishable from a nonexistent bill.
 
 ## Recurring-bill calendar rule
 
@@ -83,13 +148,15 @@ Monthly recurring bills use a configured day from 1 through 31.
 - If today is equal to or after the target due date, generate for the next month.
 - December-to-January and leap/non-leap February are mandatory regression cases.
 
-Template persistence and child generation are separate steps. If template creation succeeds but immediate child generation fails, the API returns explicit partial success with the created template and marks generation as deferred. It must not report total creation failure and encourage a retry that could duplicate the template. The explicit generation route can recover the deferred child generation against the database idempotency boundary.
+Recurring **template creation** uses the durable `Idempotency-Key` contract above. Child generation occurs after the template RPC and is recoverable independently. If child generation fails after template creation, the API reports explicit partial success and generation can be retried without inserting another template with the same unresolved operation identity.
 
-## Generated-instance idempotency
+## Generated-child idempotency
 
-Application pre-checks are an optimization only. PostgreSQL is the final authority.
+Generated recurring children use a separate database invariant and must not be confused with template-creation idempotency.
 
 Generated children are unique by `(parent_bill_id, due_date)` when `parent_bill_id IS NOT NULL` and the row is not itself a recurring template. Migration `002_recurring_instance_uniqueness.sql` enforces this with a partial unique index.
+
+Application pre-checks are an optimization only; PostgreSQL is the final authority.
 
 ### Historical duplicates
 
@@ -105,19 +172,15 @@ For a multi-row insert, a uniqueness conflict aborts the PostgreSQL statement. N
 
 ## Validation evidence
 
-The FinanceFlow CI proves these invariants with:
+The FinanceFlow gates prove these invariants with:
 
-- exact-money unit tests;
-- API boundary and canonical-payload tests;
-- financial-calendar tests around UTC/local midnight and invalid timezone configuration;
-- payment compare-and-set/idempotency tests, including a simulated race;
-- reserve exact-balance compare-and-set, concurrent-change retry and bounded-contention tests;
+- exact-money unit tests and canonical API payload tests;
+- financial-calendar boundary tests;
+- receipt payment tests that distinguish fail-before-commit from commit-then-response-failure and verify signed access to retained evidence;
+- a disposable PostgreSQL 16 financial-idempotency contract covering database-owned fingerprinting, replay, payload mismatch, owner isolation, intentional new-key repetition and concurrent same-key requests for reserve/bill/income/recurring-template mutations;
+- backend adapter tests that model commit-before-timeout for all four durable mutation classes;
+- a mobile contract proving owner-scoped unresolved key reuse across same-process concurrency, reconnect-style retry and module/app restart;
 - PostgreSQL `NUMERIC(...,2)` persistence round-trip checks;
-- calendar edge-case tests;
-- disposable PostgreSQL migration tests;
-- historical-duplicate fail-closed behavior;
-- concurrent writers for the same generated instance;
-- retry idempotency;
-- bulk conflict rollback and recovery.
+- recurring calendar edge cases, historical-duplicate fail-closed behavior, concurrent generated-child writers, retry uniqueness and bulk-conflict recovery.
 
 Changes that weaken these invariants require an explicit domain decision and corresponding test updates; they must not be made solely to obtain a green CI result.

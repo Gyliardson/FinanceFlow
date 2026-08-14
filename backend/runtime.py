@@ -5,8 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api_handlers import (
-    add_bill,
-    add_income,
     get_bill_detail,
     get_bills,
     get_incomes,
@@ -24,13 +22,15 @@ from api_handlers import (
 )
 from api_models import HealthResponse
 from auth_middleware import SupabaseAuthMiddleware
-from secure_ocr_routes import upload_receipt_for_ocr
-from secure_recurring_routes import (
-    create_recurring_bill_user_scoped,
-    generate_recurring_instances_user_scoped,
+from idempotent_routes import (
+    add_bill_idempotent,
+    add_income_idempotent,
+    add_to_reserve_idempotent,
+    create_recurring_bill_idempotent,
 )
+from secure_ocr_routes import upload_receipt_for_ocr
+from secure_recurring_routes import generate_recurring_instances_user_scoped
 from secure_routes import (
-    add_to_reserve_atomic,
     get_private_receipt_access,
     pay_bill_with_private_receipt,
     pay_bill_without_receipt,
@@ -89,7 +89,7 @@ def _install_core_routes(app: FastAPI) -> None:
 
     app.add_api_route("/bills", get_bills, methods=["GET"], tags=["Bills"])
     app.add_api_route("/bills/pending", get_pending_bills, methods=["GET"], tags=["Bills"])
-    app.add_api_route("/add-bill", add_bill, methods=["POST"], tags=["Bills"])
+    app.add_api_route("/add-bill", add_bill_idempotent, methods=["POST"], tags=["Bills"])
     app.add_api_route(
         "/recurring-bills", get_recurring_bills, methods=["GET"], tags=["Recurring Bills"]
     )
@@ -102,13 +102,15 @@ def _install_core_routes(app: FastAPI) -> None:
     )
 
     app.add_api_route("/incomes", get_incomes, methods=["GET"], tags=["Incomes"])
-    app.add_api_route("/incomes", add_income, methods=["POST"], tags=["Incomes"])
+    app.add_api_route("/incomes", add_income_idempotent, methods=["POST"], tags=["Incomes"])
     app.add_api_route("/settings", get_settings, methods=["GET"], tags=["Settings"])
     app.add_api_route("/settings", update_settings, methods=["POST"], tags=["Settings"])
 
     app.add_api_route("/insights", get_insights, methods=["GET"], tags=["Insights"])
     app.add_api_route("/insights/refresh", refresh_insights, methods=["POST"], tags=["Insights"])
-    app.add_api_route("/insights/reserve", add_to_reserve_atomic, methods=["POST"], tags=["Insights"])
+    app.add_api_route(
+        "/insights/reserve", add_to_reserve_idempotent, methods=["POST"], tags=["Insights"]
+    )
     app.add_api_route(
         "/validate-bill", validate_bill, methods=["POST"], tags=["Bills", "Validation"]
     )
@@ -129,7 +131,7 @@ def _install_secure_routes(app: FastAPI) -> None:
     )
     app.add_api_route(
         "/recurring-bills",
-        create_recurring_bill_user_scoped,
+        create_recurring_bill_idempotent,
         methods=["POST"],
         tags=["Recurring Bills"],
     )
@@ -175,7 +177,7 @@ def create_app() -> FastAPI:
         allow_origins=configured_cors_origins(),
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
     )
     app.add_middleware(SupabaseAuthMiddleware, public_paths=PUBLIC_PATHS)
     return app
