@@ -173,6 +173,126 @@ async function testSuccessfulRefreshRotatesTokens() {
   assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-a');
 }
 
+async function testConcurrentAccessTokenRefreshIsSingleFlight() {
+  await resetStorage();
+  global.fetch = async (url) => {
+    if (String(url).includes('grant_type=password')) {
+      return response(200, tokenPayload('user-concurrent', {
+        access_token: 'expiring-access',
+        refresh_token: 'shared-refresh',
+        expires_in: 0,
+      }));
+    }
+    throw new Error(`Unexpected auth request: ${url}`);
+  };
+  await auth.signInWithPassword('concurrent@example.test', 'secret');
+
+  let refreshCalls = 0;
+  global.fetch = async (url) => {
+    assert.match(String(url), /grant_type=refresh_token/);
+    refreshCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return response(200, tokenPayload('user-concurrent', {
+      access_token: 'single-flight-access',
+      refresh_token: 'rotated-refresh',
+    }));
+  };
+
+  const tokens = await Promise.all([
+    auth.getValidAccessToken(),
+    auth.getValidAccessToken(),
+    auth.getValidAccessToken(),
+  ]);
+  assert.deepEqual(tokens, [
+    'single-flight-access',
+    'single-flight-access',
+    'single-flight-access',
+  ]);
+  assert.equal(refreshCalls, 1);
+  assert.equal(auth.getCurrentAuthSession().refreshToken, 'rotated-refresh');
+}
+
+async function testConcurrentInvalidRefreshFailsClosedWithoutThrowing() {
+  await resetStorage();
+  global.fetch = async (url) => {
+    if (String(url).includes('grant_type=password')) {
+      return response(200, tokenPayload('user-invalid', {
+        access_token: 'expired-access',
+        refresh_token: 'invalid-refresh',
+        expires_in: 0,
+      }));
+    }
+    throw new Error(`Unexpected auth request: ${url}`);
+  };
+  await auth.signInWithPassword('invalid@example.test', 'secret');
+  await cache.setUserCache('user-invalid', 'bills', [{ id: 'private-bill' }]);
+
+  let refreshCalls = 0;
+  global.fetch = async () => {
+    refreshCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return response(401, { error: 'invalid_grant' });
+  };
+
+  const settled = await Promise.allSettled([
+    auth.getValidAccessToken(),
+    auth.getValidAccessToken(),
+    auth.getValidAccessToken(),
+  ]);
+  assert.deepEqual(settled.map((item) => item.status), ['fulfilled', 'fulfilled', 'fulfilled']);
+  assert.deepEqual(settled.map((item) => item.value), [null, null, null]);
+  assert.equal(refreshCalls, 1);
+  assert.equal(auth.getCurrentAuthSession(), null);
+  assert.equal(await asyncStorage.getItem(SESSION_KEY), null);
+  assert.equal(await cache.getUserCache('user-invalid', 'bills'), null);
+}
+
+async function testStaleRefreshFailureCannotClearNewLogin() {
+  await resetStorage();
+  global.fetch = async (url) => {
+    if (String(url).includes('grant_type=password')) {
+      return response(200, tokenPayload('user-old', {
+        access_token: 'old-expired-access',
+        refresh_token: 'old-refresh',
+        expires_in: 0,
+      }));
+    }
+    throw new Error(`Unexpected auth request: ${url}`);
+  };
+  await auth.signInWithPassword('old@example.test', 'secret');
+
+  let releaseOldRefresh;
+  let refreshStartedResolve;
+  const refreshStarted = new Promise((resolve) => { refreshStartedResolve = resolve; });
+  global.fetch = async (url) => {
+    if (String(url).includes('grant_type=refresh_token')) {
+      refreshStartedResolve();
+      return new Promise((resolve) => {
+        releaseOldRefresh = () => resolve(response(401, { error: 'invalid_grant' }));
+      });
+    }
+    if (String(url).includes('grant_type=password')) {
+      return response(200, tokenPayload('user-new', {
+        access_token: 'new-login-access',
+        refresh_token: 'new-login-refresh',
+      }));
+    }
+    throw new Error(`Unexpected auth request: ${url}`);
+  };
+
+  const staleTokenRequest = auth.getValidAccessToken();
+  await refreshStarted;
+  const newSession = await auth.signInWithPassword('new@example.test', 'secret');
+  releaseOldRefresh();
+
+  assert.equal(await staleTokenRequest, null);
+  assert.equal(newSession.user.id, 'user-new');
+  assert.equal(auth.getCurrentAuthSession().user.id, 'user-new');
+  const persisted = JSON.parse(await asyncStorage.getItem(SESSION_KEY));
+  assert.equal(persisted.user.id, 'user-new');
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-new');
+}
+
 async function testLogoutPurgesOnlyAuthenticatedOwnersFinancialStateAndSession() {
   await resetStorage();
   const session = makeSession('user-a');
@@ -224,6 +344,9 @@ async function main() {
     testExpiredSessionInvalidRefreshFailsClosed,
     testTransientRefreshFailurePreservesOfflineOwnerState,
     testSuccessfulRefreshRotatesTokens,
+    testConcurrentAccessTokenRefreshIsSingleFlight,
+    testConcurrentInvalidRefreshFailsClosedWithoutThrowing,
+    testStaleRefreshFailureCannotClearNewLogin,
     testLogoutPurgesOnlyAuthenticatedOwnersFinancialStateAndSession,
     testAccountSwitchDoesNotReusePreviousLegacyCache,
   ];
