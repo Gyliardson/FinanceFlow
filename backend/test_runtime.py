@@ -7,6 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 from auth_middleware import SupabaseAuthMiddleware
+from idempotent_routes import (
+    add_bill_idempotent,
+    add_income_idempotent,
+    add_to_reserve_idempotent,
+    create_recurring_bill_idempotent,
+)
 from runtime import _privacy_safe_http_exception_handler, configured_cors_origins, create_app
 from secure_ocr_routes import upload_receipt_for_ocr
 from secure_recurring_routes import (
@@ -70,21 +76,46 @@ def test_factory_installs_one_auth_and_one_cors_middleware(monkeypatch):
     assert classes.count(CORSMiddleware) == 1
 
 
-def test_runtime_registers_only_secure_sensitive_handlers(monkeypatch):
+def test_runtime_registers_canonical_secure_and_idempotent_handlers(monkeypatch):
     app = _production_app(monkeypatch)
     expected = (
         ("/bills/{bill_id}/pay", "POST", pay_bill_with_private_receipt),
         ("/bills/{bill_id}/pay-no-receipt", "POST", pay_bill_without_receipt),
         ("/bills/{bill_id}/receipt", "GET", get_private_receipt_access),
-        ("/recurring-bills", "POST", create_recurring_bill_user_scoped),
+        ("/add-bill", "POST", add_bill_idempotent),
+        ("/incomes", "POST", add_income_idempotent),
+        ("/recurring-bills", "POST", create_recurring_bill_idempotent),
         ("/recurring-bills/generate", "POST", generate_recurring_instances_user_scoped),
         ("/upload-receipt", "POST", upload_receipt_for_ocr),
-        ("/insights/reserve", "POST", add_to_reserve_atomic),
+        ("/insights/reserve", "POST", add_to_reserve_idempotent),
     )
     for path, method, endpoint in expected:
         routes = _matching_routes(app, path, method)
         assert len(routes) == 1
         assert routes[0].endpoint is endpoint
+
+
+def test_legacy_non_idempotent_financial_handlers_are_not_registered(monkeypatch):
+    app = _production_app(monkeypatch)
+    registered_endpoints = {
+        route.endpoint
+        for route in app.router.routes
+        if hasattr(route, "endpoint")
+    }
+    assert create_recurring_bill_user_scoped not in registered_endpoints
+    assert add_to_reserve_atomic not in registered_endpoints
+
+
+def test_critical_financial_mutations_require_idempotency_header_at_route_boundary(monkeypatch):
+    app = _production_app(monkeypatch)
+    for path in ("/add-bill", "/incomes", "/recurring-bills", "/insights/reserve"):
+        routes = _matching_routes(app, path, "POST")
+        assert len(routes) == 1
+        header_params = {
+            parameter.alias
+            for parameter in routes[0].dependant.header_params
+        }
+        assert "Idempotency-Key" in header_params
 
 
 def test_repeated_factories_do_not_accumulate_routes_or_middleware(monkeypatch):
@@ -158,6 +189,18 @@ def test_cors_preflight_allows_only_configured_origin(monkeypatch):
     )
     assert allowed.status_code == 200
     assert allowed.headers["access-control-allow-origin"] == "https://app.example.com"
+
+    idempotent_preflight = client.options(
+        "/add-bill",
+        headers={
+            "Origin": "https://app.example.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Authorization,Content-Type,Idempotency-Key",
+        },
+    )
+    assert idempotent_preflight.status_code == 200
+    assert idempotent_preflight.headers["access-control-allow-origin"] == "https://app.example.com"
+    assert "idempotency-key" in idempotent_preflight.headers["access-control-allow-headers"].lower()
 
     denied = client.options(
         "/bills",
