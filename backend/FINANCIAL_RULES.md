@@ -1,6 +1,6 @@
 # FinanceFlow Financial Domain Rules
 
-This document defines the backend invariants for monetary values and generated recurring bills. It is intentionally implementation-oriented: tests and database constraints must prove these rules before the portfolio revamp can claim financial correctness.
+This document defines the backend invariants for monetary values, mutable reserve state, payments and generated recurring bills. It is intentionally implementation-oriented: tests and database/application concurrency guards must prove these rules before the portfolio revamp can claim financial correctness.
 
 ## Money representation
 
@@ -34,6 +34,30 @@ For a configured start date:
 `estimated_surplus = current_balance - pending_or_overdue_bills_due_through_month_end`
 
 Every operand and intermediate total remains `Decimal` until presentation/serialization. Tests include zero, negative balances, cent values, mixed input representations, large allowed values, and rounding boundaries.
+
+## Payment idempotency
+
+Both payment modes treat `paid` as an idempotent target state.
+
+- Receipt-backed payment performs a compare-and-set update constrained by `status != paid`; a concurrent/zero-row update does not claim a second successful write and uploaded receipt cleanup is attempted on failed persistence.
+- Receipt-less payment uses the same `status != paid` compare-and-set boundary. If another request completes the bill between lookup and update, the losing request reports that the target state is already achieved instead of claiming that it performed a second payment.
+- RLS-scoped lookup/update remains the ownership authority, so a cross-user bill id is indistinguishable from a nonexistent bill.
+
+The initial read is therefore informational/validation work; it is never the final concurrency authority.
+
+## Reserve mutation concurrency
+
+Reserve additions are additive money mutations and must not use an unguarded read-modify-write sequence. Two concurrent additions that both read the same prior balance could otherwise silently lose one contribution.
+
+The current Data API boundary uses bounded optimistic compare-and-set:
+
+1. read the authenticated user's settings and exact current `emergency_fund_balance`;
+2. calculate the next balance using canonical `Decimal` semantics;
+3. update only when both the settings id and exact previously-read balance still match;
+4. if a concurrent writer changed the balance, re-read and retry;
+5. stop after the bounded retry budget and return a conflict rather than loop indefinitely or overwrite money.
+
+A provider/database failure is surfaced as a sanitized availability failure. Missing user settings fail without attempting a write.
 
 ## Recurring-bill calendar rule
 
@@ -69,6 +93,8 @@ The FinanceFlow CI proves these invariants with:
 
 - exact-money unit tests;
 - API boundary and canonical-payload tests;
+- payment compare-and-set/idempotency tests, including a simulated race;
+- reserve exact-balance compare-and-set, concurrent-change retry and bounded-contention tests;
 - PostgreSQL `NUMERIC(...,2)` persistence round-trip checks;
 - calendar edge-case tests;
 - disposable PostgreSQL migration tests;
