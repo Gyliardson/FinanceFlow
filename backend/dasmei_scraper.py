@@ -48,6 +48,17 @@ def _target_competence(now: datetime) -> tuple[int, int]:
     return now.year, now.month - 1
 
 
+def _requires_human_verification(body_text: str, *, captcha_frames: int = 0) -> bool:
+    normalized = body_text.lower()
+    return (
+        captcha_frames > 0
+        or "captcha" in normalized
+        or "comportamento de rob" in normalized
+        or "impedido" in normalized
+        or "verificação de segurança" in normalized
+    )
+
+
 async def scrape_dasmei() -> dict:
     """Return one validated DAS invoice candidate without persisting it."""
 
@@ -95,13 +106,13 @@ async def scrape_dasmei() -> dict:
                     await cnpj_input.press("Enter")
 
                     # Human verification is a hard boundary, never something to evade.
-                    body_text = (await page.locator("body").inner_text()).lower()
-                    captcha_frame = page.locator('iframe[src*="captcha" i], iframe[title*="captcha" i]')
-                    if (
-                        "captcha" in body_text
-                        or "comportamento de rob" in body_text
-                        or "impedido" in body_text
-                        or await captcha_frame.count() > 0
+                    body_text = await page.locator("body").inner_text()
+                    captcha_frame = page.locator(
+                        'iframe[src*="captcha" i], iframe[title*="captcha" i]'
+                    )
+                    if _requires_human_verification(
+                        body_text,
+                        captcha_frames=await captcha_frame.count(),
                     ):
                         return _result_payload(blocked_result("DASMEI"))
 
