@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import AppNavigator from './src/navigation/AppNavigator';
-import * as NavigationBar from 'expo-navigation-bar';
+import { NavigationBar } from 'expo-navigation-bar';
 import { StatusBar } from 'expo-status-bar';
 import { requestNotificationPermissions } from './src/services/NotificationService';
 import { AuthProvider, useAuth } from './src/services/AuthContext';
@@ -13,8 +13,7 @@ function AppContent() {
 
   useEffect(() => {
     if (Platform.OS === 'android') {
-      NavigationBar.setBehaviorAsync('inset-swipe');
-      NavigationBar.setVisibilityAsync('hidden');
+      NavigationBar.setHidden(true);
     }
   }, []);
 
