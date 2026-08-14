@@ -1,5 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { clearLegacyGlobalFinancialCache, clearUserFinancialCache } from './userCache';
+import {
+  clearLegacyGlobalFinancialCache,
+  clearUserFinancialCache,
+  hydrateLegacyFinancialCacheForUser,
+  migrateLegacyFinancialCacheToUser,
+} from './userCache';
 
 const SESSION_STORAGE_KEY = '@financeflow:auth-session:v1';
 const REFRESH_SKEW_MS = 60_000;
@@ -142,11 +147,10 @@ async function refreshSession(refreshToken: string): Promise<AuthSession> {
 }
 
 export async function initializeAuthSession(): Promise<AuthSession | null> {
-  await clearLegacyGlobalFinancialCache();
-
   const stored = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
   if (!stored) {
     currentSession = null;
+    await clearLegacyGlobalFinancialCache();
     return null;
   }
 
@@ -155,28 +159,40 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
     parsed = JSON.parse(stored);
   } catch {
     await persistSession(null);
+    await clearLegacyGlobalFinancialCache();
     return null;
   }
 
   if (!isAuthSession(parsed)) {
     await persistSession(null);
+    await clearLegacyGlobalFinancialCache();
     return null;
   }
 
+  // Capture any cache produced by the previous authenticated run before the
+  // transitional global keys are cleared. The app is still behind its loading
+  // gate here, so those values cannot be rendered by another account.
+  await migrateLegacyFinancialCacheToUser(parsed.user.id);
   currentSession = parsed;
+
   if (parsed.expiresAt > Date.now() + REFRESH_SKEW_MS) {
+    await hydrateLegacyFinancialCacheForUser(parsed.user.id);
     return parsed;
   }
 
   try {
-    return await refreshSession(parsed.refreshToken);
+    const refreshed = await refreshSession(parsed.refreshToken);
+    await hydrateLegacyFinancialCacheForUser(refreshed.user.id);
+    return refreshed;
   } catch (error) {
     if (error instanceof InvalidCredentialsError) {
       await clearLocalFinancialState(parsed.user.id);
       await persistSession(null);
       return null;
     }
-    // Keep the authenticated identity available so owner-scoped cache can support offline mode.
+    // A transient Auth outage must not destroy the owner's offline cache. The
+    // persisted identity remains the only namespace allowed to hydrate it.
+    await hydrateLegacyFinancialCacheForUser(parsed.user.id);
     return parsed;
   }
 }
@@ -202,6 +218,7 @@ export async function signInWithPassword(
   }
 
   const session = normalizeTokenResponse(payload);
+  await clearLegacyGlobalFinancialCache();
   await persistSession(session);
   return session;
 }
