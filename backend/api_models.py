@@ -16,7 +16,6 @@ from money import money
 MAX_MONEY = Decimal("1000000.00")
 MIN_SIGNED_MONEY = Decimal("-1000000.00")
 CanonicalMoney = Annotated[Decimal, BeforeValidator(money)]
-BillStatus = Literal["pending", "paid", "overdue"]
 IncomeType = Literal["salary", "extra", "adjustment"]
 
 
@@ -54,7 +53,10 @@ class BillCreateRequest(BaseModel):
     amount: CanonicalMoney = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
     due_date: CanonicalDate
     barcode: Optional[str] = Field(None, max_length=255)
-    status: BillStatus = "pending"
+    # New bills enter the authoritative lifecycle as pending. Paid/overdue are
+    # server-owned transitions so clients cannot create a paid row without the
+    # payment metadata used by financial calculations.
+    status: Literal["pending"] = "pending"
 
 
 class RecurringBillCreateRequest(BaseModel):
