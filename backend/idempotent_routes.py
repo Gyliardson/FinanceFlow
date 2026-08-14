@@ -56,19 +56,10 @@ def _execute_or_http(**kwargs):
 
 async def add_bill_idempotent(req: BillCreateRequest, idempotency_key: IdempotencyHeader):
     _require_authenticated_context()
-    payload = {
-        "description": req.description,
-        "amount": req.amount,
-        "due_date": req.due_date,
-        "barcode": req.barcode,
-        "status": req.status,
-    }
     return _execute_or_http(
         data_client=get_supabase_client(),
         rpc_name="finance_idempotent_add_bill",
-        operation_type="bill_create",
         idempotency_key=idempotency_key,
-        fingerprint_payload=payload,
         rpc_parameters={
             "p_description": req.description,
             "p_amount": money_to_storage(req.amount),
@@ -80,13 +71,10 @@ async def add_bill_idempotent(req: BillCreateRequest, idempotency_key: Idempoten
 
 async def add_income_idempotent(req: IncomeCreateRequest, idempotency_key: IdempotencyHeader):
     _require_authenticated_context()
-    payload = req.model_dump()
     return _execute_or_http(
         data_client=get_supabase_client(),
         rpc_name="finance_idempotent_add_income",
-        operation_type="income_create",
         idempotency_key=idempotency_key,
-        fingerprint_payload=payload,
         rpc_parameters={
             "p_title": req.title,
             "p_amount": money_to_storage(req.amount),
@@ -103,9 +91,7 @@ async def add_to_reserve_idempotent(req: ReserveAddRequest, idempotency_key: Ide
     return _execute_or_http(
         data_client=get_supabase_client(),
         rpc_name="finance_idempotent_add_reserve",
-        operation_type="reserve_add",
         idempotency_key=idempotency_key,
-        fingerprint_payload={"amount": req.amount},
         rpc_parameters={"p_amount": money_to_storage(req.amount)},
     )
 
@@ -116,21 +102,18 @@ async def create_recurring_bill_idempotent(
 ):
     """Create exactly one logical template; child generation remains recoverable.
 
-    The fingerprint deliberately excludes the derived first due date. A retry of the
-    same unresolved intent across midnight/month rollover must still resolve to the
-    template committed by the original intent rather than becoming a payload mismatch.
+    PostgreSQL deliberately excludes the derived first due date from the logical
+    fingerprint. A retry of the same unresolved intent across midnight/month
+    rollover therefore replays the original committed template.
     """
     _require_authenticated_context()
     data_client = get_supabase_client()
-    payload = req.model_dump()
     first_due = recurring_due_date(req.recurring_day, financial_today())
 
     result = _execute_or_http(
         data_client=data_client,
         rpc_name="finance_idempotent_create_recurring_template",
-        operation_type="recurring_template_create",
         idempotency_key=idempotency_key,
-        fingerprint_payload=payload,
         rpc_parameters={
             "p_title": req.title,
             "p_amount": money_to_storage(req.amount),
