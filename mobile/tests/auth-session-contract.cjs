@@ -6,7 +6,12 @@ if (!compiledRoot) {
   throw new Error('FINANCEFLOW_AUTH_CONTRACT_BUILD is required');
 }
 
-const asyncStorage = require('@react-native-async-storage/async-storage');
+const asyncStorage = require(path.join(
+  compiledRoot,
+  'node_modules',
+  '@react-native-async-storage',
+  'async-storage',
+));
 const auth = require(path.join(compiledRoot, 'authSession.js'));
 const cache = require(path.join(compiledRoot, 'userCache.js'));
 
