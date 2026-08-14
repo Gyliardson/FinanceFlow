@@ -1,0 +1,49 @@
+name: Materialize Expo 57 lock
+
+on:
+  push:
+    branches:
+      - work/5-expo57-dependency-baseline
+    paths:
+      - mobile/package.json
+      - .github/workflows/materialize-expo57-lock.yml
+
+permissions:
+  contents: write
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout exact work branch
+        uses: actions/checkout@v6
+        with:
+          ref: work/5-expo57-dependency-baseline
+          fetch-depth: 0
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Generate and validate lockfile
+        run: |
+          npm install --package-lock-only --ignore-scripts
+          npm ci --ignore-scripts
+          npm ls --depth=0
+      - name: Commit generated lockfile once
+        working-directory: .
+        run: |
+          if git diff --quiet -- mobile/package-lock.json; then
+            echo "Lockfile already matches package.json."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mobile/package-lock.json
+          git commit -m "deps(mobile): refresh Expo 57 lockfile"
+          git pull --rebase origin work/5-expo57-dependency-baseline
+          git push origin HEAD:work/5-expo57-dependency-baseline
