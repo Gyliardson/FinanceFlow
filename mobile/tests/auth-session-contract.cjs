@@ -18,6 +18,7 @@ const cache = require(path.join(compiledRoot, 'userCache.js'));
 const SESSION_KEY = '@financeflow:auth-session:v1';
 const LEGACY_BILLS = '@bills_cache';
 const LEGACY_SETTINGS = '@settings_cache';
+const LEGACY_OWNER = '@financeflow:legacy-cache-owner:v1';
 
 function makeSession(userId, overrides = {}) {
   return {
@@ -67,23 +68,58 @@ async function testOwnerScopedCacheNeverCrossesUsers() {
   assert.throws(() => cache.userCacheKey('   ', 'bills'), /Authenticated user id is required/);
 
   await cache.hydrateLegacyFinancialCacheForUser('user-a');
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-a');
   assert.deepEqual(JSON.parse(await asyncStorage.getItem(LEGACY_BILLS)), [{ id: 'bill-a' }]);
   await cache.hydrateLegacyFinancialCacheForUser('user-b');
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-b');
   assert.deepEqual(JSON.parse(await asyncStorage.getItem(LEGACY_BILLS)), [{ id: 'bill-b' }]);
 }
 
-async function testRestartMigratesLegacyOnlyIntoPersistedOwner() {
+async function testRestartMigratesOnlyOwnerTaggedCompatibilityCache() {
   await resetStorage();
   const session = makeSession('user-a');
   await asyncStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  await asyncStorage.setItem(LEGACY_BILLS, JSON.stringify([{ id: 'legacy-a' }]));
-  await asyncStorage.setItem(LEGACY_SETTINGS, JSON.stringify({ initial_balance: 42 }));
+  await cache.setUserCache('user-a', 'bills', [{ id: 'legacy-a' }]);
+  await cache.setUserCache('user-a', 'settings', { initial_balance: 42 });
+  await cache.hydrateLegacyFinancialCacheForUser('user-a');
+  await cache.clearUserFinancialCache('user-a');
 
   const restored = await auth.initializeAuthSession();
   assert.equal(restored.user.id, 'user-a');
   assert.deepEqual(await cache.getUserCache('user-a', 'bills'), [{ id: 'legacy-a' }]);
   assert.deepEqual(await cache.getUserCache('user-a', 'settings'), { initial_balance: 42 });
   assert.equal(await cache.getUserCache('user-b', 'bills'), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-a');
+}
+
+async function testUntaggedLegacyCacheFailsClosed() {
+  await resetStorage();
+  await asyncStorage.setItem(SESSION_KEY, JSON.stringify(makeSession('user-a')));
+  await asyncStorage.setItem(LEGACY_BILLS, JSON.stringify([{ id: 'unknown-owner' }]));
+  await asyncStorage.setItem(LEGACY_SETTINGS, JSON.stringify({ initial_balance: 999 }));
+
+  const restored = await auth.initializeAuthSession();
+  assert.equal(restored.user.id, 'user-a');
+  assert.equal(await cache.getUserCache('user-a', 'bills'), null);
+  assert.equal(await cache.getUserCache('user-a', 'settings'), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_BILLS), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_SETTINGS), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-a');
+}
+
+async function testMismatchedLegacyOwnerCannotBeReassigned() {
+  await resetStorage();
+  await cache.setUserCache('user-a', 'bills', [{ id: 'bill-a' }]);
+  await cache.hydrateLegacyFinancialCacheForUser('user-a');
+  await cache.clearUserFinancialCache('user-a');
+  await asyncStorage.setItem(SESSION_KEY, JSON.stringify(makeSession('user-b')));
+
+  const restored = await auth.initializeAuthSession();
+  assert.equal(restored.user.id, 'user-b');
+  assert.equal(await cache.getUserCache('user-b', 'bills'), null);
+  assert.equal(await cache.getUserCache('user-a', 'bills'), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_BILLS), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-b');
 }
 
 async function testExpiredSessionInvalidRefreshFailsClosed() {
@@ -91,7 +127,7 @@ async function testExpiredSessionInvalidRefreshFailsClosed() {
   const expired = makeSession('user-a', { expiresAt: Date.now() - 1000 });
   await asyncStorage.setItem(SESSION_KEY, JSON.stringify(expired));
   await cache.setUserCache('user-a', 'bills', [{ id: 'sensitive-a' }]);
-  await asyncStorage.setItem(LEGACY_BILLS, JSON.stringify([{ id: 'legacy-sensitive-a' }]));
+  await cache.hydrateLegacyFinancialCacheForUser('user-a');
   global.fetch = async () => response(401, { error: 'invalid_grant' });
 
   const restored = await auth.initializeAuthSession();
@@ -99,6 +135,7 @@ async function testExpiredSessionInvalidRefreshFailsClosed() {
   assert.equal(await asyncStorage.getItem(SESSION_KEY), null);
   assert.equal(await cache.getUserCache('user-a', 'bills'), null);
   assert.equal(await asyncStorage.getItem(LEGACY_BILLS), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), null);
 }
 
 async function testTransientRefreshFailurePreservesOfflineOwnerState() {
@@ -106,6 +143,7 @@ async function testTransientRefreshFailurePreservesOfflineOwnerState() {
   const expired = makeSession('user-a', { expiresAt: Date.now() - 1000 });
   await asyncStorage.setItem(SESSION_KEY, JSON.stringify(expired));
   await cache.setUserCache('user-a', 'bills', [{ id: 'offline-a' }]);
+  await cache.hydrateLegacyFinancialCacheForUser('user-a');
   global.fetch = async () => {
     throw new Error('network down');
   };
@@ -113,6 +151,7 @@ async function testTransientRefreshFailurePreservesOfflineOwnerState() {
   const restored = await auth.initializeAuthSession();
   assert.equal(restored.user.id, 'user-a');
   assert.deepEqual(JSON.parse(await asyncStorage.getItem(LEGACY_BILLS)), [{ id: 'offline-a' }]);
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-a');
   assert.notEqual(await asyncStorage.getItem(SESSION_KEY), null);
 }
 
@@ -131,6 +170,7 @@ async function testSuccessfulRefreshRotatesTokens() {
   assert.equal(restored.refreshToken, 'new-refresh-user-a');
   const persisted = JSON.parse(await asyncStorage.getItem(SESSION_KEY));
   assert.equal(persisted.accessToken, 'new-access-user-a');
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-a');
 }
 
 async function testLogoutPurgesOnlyAuthenticatedOwnersFinancialStateAndSession() {
@@ -151,6 +191,7 @@ async function testLogoutPurgesOnlyAuthenticatedOwnersFinancialStateAndSession()
   assert.equal(await cache.getUserCache('user-a', 'bills'), null);
   assert.deepEqual(await cache.getUserCache('user-b', 'bills'), [{ id: 'bill-b' }]);
   assert.equal(await asyncStorage.getItem(LEGACY_BILLS), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), null);
 }
 
 async function testAccountSwitchDoesNotReusePreviousLegacyCache() {
@@ -159,6 +200,7 @@ async function testAccountSwitchDoesNotReusePreviousLegacyCache() {
   await asyncStorage.setItem(SESSION_KEY, JSON.stringify(sessionA));
   await cache.setUserCache('user-a', 'bills', [{ id: 'bill-a' }]);
   await auth.initializeAuthSession();
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-a');
   assert.deepEqual(JSON.parse(await asyncStorage.getItem(LEGACY_BILLS)), [{ id: 'bill-a' }]);
 
   global.fetch = async (url) => {
@@ -168,6 +210,7 @@ async function testAccountSwitchDoesNotReusePreviousLegacyCache() {
   await auth.signOutAuthSession();
   const sessionB = await auth.signInWithPassword('USER-B@example.test', 'secret');
   assert.equal(sessionB.user.id, 'user-b');
+  assert.equal(await asyncStorage.getItem(LEGACY_OWNER), 'user-b');
   assert.equal(await asyncStorage.getItem(LEGACY_BILLS), null);
   assert.equal(await cache.getUserCache('user-a', 'bills'), null);
 }
@@ -175,7 +218,9 @@ async function testAccountSwitchDoesNotReusePreviousLegacyCache() {
 async function main() {
   const tests = [
     testOwnerScopedCacheNeverCrossesUsers,
-    testRestartMigratesLegacyOnlyIntoPersistedOwner,
+    testRestartMigratesOnlyOwnerTaggedCompatibilityCache,
+    testUntaggedLegacyCacheFailsClosed,
+    testMismatchedLegacyOwnerCannotBeReassigned,
     testExpiredSessionInvalidRefreshFailsClosed,
     testTransientRefreshFailurePreservesOfflineOwnerState,
     testSuccessfulRefreshRotatesTokens,
