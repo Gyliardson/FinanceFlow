@@ -4,6 +4,10 @@ The collector is intentionally non-destructive and does not persist financial re
 It narrows messages by an explicit sender allowlist, uses BODY.PEEK to avoid marking
 messages as read, validates PDF content/size, and returns deterministic source IDs so
 an owner-scoped caller can implement persistence/idempotency separately.
+
+Encrypted PDFs are deliberately unsupported by the default experimental baseline. This
+avoids adding a vulnerable PDF parser solely for decryption; encrypted attachments fail
+closed until a patched parser baseline is available and reviewed.
 """
 
 from __future__ import annotations
@@ -11,7 +15,6 @@ from __future__ import annotations
 import email
 import hashlib
 import imaplib
-import io
 import logging
 import os
 from email.header import decode_header
@@ -20,13 +23,13 @@ from typing import Callable
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
-from pypdf import PdfReader, PdfWriter
 
 from integration_contracts import (
     InvoiceCandidate,
     disabled_result,
     error_result,
     experimental_integrations_enabled,
+    unavailable_result,
 )
 
 load_dotenv()
@@ -49,21 +52,10 @@ def decode_mime_words(value: str | None) -> str:
     return "".join(pieces)
 
 
-def decrypt_pdf(encrypted_bytes: bytes, password: str | None) -> bytes:
-    """Decrypt a configured PDF without deriving passwords from identity data."""
+def _looks_encrypted_pdf(pdf_bytes: bytes) -> bool:
+    """Conservatively quarantine PDFs that advertise an encryption dictionary."""
 
-    reader = PdfReader(io.BytesIO(encrypted_bytes))
-    if not reader.is_encrypted:
-        return encrypted_bytes
-    if not password or not reader.decrypt(password):
-        raise ValueError("Encrypted PDF requires a valid configured password.")
-
-    writer = PdfWriter()
-    for page in reader.pages:
-        writer.add_page(page)
-    output = io.BytesIO()
-    writer.write(output)
-    return output.getvalue()
+    return b"/Encrypt" in pdf_bytes
 
 
 def _allowed_senders() -> set[str]:
@@ -145,9 +137,9 @@ async def scrape_vivo_email(
         ocr_extract = extract_invoice_data
 
     server = os.getenv("IMAP_SERVER", DEFAULT_IMAP_SERVER).strip() or DEFAULT_IMAP_SERVER
-    pdf_password = os.getenv("IMAP_PDF_PASSWORD") or None
     mail = None
     candidates: list[dict] = []
+    encrypted_attachment_seen = False
 
     try:
         mail = imaplib.IMAP4_SSL(server, timeout=20)
@@ -158,7 +150,11 @@ async def scrape_vivo_email(
 
         status, messages = mail.search(None, "UNSEEN")
         if status != "OK" or not messages or not messages[0]:
-            return {"status": "info", "message": "No unread allowed invoice messages found.", "candidates": []}
+            return {
+                "status": "info",
+                "message": "No unread allowed invoice messages found.",
+                "candidates": [],
+            }
 
         email_ids = messages[0].split()[:MAX_MESSAGES_PER_RUN]
         for email_id in email_ids:
@@ -183,11 +179,12 @@ async def scrape_vivo_email(
                 continue
 
             subject = decode_mime_words(message.get("Subject"))[:80]
-            for filename, encrypted_payload in _pdf_attachments(message):
+            for filename, pdf_bytes in _pdf_attachments(message):
+                if _looks_encrypted_pdf(pdf_bytes):
+                    encrypted_attachment_seen = True
+                    continue
+
                 try:
-                    pdf_bytes = decrypt_pdf(encrypted_payload, pdf_password)
-                    if len(pdf_bytes) > MAX_PDF_BYTES or not pdf_bytes.lstrip().startswith(b"%PDF-"):
-                        continue
                     ocr_result = ocr_extract(pdf_bytes, "application/pdf")
                     if ocr_result.get("status") != "success":
                         continue
@@ -203,11 +200,15 @@ async def scrape_vivo_email(
 
                 candidates.append(
                     {
-                        "source_id": _source_id(message, filename, encrypted_payload),
+                        "source_id": _source_id(message, filename, pdf_bytes),
                         "candidate": candidate.model_dump(mode="json"),
                     }
                 )
 
+        if not candidates and encrypted_attachment_seen:
+            return unavailable_result("Encrypted IMAP PDF").model_dump(
+                mode="json", exclude_none=True
+            )
         if not candidates:
             return {
                 "status": "info",
