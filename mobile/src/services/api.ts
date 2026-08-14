@@ -1,7 +1,9 @@
-import axios from 'axios';
+import axios, { AxiosRequestConfig } from 'axios';
 import {
   clearPendingOperation,
   IdempotentOperation,
+  isDefinitiveClientRejection,
+  listPendingOperationsForOwner,
   MutationSessionSnapshot,
   preparePendingMutation,
 } from './idempotentMutation';
@@ -12,8 +14,14 @@ type AuthSessionSnapshotValidator = (
   snapshot: MutationSessionSnapshot,
 ) => Promise<boolean> | boolean;
 
+type FinancialRequestConfig = AxiosRequestConfig & {
+  financeflowIntentId?: string;
+  financeflowSessionSnapshot?: MutationSessionSnapshot;
+};
+
 let authSessionSnapshotProvider: AuthSessionSnapshotProvider | null = null;
 let authSessionSnapshotValidator: AuthSessionSnapshotValidator | null = null;
+let reconciliationInFlight: Promise<void> | null = null;
 
 export function configureApiAuthSessionSnapshotProvider(
   provider: AuthSessionSnapshotProvider | null,
@@ -38,6 +46,13 @@ const operationForRequest = (method?: string, url?: string): IdempotentOperation
   return null;
 };
 
+const routeForOperation = (operation: IdempotentOperation): string => {
+  if (operation === 'bill_create') return '/add-bill';
+  if (operation === 'income_create') return '/incomes';
+  if (operation === 'reserve_add') return '/insights/reserve';
+  return '/recurring-bills';
+};
+
 type PendingRequestMetadata = {
   ownerId: string;
   operation: IdempotentOperation;
@@ -56,9 +71,9 @@ const requestIdempotencyKey = (config: any): string | null => {
 };
 
 api.interceptors.request.use(async (config) => {
-  const snapshot = authSessionSnapshotProvider
-    ? await authSessionSnapshotProvider()
-    : null;
+  const financialConfig = config as FinancialRequestConfig;
+  const snapshot = financialConfig.financeflowSessionSnapshot
+    ?? (authSessionSnapshotProvider ? await authSessionSnapshotProvider() : null);
 
   config.headers.delete('X-API-KEY');
   if (snapshot) {
@@ -72,6 +87,14 @@ api.interceptors.request.use(async (config) => {
     if (!snapshot || !authSessionSnapshotValidator) {
       throw new Error('A coherent authenticated session is required for financial mutations.');
     }
+    if (!(await authSessionSnapshotValidator(snapshot))) {
+      throw new Error('Authenticated session changed before financial transport preparation.');
+    }
+
+    const intentId = financialConfig.financeflowIntentId;
+    if (!intentId) {
+      throw new Error('Explicit logical intent identity is required for financial mutations.');
+    }
 
     const rawPayload = config.data && typeof config.data === 'object'
       ? config.data as Record<string, unknown>
@@ -79,12 +102,11 @@ api.interceptors.request.use(async (config) => {
     const prepared = await preparePendingMutation(
       snapshot,
       operation,
+      intentId,
       rawPayload,
       authSessionSnapshotValidator,
     );
 
-    // The durable pending record owns both the key and the first submitted payload.
-    // Retries must replay that exact snapshot instead of silently rebuilding fields.
     config.data = prepared.originalPayload;
     config.headers.set('Authorization', `Bearer ${prepared.accessToken}`);
     config.headers.set('Idempotency-Key', prepared.key);
@@ -109,22 +131,60 @@ api.interceptors.response.use(
     return response;
   },
   async (error) => {
-    const config = error?.config;
-    const key = requestIdempotencyKey(config);
+    const key = requestIdempotencyKey(error?.config);
     const metadata = key ? pendingMetadataByKey.get(key) : undefined;
-    const status = Number(error?.response?.status || 0);
-    const definitiveClientRejection = status >= 400 && status < 500
-      && status !== 408
-      && status !== 425
-      && status !== 429;
-
-    if (metadata && definitiveClientRejection) {
+    if (metadata && isDefinitiveClientRejection(error)) {
       await clearPendingOperation(metadata.ownerId, metadata.operation, metadata.key);
       pendingMetadataByKey.delete(metadata.key);
     }
-    // Network loss and 5xx responses intentionally retain the original key+payload.
     return Promise.reject(error);
   },
 );
+
+export const postFinancialMutation = <T = any>(
+  url: string,
+  payload: Record<string, unknown>,
+  intentId: string,
+  config: FinancialRequestConfig = {},
+) => api.post<T>(
+  url,
+  payload,
+  { ...config, financeflowIntentId: intentId } as FinancialRequestConfig,
+);
+
+export const reconcilePendingFinancialMutations = async (): Promise<void> => {
+  if (reconciliationInFlight) return reconciliationInFlight;
+
+  const run = (async () => {
+    const snapshot = authSessionSnapshotProvider
+      ? await authSessionSnapshotProvider()
+      : null;
+    if (!snapshot || !authSessionSnapshotValidator) return;
+    if (!(await authSessionSnapshotValidator(snapshot))) return;
+
+    const pending = await listPendingOperationsForOwner(snapshot.userId);
+    for (const operation of pending) {
+      if (!(await authSessionSnapshotValidator(snapshot))) return;
+      try {
+        await postFinancialMutation(
+          routeForOperation(operation.operation),
+          operation.originalPayload,
+          operation.intentId,
+          { financeflowSessionSnapshot: snapshot },
+        );
+      } catch {
+        // The response interceptor applies the lifecycle policy. Never log private
+        // financial payloads while reconciling an ambiguous operation.
+      }
+    }
+  })();
+
+  reconciliationInFlight = run;
+  try {
+    await run;
+  } finally {
+    if (reconciliationInFlight === run) reconciliationInFlight = null;
+  }
+};
 
 export default api;
