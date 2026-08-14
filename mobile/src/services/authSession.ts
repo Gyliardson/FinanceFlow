@@ -169,9 +169,8 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
     return null;
   }
 
-  // Capture any cache produced by the previous authenticated run before the
-  // transitional global keys are cleared. The app is still behind its loading
-  // gate here, so those values cannot be rendered by another account.
+  // Capture compatibility-cache values only if their owner marker matches this
+  // persisted identity. Untagged or mismatched legacy state is discarded.
   await migrateLegacyFinancialCacheToUser(parsed.user.id);
   currentSession = parsed;
 
@@ -220,6 +219,10 @@ export async function signInWithPassword(
   const session = normalizeTokenResponse(payload);
   await clearLegacyGlobalFinancialCache();
   await persistSession(session);
+  // HomeScreen still writes compatibility keys. Tag that bridge immediately so
+  // any values produced during this authenticated run can only be recovered by
+  // the same owner on restart.
+  await hydrateLegacyFinancialCacheForUser(session.user.id);
   return session;
 }
 
