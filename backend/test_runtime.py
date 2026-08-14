@@ -1,11 +1,22 @@
+import asyncio
+import json
+
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 from auth_middleware import SupabaseAuthMiddleware
 from main import APIKeyMiddleware
-from runtime import configure_runtime, configured_cors_origins
+from runtime import (
+    _privacy_safe_http_exception_handler,
+    configure_runtime,
+    configured_cors_origins,
+)
+from secure_recurring_routes import (
+    create_recurring_bill_user_scoped,
+    generate_recurring_instances_user_scoped,
+)
 from secure_routes import get_private_receipt_access, pay_bill_with_private_receipt
 
 
@@ -67,7 +78,7 @@ def test_configure_runtime_removes_legacy_shared_secret_middleware(monkeypatch):
     assert classes.count(CORSMiddleware) == 1
 
 
-def test_runtime_replaces_legacy_public_receipt_payment_route(monkeypatch):
+def test_runtime_replaces_legacy_security_sensitive_routes(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
     app = FastAPI()
@@ -75,16 +86,24 @@ def test_runtime_replaces_legacy_public_receipt_payment_route(monkeypatch):
     async def legacy_pay(bill_id: str):
         return {"legacy": bill_id}
 
+    async def legacy_recurring():
+        return {"legacy": True}
+
     app.add_api_route("/bills/{bill_id}/pay", legacy_pay, methods=["POST"])
+    app.add_api_route("/recurring-bills", legacy_recurring, methods=["POST"])
+    app.add_api_route("/recurring-bills/generate", legacy_recurring, methods=["POST"])
     configure_runtime(app)
 
-    payment_routes = _matching_routes(app, "/bills/{bill_id}/pay", "POST")
-    access_routes = _matching_routes(app, "/bills/{bill_id}/receipt", "GET")
-
-    assert len(payment_routes) == 1
-    assert payment_routes[0].endpoint is pay_bill_with_private_receipt
-    assert len(access_routes) == 1
-    assert access_routes[0].endpoint is get_private_receipt_access
+    expected = (
+        ("/bills/{bill_id}/pay", "POST", pay_bill_with_private_receipt),
+        ("/bills/{bill_id}/receipt", "GET", get_private_receipt_access),
+        ("/recurring-bills", "POST", create_recurring_bill_user_scoped),
+        ("/recurring-bills/generate", "POST", generate_recurring_instances_user_scoped),
+    )
+    for path, method, endpoint in expected:
+        routes = _matching_routes(app, path, method)
+        assert len(routes) == 1
+        assert routes[0].endpoint is endpoint
 
 
 def test_configure_runtime_is_idempotent(monkeypatch):
@@ -100,6 +119,8 @@ def test_configure_runtime_is_idempotent(monkeypatch):
     assert classes.count(CORSMiddleware) == 1
     assert len(_matching_routes(app, "/bills/{bill_id}/pay", "POST")) == 1
     assert len(_matching_routes(app, "/bills/{bill_id}/receipt", "GET")) == 1
+    assert len(_matching_routes(app, "/recurring-bills", "POST")) == 1
+    assert len(_matching_routes(app, "/recurring-bills/generate", "POST")) == 1
 
 
 def test_runtime_rejects_missing_bearer_and_keeps_public_paths_public(monkeypatch):
@@ -127,6 +148,26 @@ def test_runtime_rejects_missing_bearer_and_keeps_public_paths_public(monkeypatc
     assert protected_response.json() == {
         "detail": "Unauthorized – invalid or expired bearer token."
     }
+
+
+def test_runtime_sanitizes_internal_http_errors_but_preserves_client_errors():
+    internal = asyncio.run(
+        _privacy_safe_http_exception_handler(
+            None,
+            HTTPException(status_code=500, detail="database/provider secret detail"),
+        )
+    )
+    assert internal.status_code == 500
+    assert json.loads(internal.body) == {"detail": "Internal server error."}
+
+    client_error = asyncio.run(
+        _privacy_safe_http_exception_handler(
+            None,
+            HTTPException(status_code=409, detail="Already completed"),
+        )
+    )
+    assert client_error.status_code == 409
+    assert json.loads(client_error.body) == {"detail": "Already completed"}
 
 
 def test_cors_preflight_allows_only_configured_origin(monkeypatch):
