@@ -1,6 +1,6 @@
 # FinanceFlow Repository Governance
 
-This document records the repository controls that are enforced in code and the controls that still depend on GitHub repository settings.
+This document records the repository controls enforced in code and the GitHub repository settings verified for the current release-governance baseline.
 
 ## Promotion model
 
@@ -8,7 +8,7 @@ Portfolio professionalization work follows this branch flow:
 
 `main` → `portfolio/revamp-2026` → `work/<issue>-<slug>` → PR → `portfolio/revamp-2026`.
 
-The integration branch is never merged automatically into `main`. The final integration-to-main PR requires maintainer review and, while the current red-team remediation is active, a separate independent audit.
+The integration branch is never merged automatically into `main`. The final integration-to-main PR requires maintainer review and, for the current red-team remediation, a separate independent audit.
 
 ## CI expectations
 
@@ -30,27 +30,21 @@ A green wrapper is not sufficient if a required inner test was skipped or did no
 
 ## GitHub branch protection / rulesets
 
-The 2026-08-14 governance audit established two concrete repository-setting facts:
+The effective GitHub repository policy was re-read non-destructively on 2026-08-14 after maintainer configuration.
 
-- the repository rulesets API returned no configured repository rulesets;
-- the branch endpoint for `main` returned `protected: false`, with branch protection disabled and no required status checks.
+`main` now reports `protected: true`. The repository contains one active branch ruleset named `Protect main`, targeted at `~DEFAULT_BRANCH` with no bypass actors; the current authenticated user reports `current_user_can_bypass: never`.
 
-Therefore the intended PR-only final promotion policy is **not currently enforced by GitHub repository settings**. This is a P2 release-governance blocker for issue #30, not an end-user application-security vulnerability.
+The active ruleset enforces:
 
-The current connector exposes no branch-protection/ruleset mutation tool, so enabling this policy is a maintainer-side/manual action. Do not mark #30 complete merely because this document describes the desired state.
+- deletion restriction;
+- non-fast-forward / force-push restriction;
+- pull request required before merge;
+- required approving review count: `0`;
+- required review-thread/conversation resolution;
+- required status checks;
+- strict required-status-check policy, meaning the protected branch must be up to date before merge.
 
-### Recommended minimum `main` policy
-
-Where supported by the repository plan/settings, configure `main` with controls equivalent to:
-
-- require a pull request before merge;
-- block force pushes;
-- block branch deletion;
-- keep administrator/bypass permissions intentionally narrow;
-- do not permit a workflow or bot to merge the final portfolio integration PR automatically;
-- require deliberately selected checks that are expected to run on every pull request to `main`.
-
-For stable required checks, prefer always-on PR checks rather than path-filtered workflows that may not report a status on unrelated changes. Current candidates that run on every PR to `main` are:
+The effective globally required checks are exactly:
 
 - `Backend tests`;
 - `PostgreSQL recurring idempotency`;
@@ -62,9 +56,9 @@ For stable required checks, prefer always-on PR checks rather than path-filtered
 - `Auth session, cache and mutation identity`;
 - `UX state and accessibility contract`.
 
-`Backend container`, `Expo Doctor and build smoke`, and `Immutable Actions and reproducible tooling` are valuable release gates, but their workflows are path-filtered. Do not make them globally required unless the GitHub configuration is designed so a skipped path-filtered workflow cannot leave unrelated PRs permanently blocked.
+These are intentionally the always-on PR checks. Path-filtered release jobs are not configured as global required checks because an unrelated PR could otherwise be blocked by a check that never reports. In particular, `Backend container`, `Expo Doctor and build smoke`, and `Immutable Actions and reproducible tooling` remain valuable release gates but are not global required checks.
 
-After applying repository settings, verify them non-destructively through the branch/ruleset API and confirm `main` reports `protected: true`. Record the effective required checks rather than relying on documentation alone.
+The ruleset permits GitHub merge, squash, and rebase methods, but the project-level promotion rule is stricter: automation must never merge the final `portfolio/revamp-2026 -> main` PR. That final promotion remains a maintainer decision after the required independent audit.
 
 The same controls may be applied to `portfolio/revamp-2026` proportionally. Internal automation can merge an issue PR only after its required evidence is green, but that program convention is not a substitute for GitHub-side protection.
 
@@ -122,12 +116,10 @@ A work-branch/PR validation must not publish an EAS production update merely to 
 
 ## Residual/manual governance items
 
-The following still require maintainer/platform-level verification or configuration:
+The repository-level `main` protection required by issue #30 is now verified as active. Remaining platform-level items are outside that issue's repository-policy Definition of Done and should be reviewed as operational governance when relevant:
 
-- enabling `main` branch protection/ruleset and confirming `protected: true`;
-- selecting the effective required checks and PR-review policy;
-- administrator/bypass actors;
 - organization/account-level Actions restrictions and allowed-actions policy;
-- secret/environment protection rules in GitHub/Expo.
+- secret/environment protection rules in GitHub/Expo;
+- future changes to ruleset bypass actors or required checks.
 
-Issue #30 must remain open until the `main` policy is actually enforced and re-read successfully. Supply-chain pinning alone is not its complete Definition of Done.
+Any future ruleset change should be re-read through the GitHub API and reconciled with this document rather than inferred from UI screenshots or stale documentation.
