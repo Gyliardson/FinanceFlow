@@ -118,6 +118,13 @@ async function authRequest<T>(
   return text ? (JSON.parse(text) as T) : null;
 }
 
+async function clearLocalFinancialState(userId?: string): Promise<void> {
+  if (userId) {
+    await clearUserFinancialCache(userId);
+  }
+  await clearLegacyGlobalFinancialCache();
+}
+
 async function refreshSession(refreshToken: string): Promise<AuthSession> {
   const payload = await authRequest<SupabaseTokenResponse>(
     '/token?grant_type=refresh_token',
@@ -165,11 +172,11 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
     return await refreshSession(parsed.refreshToken);
   } catch (error) {
     if (error instanceof InvalidCredentialsError) {
-      await clearUserFinancialCache(parsed.user.id);
+      await clearLocalFinancialState(parsed.user.id);
       await persistSession(null);
       return null;
     }
-    // Keep the authenticated identity/cache available for offline mode.
+    // Keep the authenticated identity available so owner-scoped cache can support offline mode.
     return parsed;
   }
 }
@@ -210,7 +217,7 @@ export async function getValidAccessToken(): Promise<string | null> {
       if (error instanceof InvalidCredentialsError) {
         const userId = currentSession.user.id;
         await persistSession(null);
-        await clearUserFinancialCache(userId);
+        await clearLocalFinancialState(userId);
       }
       return null;
     }
@@ -234,7 +241,9 @@ export async function signOutAuthSession(): Promise<void> {
     } catch {
       // Local logout must still complete if the remote session is invalid/offline.
     }
-    await clearUserFinancialCache(session.user.id);
+    await clearLocalFinancialState(session.user.id);
+  } else {
+    await clearLegacyGlobalFinancialCache();
   }
 
   await persistSession(null);
