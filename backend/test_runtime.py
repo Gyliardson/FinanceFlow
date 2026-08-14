@@ -6,10 +6,20 @@ from fastapi.testclient import TestClient
 from auth_middleware import SupabaseAuthMiddleware
 from main import APIKeyMiddleware
 from runtime import configure_runtime, configured_cors_origins
+from secure_routes import get_private_receipt_access, pay_bill_with_private_receipt
 
 
 def _middleware_classes(app: FastAPI):
     return [getattr(item, "cls", None) for item in app.user_middleware]
+
+
+def _matching_routes(app: FastAPI, path: str, method: str):
+    return [
+        route
+        for route in app.router.routes
+        if getattr(route, "path", None) == path
+        and method.upper() in (getattr(route, "methods", None) or set())
+    ]
 
 
 def test_production_cors_defaults_to_no_browser_origins():
@@ -57,6 +67,26 @@ def test_configure_runtime_removes_legacy_shared_secret_middleware(monkeypatch):
     assert classes.count(CORSMiddleware) == 1
 
 
+def test_runtime_replaces_legacy_public_receipt_payment_route(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
+    app = FastAPI()
+
+    async def legacy_pay(bill_id: str):
+        return {"legacy": bill_id}
+
+    app.add_api_route("/bills/{bill_id}/pay", legacy_pay, methods=["POST"])
+    configure_runtime(app)
+
+    payment_routes = _matching_routes(app, "/bills/{bill_id}/pay", "POST")
+    access_routes = _matching_routes(app, "/bills/{bill_id}/receipt", "GET")
+
+    assert len(payment_routes) == 1
+    assert payment_routes[0].endpoint is pay_bill_with_private_receipt
+    assert len(access_routes) == 1
+    assert access_routes[0].endpoint is get_private_receipt_access
+
+
 def test_configure_runtime_is_idempotent(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
@@ -68,6 +98,8 @@ def test_configure_runtime_is_idempotent(monkeypatch):
     classes = _middleware_classes(app)
     assert classes.count(SupabaseAuthMiddleware) == 1
     assert classes.count(CORSMiddleware) == 1
+    assert len(_matching_routes(app, "/bills/{bill_id}/pay", "POST")) == 1
+    assert len(_matching_routes(app, "/bills/{bill_id}/receipt", "GET")) == 1
 
 
 def test_runtime_rejects_missing_bearer_and_keeps_public_paths_public(monkeypatch):
