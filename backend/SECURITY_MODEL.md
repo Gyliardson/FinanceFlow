@@ -2,7 +2,7 @@
 
 ## Scope
 
-FinanceFlow handles financial records and payment receipts. The portfolio runtime therefore uses a per-user ownership model rather than a shared application secret as the long-term authorization boundary.
+FinanceFlow handles financial records and payment receipts. The portfolio runtime therefore uses a per-user ownership model rather than a shared application secret as the authorization boundary.
 
 ## Identity and authorization
 
@@ -18,7 +18,7 @@ FinanceFlow handles financial records and payment receipts. The portfolio runtim
 - The backend service-role credential is server-only and must never be exposed through `EXPO_PUBLIC_*`, client bundles, logs, fixtures or screenshots.
 - A publishable Supabase key is not an authorization decision by itself; protected requests must carry an authenticated user session before application data is accessed.
 
-Production starts through the Uvicorn factory `runtime:create_app`, not `main:app`. That composition root removes the legacy `X-API-KEY` middleware and wildcard CORS, installs verified Supabase Bearer authentication, preserves only explicit browser origins, and replaces security-sensitive legacy receipt/recurring endpoints with user-scoped implementations. `main.py` remains the legacy route module while the migration is incremental; direct `main:app` execution is not the supported production authorization boundary.
+Production starts through the Uvicorn factory `runtime:create_app`. That composition root installs verified Supabase Bearer authentication, permits only explicit browser origins and registers the user-scoped receipt/recurring/OCR routes. `main.py` is retained only as a compatibility entrypoint and delegates directly to `runtime.create_app()`; it contains no independent routes, shared-secret middleware or wildcard CORS configuration. Consequently `uvicorn main:app` cannot reopen the retired `X-API-KEY` authorization surface.
 
 ## Mobile session and offline cache
 
@@ -33,7 +33,7 @@ Production starts through the Uvicorn factory `runtime:create_app`, not `main:ap
 - Historical global `@bills_cache` / `@settings_cache` values are accepted only by a one-time owner-tagged migration. Mismatched or untagged legacy values fail closed, and current code never re-creates the global keys.
 - The Expo app config explicitly resolves the SecureStore native plugin, and the mobile auth contract validates restart, migration, expiry, transient outage, token rotation, refresh concurrency, logout and account-switch isolation.
 
-Raw authentication/API error objects must not be written to client logs because request metadata can contain credentials or financial context. This remains a review requirement for screens touched by the security migration.
+Raw authentication/API error objects must not be written to client logs because request metadata can contain credentials or financial context. This remains a standing review requirement.
 
 ## Ownership migration
 
@@ -103,7 +103,7 @@ Security-sensitive operations fail closed:
 - a payment database failure after upload triggers best-effort orphan cleanup;
 - a concurrent/zero-row payment update fails closed instead of claiming success;
 - production HTTP exceptions with status 5xx are sanitized so provider/database details are not returned to clients;
-- authorization failures must not fall back to the legacy static API key;
+- authorization failures never fall back to a static application API key;
 - a legacy cache/session owner mismatch must not be attributed to the currently authenticated user.
 
 ## CI evidence
@@ -118,8 +118,9 @@ The CI security track is expected to prove, with disposable PostgreSQL where app
 - anonymous financial-table access is rejected;
 - historical unowned rows make migration 004 fail without deletion;
 - explicit backfill allows migration 004 to complete;
-- production composition removes the legacy API-key middleware and rejects wildcard CORS;
-- security-sensitive receipt and recurring routes replace their legacy implementations exactly once;
+- production composition rejects legacy API-key auth and wildcard CORS;
+- the compatibility `main:app` entrypoint resolves to that same secured composition rather than a second application;
+- security-sensitive receipt and recurring routes are registered exactly once;
 - private receipt keys are owner/bill scoped and signed URL lifetimes are bounded;
 - receipt payment tests cover MIME spoofing, already-paid state, storage failure, database failure, orphan cleanup and compare-and-set double-submit behavior;
 - private receipt access tests prove an unauthorized/missing bill never invokes privileged storage;
@@ -129,4 +130,4 @@ The CI security track is expected to prove, with disposable PostgreSQL where app
 - current screens do not re-create legacy global financial cache keys;
 - backend tests, dependency evidence and secret scanning remain green.
 
-This document describes the intended enforced model. PR #10 remains draft until the remaining raw client-error logging is removed, exact-head gates are green, and a final adversarial security review finds no unresolved blocker.
+This document describes the enforced model. Any future route/entrypoint change must preserve a single canonical Bearer/RLS-secured application surface and re-run the exact-head security/runtime gates before integration.
