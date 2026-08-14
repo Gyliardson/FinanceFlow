@@ -13,7 +13,11 @@ from secure_recurring_routes import (
     create_recurring_bill_user_scoped,
     generate_recurring_instances_user_scoped,
 )
-from secure_routes import get_private_receipt_access, pay_bill_with_private_receipt
+from secure_routes import (
+    get_private_receipt_access,
+    pay_bill_with_private_receipt,
+    pay_bill_without_receipt,
+)
 
 
 def _middleware_classes(app: FastAPI):
@@ -69,6 +73,7 @@ def test_runtime_registers_only_secure_sensitive_handlers(monkeypatch):
     app = _production_app(monkeypatch)
     expected = (
         ("/bills/{bill_id}/pay", "POST", pay_bill_with_private_receipt),
+        ("/bills/{bill_id}/pay-no-receipt", "POST", pay_bill_without_receipt),
         ("/bills/{bill_id}/receipt", "GET", get_private_receipt_access),
         ("/recurring-bills", "POST", create_recurring_bill_user_scoped),
         ("/recurring-bills/generate", "POST", generate_recurring_instances_user_scoped),
