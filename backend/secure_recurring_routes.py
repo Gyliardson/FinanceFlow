@@ -1,10 +1,10 @@
 import logging
-from datetime import date
 
 from fastapi import HTTPException
 
 from api_models import RecurringBillCreateRequest
 from database import get_supabase_client
+from financial_clock import financial_today
 from money import money_to_storage
 from recurrence import recurring_due_date
 from recurring_service import generate_recurring_instances_for_client
@@ -22,7 +22,7 @@ async def create_recurring_bill_user_scoped(req: RecurringBillCreateRequest):
     boundary and can safely recover the deferred generation work.
     """
     data_client = get_supabase_client()
-    first_due = recurring_due_date(req.recurring_day, date.today())
+    first_due = recurring_due_date(req.recurring_day, financial_today())
     data = {
         "description": req.title,
         "amount": money_to_storage(req.amount),

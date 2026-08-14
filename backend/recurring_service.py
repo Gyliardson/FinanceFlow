@@ -1,6 +1,7 @@
 from datetime import date
 from typing import Any
 
+from financial_clock import financial_today
 from money import money_to_storage
 from recurrence import recurring_due_date
 
@@ -17,7 +18,7 @@ def generate_recurring_instances_for_client(
     accidentally fall back to anonymous/service-role access after a response.
     PostgreSQL uniqueness remains the final idempotency authority.
     """
-    effective_today = today or date.today()
+    effective_today = today or financial_today()
     templates_resp = (
         data_client.table("finance_bills")
         .select("*")

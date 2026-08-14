@@ -1,10 +1,10 @@
 import logging
-from datetime import date
 
 from fastapi import File, HTTPException, UploadFile
 
 from api_models import ReserveAddRequest
 from database import get_supabase_client, get_supabase_storage_client
+from financial_clock import financial_today
 from financial_math import add_to_reserve as calculate_reserve_addition
 from money import money, money_to_storage
 from receipt_access import ReceiptAccessError, ReceiptNotFoundError, create_authorized_receipt_access
@@ -58,7 +58,7 @@ async def pay_bill_without_receipt(bill_id: str):
     if bill.get("status") == "paid":
         return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
 
-    payment_date = date.today().isoformat()
+    payment_date = financial_today().isoformat()
     try:
         update_response = (
             data_client.table("finance_bills")

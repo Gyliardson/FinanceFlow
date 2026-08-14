@@ -3,6 +3,7 @@ from datetime import date
 from typing import Any
 
 from database import build_receipt_object_key
+from financial_clock import financial_today
 from receipt_uploads import ValidatedReceipt, validate_receipt_upload
 
 
@@ -97,7 +98,7 @@ def persist_private_receipt_payment(
     except Exception as exc:
         raise ReceiptStorageError("Could not persist the private receipt.") from exc
 
-    effective_payment_date = payment_date or date.today()
+    effective_payment_date = payment_date or financial_today()
     try:
         update_response = (
             data_client.table("finance_bills")

@@ -23,6 +23,7 @@ from api_models import (
     SettingsUpdateRequest,
 )
 from database import ensure_receipts_bucket, get_supabase_client
+from financial_clock import financial_today
 from financial_math import (
     add_to_reserve as calculate_reserve_addition,
     amounts_within_percentage,
@@ -166,7 +167,7 @@ async def pay_bill_no_receipt(bill_id: str):
         if bill.get("status") == "paid":
             return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
 
-        today_str = str(date.today())
+        today_str = financial_today().isoformat()
         supabase.table("finance_bills").update(
             {"status": "paid", "payment_date": today_str}
         ).eq("id", bill_id).execute()
@@ -250,7 +251,7 @@ def _calculate_financials(supabase, settings):
         .execute()
     )
 
-    today = date.today()
+    today = financial_today()
     end_of_month = date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
     pending_bills_resp = (
         supabase.table("finance_bills")
@@ -289,7 +290,7 @@ async def get_insights():
         fin_data = _calculate_financials(supabase, settings)
         latest_date_str = settings.get("latest_insight_date")
         latest_text = settings.get("latest_insight_text")
-        today = date.today()
+        today = financial_today()
 
         if latest_date_str and latest_text:
             try:
@@ -329,7 +330,7 @@ async def refresh_insights():
             raise HTTPException(status_code=500, detail=insight_result.get("message"))
 
         new_text = insight_result.get("insight")
-        today = date.today()
+        today = financial_today()
         supabase.table("finance_user_settings").update(
             {"latest_insight_text": new_text, "latest_insight_date": today.isoformat()}
         ).eq("id", settings["id"]).execute()
