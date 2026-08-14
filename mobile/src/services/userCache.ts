@@ -28,6 +28,10 @@ function normalizeUserId(userId: string): string {
   return normalized;
 }
 
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 function isVersionedEnvelope(value: unknown): value is CacheEnvelope<unknown> {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<CacheEnvelope<unknown>>;
@@ -36,7 +40,16 @@ function isVersionedEnvelope(value: unknown): value is CacheEnvelope<unknown> {
       && typeof candidate.cachedAt === 'number'
       && Number.isFinite(candidate.cachedAt)
       && candidate.cachedAt > 0
-      && Object.prototype.hasOwnProperty.call(candidate, 'data')
+      && hasOwn(candidate, 'data')
+  );
+}
+
+function looksLikeMalformedEnvelope(value: unknown): boolean {
+  return Boolean(
+    value
+      && typeof value === 'object'
+      && (hasOwn(value, 'version') || hasOwn(value, 'cachedAt'))
+      && !isVersionedEnvelope(value)
   );
 }
 
@@ -81,6 +94,11 @@ export async function getUserCacheSnapshot<T>(
       cachedAt: parsed.cachedAt,
       version: parsed.version,
     };
+  }
+
+  if (looksLikeMalformedEnvelope(parsed)) {
+    await discardUnreadableEntry(key);
+    return null;
   }
 
   // Historical owner-scoped cache values were stored as raw JSON. They remain
