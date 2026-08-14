@@ -40,7 +40,16 @@ type PendingRequestMetadata = {
   key: string;
 };
 
-const pendingMetadata = new WeakMap<object, PendingRequestMetadata>();
+const pendingMetadataByKey = new Map<string, PendingRequestMetadata>();
+
+const requestIdempotencyKey = (config: any): string | null => {
+  const headers = config?.headers;
+  if (!headers) return null;
+  const value = typeof headers.get === 'function'
+    ? headers.get('Idempotency-Key')
+    : headers['Idempotency-Key'] ?? headers['idempotency-key'];
+  return typeof value === 'string' && value ? value : null;
+};
 
 api.interceptors.request.use(async (config) => {
   const token = accessTokenProvider ? await accessTokenProvider() : null;
@@ -61,7 +70,7 @@ api.interceptors.request.use(async (config) => {
     const rawPayload = config.data && typeof config.data === 'object' ? config.data : {};
     const pending = await getOrCreatePendingOperation(ownerId, operation, rawPayload);
     config.headers.set('Idempotency-Key', pending.key);
-    pendingMetadata.set(config, { ownerId, operation, key: pending.key });
+    pendingMetadataByKey.set(pending.key, { ownerId, operation, key: pending.key });
   }
 
   return config;
@@ -69,16 +78,18 @@ api.interceptors.request.use(async (config) => {
 
 api.interceptors.response.use(
   async (response) => {
-    const metadata = pendingMetadata.get(response.config);
+    const key = requestIdempotencyKey(response.config);
+    const metadata = key ? pendingMetadataByKey.get(key) : undefined;
     if (metadata) {
       await clearPendingOperation(metadata.ownerId, metadata.operation, metadata.key);
-      pendingMetadata.delete(response.config);
+      pendingMetadataByKey.delete(metadata.key);
     }
     return response;
   },
   async (error) => {
     const config = error?.config;
-    const metadata = config ? pendingMetadata.get(config) : undefined;
+    const key = requestIdempotencyKey(config);
+    const metadata = key ? pendingMetadataByKey.get(key) : undefined;
     const status = Number(error?.response?.status || 0);
     const definitiveClientRejection = status >= 400 && status < 500
       && status !== 408
@@ -87,7 +98,7 @@ api.interceptors.response.use(
 
     if (metadata && definitiveClientRejection) {
       await clearPendingOperation(metadata.ownerId, metadata.operation, metadata.key);
-      pendingMetadata.delete(config);
+      pendingMetadataByKey.delete(metadata.key);
     }
     // Network loss and 5xx responses intentionally retain the operation identity:
     // PostgreSQL may already have committed, so a later retry must reuse the key.
