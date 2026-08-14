@@ -57,8 +57,8 @@ def _validate_image_structure(content: bytes, mime_type: str) -> None:
             image.load()
     except ReceiptValidationError:
         raise
-    except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
-        raise ReceiptValidationError("Receipt image is malformed or truncated.") from exc
+    except (Image.DecompressionBombError, UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
+        raise ReceiptValidationError("Receipt image is malformed, truncated, or unsafe to decode.") from exc
 
 
 def _read_pdf_structure(content: bytes) -> PdfReader:
@@ -155,7 +155,7 @@ def sanitize_receipt_for_external_processing(receipt: ValidatedReceipt) -> bytes
                 normalized.save(output, format="WEBP", lossless=True)
 
             return output.getvalue()
-    except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
+    except (Image.DecompressionBombError, UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
         # Validation already decoded these bytes. Treat any later normalization
         # failure as a closed boundary instead of forwarding the original bytes.
         raise ReceiptValidationError("Receipt metadata could not be sanitized safely.") from exc
