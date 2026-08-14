@@ -21,6 +21,12 @@ export interface AuthSession {
   user: AuthUser;
 }
 
+export interface AuthSessionSnapshot {
+  accessToken: string;
+  userId: string;
+  generation: number;
+}
+
 interface SupabaseTokenResponse {
   access_token: string;
   refresh_token: string;
@@ -35,6 +41,7 @@ class InvalidCredentialsError extends Error {}
 class AuthServiceUnavailableError extends Error {}
 
 let currentSession: AuthSession | null = null;
+let sessionGeneration = 0;
 let refreshInFlight: { refreshToken: string; promise: Promise<AuthSession> } | null = null;
 
 function getSupabaseConfig() {
@@ -70,6 +77,20 @@ function sameSessionIdentity(left: AuthSession | null, right: AuthSession): bool
   );
 }
 
+function setCurrentSession(session: AuthSession | null): void {
+  currentSession = session;
+  sessionGeneration += 1;
+}
+
+function snapshotFromCurrentSession(): AuthSessionSnapshot | null {
+  if (!currentSession) return null;
+  return {
+    accessToken: currentSession.accessToken,
+    userId: currentSession.user.id,
+    generation: sessionGeneration,
+  };
+}
+
 function normalizeTokenResponse(payload: SupabaseTokenResponse): AuthSession {
   if (
     !payload?.access_token ||
@@ -96,7 +117,7 @@ async function clearLegacySessionStorage(): Promise<void> {
 }
 
 async function persistSession(session: AuthSession | null): Promise<void> {
-  currentSession = session;
+  setCurrentSession(session);
   if (session) {
     await SecureStore.setItemAsync(SESSION_STORAGE_KEY, JSON.stringify(session));
     await clearLegacySessionStorage();
@@ -200,7 +221,7 @@ async function commitRefreshedSession(
 export async function initializeAuthSession(): Promise<AuthSession | null> {
   const stored = await readPersistedSession();
   if (!stored) {
-    currentSession = null;
+    setCurrentSession(null);
     await clearLegacyGlobalFinancialCache();
     return null;
   }
@@ -220,17 +241,13 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
     return null;
   }
 
-  // A valid session from the historical AsyncStorage location is migrated
-  // atomically to encrypted native storage before it becomes authoritative.
   if (stored.legacy) {
     await persistSession(parsed);
   } else {
-    currentSession = parsed;
+    setCurrentSession(parsed);
     await clearLegacySessionStorage();
   }
 
-  // Import legacy global financial values only once into the authenticated
-  // owner's namespace, then guarantee the global compatibility keys are gone.
   await migrateLegacyFinancialCacheToUser(parsed.user.id);
   await clearLegacyGlobalFinancialCache();
 
@@ -285,17 +302,18 @@ export async function signInWithPassword(
   return session;
 }
 
-export async function getValidAccessToken(): Promise<string | null> {
+export async function getValidAuthSessionSnapshot(): Promise<AuthSessionSnapshot | null> {
   const sourceSession = currentSession;
+  const sourceGeneration = sessionGeneration;
   if (!sourceSession) return null;
 
   if (sourceSession.expiresAt <= Date.now() + REFRESH_SKEW_MS) {
     try {
       const refreshed = await refreshSessionSingleFlight(sourceSession.refreshToken);
       if (await commitRefreshedSession(sourceSession, refreshed)) {
-        return refreshed.accessToken;
+        return snapshotFromCurrentSession();
       }
-      return currentSession?.accessToken ?? null;
+      return null;
     } catch (error) {
       if (
         error instanceof InvalidCredentialsError &&
@@ -308,7 +326,31 @@ export async function getValidAccessToken(): Promise<string | null> {
     }
   }
 
-  return sourceSession.accessToken;
+  if (
+    sessionGeneration !== sourceGeneration
+    || currentSession !== sourceSession
+  ) {
+    return null;
+  }
+
+  return {
+    accessToken: sourceSession.accessToken,
+    userId: sourceSession.user.id,
+    generation: sourceGeneration,
+  };
+}
+
+export function isAuthSessionSnapshotCurrent(snapshot: AuthSessionSnapshot): boolean {
+  return Boolean(
+    currentSession
+    && sessionGeneration === snapshot.generation
+    && currentSession.user.id === snapshot.userId
+    && currentSession.accessToken === snapshot.accessToken
+  );
+}
+
+export async function getValidAccessToken(): Promise<string | null> {
+  return (await getValidAuthSessionSnapshot())?.accessToken ?? null;
 }
 
 export function getCurrentAuthSession(): AuthSession | null {
