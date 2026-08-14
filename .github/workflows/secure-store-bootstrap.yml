@@ -1,0 +1,39 @@
+name: SecureStore dependency bootstrap
+
+on:
+  push:
+    branches:
+      - work/8-ownership-private-receipts
+
+permissions:
+  contents: write
+
+jobs:
+  generate-lock:
+    if: contains(github.event.head_commit.message, '[secure-store-bootstrap]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: work/8-ownership-private-receipts
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22.13.0'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install SDK 54 SecureStore and update lock atomically
+        working-directory: mobile
+        run: npm install expo-secure-store@~15.0.8 --save --ignore-scripts
+      - name: Commit generated dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mobile/package.json mobile/package-lock.json
+          if git diff --cached --quiet; then
+            echo 'Dependency graph already current.'
+            exit 0
+          fi
+          git commit -m 'build(mobile): add encrypted session storage dependency'
+          git push origin HEAD:work/8-ownership-private-receipts
