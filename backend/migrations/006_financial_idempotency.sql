@@ -9,8 +9,6 @@
 -- parameters. It is never accepted from the caller, so direct authenticated RPC
 -- access cannot forge the payload identity used for replay/conflict detection.
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
 CREATE SCHEMA IF NOT EXISTS financeflow_private;
 REVOKE ALL ON SCHEMA financeflow_private FROM PUBLIC;
 GRANT USAGE ON SCHEMA financeflow_private TO authenticated;
@@ -68,7 +66,7 @@ IMMUTABLE
 STRICT
 SET search_path = pg_catalog, public
 AS $$
-    SELECT encode(digest(convert_to(p_payload::text, 'UTF8'), 'sha256'), 'hex')
+    SELECT encode(sha256(convert_to(p_payload::text, 'UTF8')), 'hex')
 $$;
 
 REVOKE ALL ON FUNCTION financeflow_private.payload_fingerprint(JSONB) FROM PUBLIC, anon;
