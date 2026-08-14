@@ -7,8 +7,8 @@ FinanceFlow treats green CI as evidence for specific properties, not as a blanke
 | Gate / workflow | What it proves | What it does not prove |
 | --- | --- | --- |
 | `FinanceFlow CI` | Backend dependency installation, `pip check`, Python compile/tests, PostgreSQL recurring-child uniqueness, PostgreSQL ownership/RLS, mobile TypeScript, dependency-audit evidence and Gitleaks | Live production credentials, native-device behavior, third-party portal availability |
-| `Financial idempotency` | PostgreSQL 16 durable replay contract for reserve addition, bill creation, income creation and recurring-template creation, including same-key concurrency, payload mismatch and owner isolation | Mobile transport lifecycle by itself; live production database configuration |
-| `Mobile auth contract` | Session restore/refresh/logout/account-switch isolation, owner-scoped offline cache, and unresolved financial-operation identity reuse across retry/restart | Real Supabase service uptime or every OS keychain implementation |
+| `Financial idempotency` | PostgreSQL 16 durable replay contract for reserve addition, bill creation, income creation and recurring-template creation, including same-key concurrency, payload mismatch and owner isolation | Mobile logical-intent lifecycle by itself; live production database configuration |
+| `Mobile auth contract` | Session restore/refresh/logout/account-switch isolation, owner-scoped offline cache, durable mobile logical-intent identity/original-payload replay, coherent session snapshots and the `America/Sao_Paulo` financial date-only contract | Real Supabase service uptime or every OS keychain implementation |
 | `Mobile UX contract` | Source-level regression contracts for critical financial screen states, accessibility semantics, upload guards and fail-closed dashboard behavior | Pixel-perfect visual approval or native assistive-technology behavior on physical devices |
 | `Mobile Expo health` | Clean mobile install, TypeScript, Expo Doctor, public config checks, release-env contract and web-export smoke | Signed Android/iOS store builds unless external EAS credentials are supplied |
 | `Backend container` | Production Docker image builds and the declared FastAPI factory entrypoint is usable | Render account provisioning or production network/DNS configuration |
@@ -19,7 +19,7 @@ Repository workflow definitions live in [`.github/workflows/`](../.github/workfl
 
 ## Critical risk coverage
 
-### Financial correctness and ambiguous outcomes
+### Financial correctness, logical intent and ambiguous outcomes
 
 Evidence includes:
 
@@ -34,11 +34,30 @@ Evidence includes:
 - reconciliation proving a receipt referenced by a committed payment is preserved and remains available through authorized signed access;
 - durable `Idempotency-Key` replay for reserve addition, ordinary bill creation, income creation and recurring-template creation;
 - same-key sequential and concurrent replay, changed-payload rejection, cross-owner isolation, intentional new-key repetition and commit-response-loss retry;
-- mobile persistence of the unresolved logical operation identity across reconnect/retry/module restart.
+- mobile pending records persisting the original complete payload and operation key before transport;
+- deterministic income-midnight regression proving a retry after date rollover uses the same key and original pre-midnight payload;
+- deterministic control proving the historical payload-only matcher would split D vs D+1 into two identities;
+- serialized pending-store read/modify/write per owner + operation, plus a control reproducing the historical last-writer-wins loss;
+- coherent mobile mutation-session snapshots tying owner, access token and session generation together and failing closed on account switch;
+- owner-isolated encrypted pending state across logout/account switch.
 
-The key claim, financial effect and durable replay result share the same PostgreSQL transaction. Generated recurring-child uniqueness is a separate invariant and is not used as a substitute for recurring-template creation idempotency.
+The key claim, financial effect and durable replay result share the same PostgreSQL transaction. The mobile layer does not replace that ledger; it preserves the logical identity required to exercise the ledger correctly. Generated recurring-child uniqueness is a separate invariant and is not used as a substitute for recurring-template creation idempotency.
 
 Canonical rules: [`backend/FINANCIAL_RULES.md`](../backend/FINANCIAL_RULES.md).
+
+### Financial date-only semantics
+
+Evidence distinguishes business-calendar dates from timestamps:
+
+- product financial timezone is the IANA zone `America/Sao_Paulo`;
+- mobile `financialDateOnly()` derives `YYYY-MM-DD` through `Intl.DateTimeFormat` with that timezone, not device-local getters or UTC slicing;
+- the audited instant corresponding to `2026-08-14 22:30 America/Sao_Paulo` has a control value of `2026-08-15` under the historical `toISOString().split('T')[0]` behavior, while the canonical helper returns `2026-08-14`;
+- deterministic coverage spans before/exactly/after local midnight, the UTC-next-day window, month rollover and year rollover;
+- a historical São Paulo offset case proves the helper relies on IANA rules rather than a hard-coded `-03:00` assumption;
+- a static financial-domain guard rejects `toISOString().split('T')[0]` and equivalent UTC slicing in financial date-only screens without banning legitimate timestamp serialization globally;
+- backend financial-impact coverage proves `initial_balance_date = D` inclusively counts income/payment records on D and that drifting the boundary to D+1 changes authoritative balances.
+
+User-selected due dates remain calendar-component values, while notification triggers are scheduling instants constructed from an already-authoritative due-date calendar value. This distinction is intentional.
 
 ### Authentication, ownership and privacy
 
@@ -51,6 +70,8 @@ Evidence includes:
 - anonymous financial-table denial;
 - private receipt-path authorization and bounded signed access;
 - mobile session restore, refresh, logout and account-switch isolation;
+- coherent mutation preparation preventing owner-A/token-B or owner-B/token-A combinations;
+- unresolved financial payloads stored owner-scoped in `SecureStore`, with one-way removal of the historical AsyncStorage form;
 - secret scanning.
 
 Canonical security model: [`backend/SECURITY_MODEL.md`](../backend/SECURITY_MODEL.md).
@@ -90,8 +111,9 @@ Evidence includes:
 - logout/account-switch isolation;
 - authoritative empty bill list handling;
 - explicit rule that settings cache cannot masquerade as a financial bills cache;
-- owner-scoped pending operation records for the four non-convergent financial POST mutations;
-- same unresolved owner/operation/payload reusing the same key after network loss, 5xx, reconnect or app restart;
+- owner-scoped encrypted pending operation records for the four non-convergent financial POST mutations;
+- original-payload/key reuse after network loss, timeout, retryable server error, reconnect, app/module restart and local-midnight rollover;
+- concurrent different pending intents surviving deterministic read/write interleavings;
 - definitive success or non-retryable 4xx closing the pending identity so an intentional later duplicate can receive a new key.
 
 Financial mutations remain online-only; offline cache is display/read resilience, not an offline financial-write queue.
@@ -116,9 +138,9 @@ DASMEI, TIM, Unopar and IMAP/PDF tests use fixtures/deterministic boundaries. CI
 
 ## Dependency/security evidence
 
-The final program audit consumes the artifacts from the exact integration SHA rather than relying on workflow badges alone. The current supported backend graph reports **80 Python dependencies with 0 `pip-audit` vulnerabilities**, and the Gitleaks SARIF reports **0 findings**.
+The final program audit consumes the artifacts from the exact integration SHA rather than relying on workflow badges alone. Dependency counts/findings are therefore re-opened after the final remediation integration instead of being assumed from an older certification SHA.
 
-The mobile npm graph intentionally keeps residual upstream/tooling advisories visible: **18 total (11 high, 7 moderate, 0 critical)** in the current Expo/Metro/React Native graph. The repository does not use `npm audit fix --force`, an incompatible framework downgrade, or a blanket allowlist merely to manufacture a zero-finding result. These advisories remain residual supply-chain/tooling risk to revisit when a compatible patched path exists.
+The mobile npm graph keeps residual upstream/tooling advisories visible when no compatible patched Expo/Metro/React Native path exists. The repository does not use `npm audit fix --force`, an incompatible framework downgrade, or a blanket allowlist merely to manufacture a zero-finding result.
 
 Passing Gitleaks reduces the risk of committed secrets but does not replace operator-side secret rotation, least privilege or external platform configuration review.
 
