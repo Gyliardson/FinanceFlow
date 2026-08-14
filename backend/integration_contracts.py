@@ -13,7 +13,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Awaitable, Callable, Literal
 
-from pydantic import BaseModel, BeforeValidator, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
 from typing_extensions import Annotated
 
 from money import money
@@ -46,17 +46,13 @@ class IntegrationResult(BaseModel):
     message: str = Field(min_length=1, max_length=240)
     candidate: InvoiceCandidate | None = None
 
-    @field_validator("candidate")
-    @classmethod
-    def candidate_only_on_success(
-        cls, value: InvoiceCandidate | None, info
-    ) -> InvoiceCandidate | None:
-        status = info.data.get("status")
-        if status == "success" and value is None:
+    @model_validator(mode="after")
+    def validate_candidate_contract(self):
+        if self.status == "success" and self.candidate is None:
             raise ValueError("successful integration results require a validated candidate")
-        if status != "success" and value is not None:
+        if self.status != "success" and self.candidate is not None:
             raise ValueError("non-success integration results cannot carry financial candidates")
-        return value
+        return self
 
 
 def experimental_integrations_enabled() -> bool:
