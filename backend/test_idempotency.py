@@ -1,4 +1,4 @@
-from decimal import Decimal
+import json
 
 import pytest
 
@@ -6,7 +6,6 @@ from idempotency import (
     IdempotencyPayloadConflictError,
     IdempotencyPersistenceError,
     InvalidIdempotencyKeyError,
-    canonical_payload_fingerprint,
     execute_idempotent_rpc,
     validate_idempotency_key,
 )
@@ -17,6 +16,15 @@ class Response:
         self.data = data
 
 
+def _database_logical_payload(rpc_name, params):
+    payload = {key: value for key, value in params.items() if key != "p_idempotency_key"}
+    if rpc_name == "finance_idempotent_create_recurring_template":
+        # The first due date is derived from the financial calendar and is not
+        # part of the logical recurring-template identity.
+        payload.pop("p_due_date", None)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
 class RpcCall:
     def __init__(self, client, rpc_name, params):
         self.client = client
@@ -25,7 +33,7 @@ class RpcCall:
 
     def execute(self):
         key = (self.rpc_name, self.params["p_idempotency_key"])
-        fingerprint = self.params["p_request_fingerprint"]
+        fingerprint = _database_logical_payload(self.rpc_name, self.params)
         existing = self.client.operations.get(key)
         if existing is not None:
             if existing["fingerprint"] != fingerprint:
@@ -56,14 +64,21 @@ class DurableRpcClient:
         return RpcCall(self, rpc_name, params)
 
 
-def execute(client, *, rpc_name, operation_type, key, payload):
+def execute(client, *, rpc_name, key, value="10.00", due_date="2026-09-05"):
+    params = {"p_amount": value}
+    if rpc_name == "finance_idempotent_create_recurring_template":
+        params.update(
+            p_title="Rent",
+            p_due_date=due_date,
+            p_description=None,
+            p_frequency="monthly",
+            p_recurring_day=5,
+        )
     return execute_idempotent_rpc(
         data_client=client,
         rpc_name=rpc_name,
-        operation_type=operation_type,
         idempotency_key=key,
-        fingerprint_payload=payload,
-        rpc_parameters={"p_value": "10.00"},
+        rpc_parameters=params,
     )
 
 
@@ -77,55 +92,23 @@ def test_idempotency_key_validation_is_strict_and_bounded():
         validate_idempotency_key("bad key with spaces")
 
 
-def test_fingerprint_is_canonical_for_mapping_order_and_decimal_money():
-    first = canonical_payload_fingerprint(
-        "reserve_add",
-        {"amount": Decimal("10.00"), "metadata": {"b": 2, "a": 1}},
-    )
-    second = canonical_payload_fingerprint(
-        "reserve_add",
-        {"metadata": {"a": 1, "b": 2}, "amount": Decimal("10.00")},
-    )
-    different = canonical_payload_fingerprint("reserve_add", {"amount": Decimal("10.01")})
-
-    assert first == second
-    assert len(first) == 64
-    assert first != different
-
-
 @pytest.mark.parametrize(
-    ("rpc_name", "operation_type"),
+    "rpc_name",
     [
-        ("finance_idempotent_add_reserve", "reserve_add"),
-        ("finance_idempotent_add_bill", "bill_create"),
-        ("finance_idempotent_add_income", "income_create"),
-        ("finance_idempotent_create_recurring_template", "recurring_template_create"),
+        "finance_idempotent_add_reserve",
+        "finance_idempotent_add_bill",
+        "finance_idempotent_add_income",
+        "finance_idempotent_create_recurring_template",
     ],
 )
-def test_commit_then_transport_timeout_retry_reuses_durable_result_exactly_once(
-    rpc_name,
-    operation_type,
-):
+def test_commit_then_transport_timeout_retry_reuses_durable_result_exactly_once(rpc_name):
     client = DurableRpcClient()
     client.timeout_after_next_commit = True
-    payload = {"amount": Decimal("10.00"), "label": "same logical intent"}
 
     with pytest.raises(IdempotencyPersistenceError, match="indeterminate"):
-        execute(
-            client,
-            rpc_name=rpc_name,
-            operation_type=operation_type,
-            key="logical-intent-0001",
-            payload=payload,
-        )
+        execute(client, rpc_name=rpc_name, key="logical-intent-0001")
 
-    result = execute(
-        client,
-        rpc_name=rpc_name,
-        operation_type=operation_type,
-        key="logical-intent-0001",
-        payload=payload,
-    )
+    result = execute(client, rpc_name=rpc_name, key="logical-intent-0001")
 
     assert result["status"] == "success"
     assert client.effect_counts[rpc_name] == 1
@@ -138,40 +121,55 @@ def test_same_key_different_payload_is_a_conflict_not_a_second_effect():
     execute(
         client,
         rpc_name="finance_idempotent_add_reserve",
-        operation_type="reserve_add",
         key="reserve-intent-0001",
-        payload={"amount": Decimal("10.00")},
+        value="10.00",
     )
 
     with pytest.raises(IdempotencyPayloadConflictError):
         execute(
             client,
             rpc_name="finance_idempotent_add_reserve",
-            operation_type="reserve_add",
             key="reserve-intent-0001",
-            payload={"amount": Decimal("20.00")},
+            value="20.00",
         )
 
     assert client.effect_counts["finance_idempotent_add_reserve"] == 1
 
 
+def test_recurring_retry_ignores_newly_derived_due_date_for_same_logical_intent():
+    client = DurableRpcClient()
+
+    first = execute(
+        client,
+        rpc_name="finance_idempotent_create_recurring_template",
+        key="recurring-intent1",
+        due_date="2026-09-05",
+    )
+    replay = execute(
+        client,
+        rpc_name="finance_idempotent_create_recurring_template",
+        key="recurring-intent1",
+        due_date="2026-10-05",
+    )
+
+    assert replay == first
+    assert client.effect_counts["finance_idempotent_create_recurring_template"] == 1
+
+
 def test_new_key_with_equal_business_payload_is_a_new_user_intent():
     client = DurableRpcClient()
-    payload = {"amount": Decimal("10.00")}
 
     execute(
         client,
         rpc_name="finance_idempotent_add_reserve",
-        operation_type="reserve_add",
         key="reserve-intent-0001",
-        payload=payload,
+        value="10.00",
     )
     execute(
         client,
         rpc_name="finance_idempotent_add_reserve",
-        operation_type="reserve_add",
         key="reserve-intent-0002",
-        payload=payload,
+        value="10.00",
     )
 
     assert client.effect_counts["finance_idempotent_add_reserve"] == 2
