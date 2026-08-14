@@ -1,5 +1,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { configureApiAuthSessionSnapshotProvider } from './api';
+import { AppState } from 'react-native';
+import {
+  configureApiAuthSessionSnapshotProvider,
+  reconcilePendingFinancialMutations,
+} from './api';
 import {
   AuthSession,
   getCurrentAuthSession,
@@ -24,20 +28,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let active = true;
     configureApiAuthSessionSnapshotProvider(
       async () => {
         const snapshot = await getValidAuthSessionSnapshot();
-        setSession(getCurrentAuthSession());
+        if (active) setSession(getCurrentAuthSession());
         return snapshot;
       },
       isAuthSessionSnapshotCurrent,
     );
 
     initializeAuthSession()
-      .then(setSession)
-      .finally(() => setLoading(false));
+      .then((next) => {
+        if (!active) return;
+        setSession(next);
+        if (next) void reconcilePendingFinancialMutations();
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    const appStateSubscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void reconcilePendingFinancialMutations();
+      }
+    });
 
     return () => {
+      active = false;
+      appStateSubscription.remove();
       configureApiAuthSessionSnapshotProvider(null, null);
     };
   }, []);
@@ -45,6 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = useCallback(async (email: string, password: string) => {
     const next = await signInWithPassword(email, password);
     setSession(next);
+    void reconcilePendingFinancialMutations();
   }, []);
 
   const signOut = useCallback(async () => {
