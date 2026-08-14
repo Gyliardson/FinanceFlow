@@ -1,8 +1,9 @@
 import os
 from collections.abc import Iterable
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from auth_middleware import SupabaseAuthMiddleware
 from main import APIKeyMiddleware, PUBLIC_PATHS, app as legacy_app
@@ -111,10 +112,23 @@ def _install_secure_route_overrides(app: FastAPI) -> None:
     )
 
 
+async def _privacy_safe_http_exception_handler(
+    _request: Request,
+    exc: HTTPException,
+) -> JSONResponse:
+    detail = exc.detail if exc.status_code < 500 else "Internal server error."
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": detail},
+        headers=exc.headers,
+    )
+
+
 def configure_runtime(app: FastAPI) -> FastAPI:
     """Install the production security composition over the legacy route module."""
     _remove_middleware_classes(app, (APIKeyMiddleware, CORSMiddleware, SupabaseAuthMiddleware))
     _install_secure_route_overrides(app)
+    app.add_exception_handler(HTTPException, _privacy_safe_http_exception_handler)
 
     app.add_middleware(
         CORSMiddleware,
