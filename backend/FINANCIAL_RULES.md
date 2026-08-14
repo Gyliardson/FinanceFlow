@@ -55,7 +55,7 @@ The following **non-convergent financial POST mutations** use the durable `Idemp
 3. income creation (`POST /incomes`);
 4. recurring-template creation (`POST /recurring-bills`).
 
-The logical identity is:
+The durable server identity is:
 
 `authenticated owner + operation type + Idempotency-Key`
 
@@ -84,7 +84,7 @@ This deliberately avoids the unsafe pattern `check key -> mutate -> insert repla
 
 A transaction that rolls back leaves neither a completed effect nor a durable replay result. If the database transaction commits but the client loses the response, both the financial effect and replay result are already durable; the caller retries the same unresolved intent with the same key and PostgreSQL returns the committed result without another effect.
 
-### Replay contract
+### Server replay contract
 
 - same owner + operation + key + equivalent canonical payload → return the durable result; apply the financial effect once;
 - same owner + operation + key + different payload → reject explicitly/fail closed;
@@ -93,23 +93,35 @@ A transaction that rolls back leaves neither a completed effect nor a durable re
 
 The ledger is owner-scoped by RLS and the mutation functions are `SECURITY INVOKER`; `auth.uid()` remains the ownership authority.
 
-### Mobile operation lifecycle
+### Mobile logical-intent lifecycle
 
-For these four operations the mobile client creates/persists the operation identity **before transport**. Pending records are owner-scoped in AsyncStorage.
+The database can only replay a logical operation correctly if the mobile client preserves the same key **and the same original logical request** while the outcome remains indeterminate. For the four scoped operations, the first submission therefore persists an owner-scoped pending mutation before transport.
 
-- new unresolved user intent → one new operation key;
-- concurrent transport attempts for that same unresolved intent → same key;
-- timeout, connection reset, app reconnect, HTTP 5xx, `408`, `425`, or `429` → outcome may be ambiguous, so retain the key;
-- app/module restart → the unresolved owner-scoped key is loaded again;
-- confirmed success → clear the pending identity;
-- definitive non-retryable 4xx rejection → close that rejected identity;
-- after confirmed completion, intentionally repeating the same business values is a new intent and receives a new key.
+A pending mutation contains the durable key plus the complete original request payload and local logical-intent fingerprint. Its payload is private financial state and is stored in `SecureStore`; the historical AsyncStorage representation is migrated one way and removed.
 
-While a mobile operation is still indeterminate, the same owner/operation/canonical payload is conservatively treated as the same unresolved intent. This prevents an accidental duplicate during uncertainty. If a user truly needs an identical second business operation, the first one must reach a definitive outcome before the mobile client starts the second identity.
+Lifecycle rules:
+
+- new explicit user intent → create one pending identity and one new key;
+- the first submitted payload becomes the replay snapshot for that unresolved intent;
+- timeout, connection reset, reconnect, app background/foreground, HTTP 5xx, `408`, `425`, `429`, or lost response → preserve the pending key and original payload;
+- app/module restart → reload the pending record and replay the same identity;
+- confirmed success → close the pending identity;
+- definitive non-retryable 4xx rejection → close the rejected identity;
+- after a definitive outcome, a later explicit user action is a new intent and receives a new key.
+
+Local matching is not allowed to rely only on a transport payload rebuilt at retry time. In particular, the income `date` field is derived from the financial calendar when the user first submits the intent. If a lost-response retry crosses local midnight, the retry must still select the unresolved income intent and send its original date rather than manufacture a new key for a recomputed date.
+
+Pending-store mutations are serialized per `owner + operation`. Two different intents of the same operation type may therefore be created concurrently without a `read A / read A / write A+X / write A+Y` last-writer-wins loss.
+
+### Coherent authentication snapshot
+
+Financial request preparation captures one authenticated-session snapshot containing the access token, owner id and a local session generation. That single snapshot is used to select the owner namespace, prepare the pending mutation and populate the Authorization header.
+
+If the authenticated session changes before preparation finishes, the mutation fails closed before transport. The client must never send combinations such as owner A + token B or owner B + token A.
+
+Normal logout intentionally does not destroy an **ambiguous** pending financial mutation: the record remains encrypted and scoped to its original owner so that owner can reconcile it after a later login. A different account cannot select, replay or reuse the first owner's key/payload. An explicit purge helper exists for a deliberate destructive lifecycle policy, but ordinary account switching relies on strict owner namespace isolation rather than making an unresolved financial outcome unrecoverable.
 
 The mobile pending-operation retention window is currently 90 days. Server replay records are not automatically deleted by migration 006; they remain durable until an explicit operator-managed lifecycle policy is introduced. The server therefore does not expire a key while a supported mobile pending record can still legitimately retry it.
-
-Logout does not erase unresolved operation identities globally. They remain owner-scoped so a later login by the same owner can safely reconcile an ambiguous outcome, while another owner cannot reuse or observe them.
 
 ## Payment convergence and ambiguous receipt commits
 
@@ -179,7 +191,9 @@ The FinanceFlow gates prove these invariants with:
 - receipt payment tests that distinguish fail-before-commit from commit-then-response-failure and verify signed access to retained evidence;
 - a disposable PostgreSQL 16 financial-idempotency contract covering database-owned fingerprinting, replay, payload mismatch, owner isolation, intentional new-key repetition and concurrent same-key requests for reserve/bill/income/recurring-template mutations;
 - backend adapter tests that model commit-before-timeout for all four durable mutation classes;
-- a mobile contract proving owner-scoped unresolved key reuse across same-process concurrency, reconnect-style retry and module/app restart;
+- a mobile contract proving original-payload/key replay across midnight, reconnect-style retry and module/app restart;
+- deterministic controls proving the former payload-drift and concurrent pending-store loss failure models;
+- an account-switch contract proving stale auth snapshots fail closed and another owner cannot inherit pending financial state;
 - PostgreSQL `NUMERIC(...,2)` persistence round-trip checks;
 - recurring calendar edge cases, historical-duplicate fail-closed behavior, concurrent generated-child writers, retry uniqueness and bulk-conflict recovery.
 
