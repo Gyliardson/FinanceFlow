@@ -48,6 +48,18 @@ New receipt object keys use the canonical namespace `<owner_uuid>/<bill_uuid>/<o
 
 Signed receipt URLs are bounded to a maximum of 15 minutes, with a default lifetime of 5 minutes. They are transient response material only and must never be persisted or logged.
 
+The reusable payment service enforces additional invariants before the route migration is completed:
+
+- bill lookup and the final payment update use the authenticated RLS-scoped Data API client supplied by the request layer;
+- receipt bytes are signature-validated and size-bounded before storage;
+- file extension and content type come from validated bytes, never the client filename;
+- the final database write is compare-and-set on `status != paid`, so a concurrent second submit cannot silently overwrite the first payment;
+- a zero-row compare-and-set is treated as an authorization/race failure;
+- if upload succeeds but payment persistence fails, the uploaded object is removed on a best-effort basis so partial failures do not leave unnecessary financial documents behind;
+- storage/provider exception details are not propagated as public domain errors.
+
+Private receipt access is also split from privileged storage: the user-scoped Data API client must first return the bill and its `receipt_path`; only then may the server-only storage helper create a bounded signed URL. An RLS-filtered cross-user identifier is therefore handled like a missing receipt and never reaches privileged storage.
+
 The completed access flow must be:
 
 1. authorize the caller against the bill owner through the user-scoped/RLS client;
@@ -67,6 +79,9 @@ Security-sensitive operations fail closed:
 - unowned historical rows prevent NOT NULL promotion;
 - RLS rejects cross-user reads/writes even if a resource identifier is guessed;
 - receipt paths outside the authenticated owner/bill namespace are rejected before signed access is created;
+- receipt MIME spoofing, empty files, unknown formats and oversized uploads are rejected before storage;
+- a payment database failure after upload triggers best-effort orphan cleanup;
+- a concurrent/zero-row payment update fails closed instead of claiming success;
 - authorization failures must not fall back to the legacy static API key.
 
 ## CI evidence
@@ -82,6 +97,8 @@ The CI security track is expected to prove, with disposable PostgreSQL where app
 - historical unowned rows make migration 004 fail without deletion;
 - explicit backfill allows migration 004 to complete;
 - private receipt keys are owner/bill scoped and signed URL lifetimes are bounded;
+- receipt payment tests cover MIME spoofing, already-paid state, storage failure, database failure, orphan cleanup and compare-and-set double-submit behavior;
+- private receipt access tests prove an unauthorized/missing bill never invokes privileged storage;
 - backend tests, dependency evidence and secret scanning remain green.
 
 This document describes the intended enforced model. A PR must remain draft while any required application-session wiring, private receipt route migration, migration proof or negative authorization test is incomplete.
