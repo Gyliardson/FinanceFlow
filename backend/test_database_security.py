@@ -6,7 +6,9 @@ import database
 from request_context import bind_request_client, reset_request_client
 
 OWNER_ID = "11111111-1111-1111-1111-111111111111"
+OTHER_OWNER_ID = "22222222-2222-2222-2222-222222222222"
 BILL_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+OTHER_BILL_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 
 def test_storage_client_requires_service_role(monkeypatch):
@@ -67,6 +69,50 @@ def test_receipt_object_key_rejects_invalid_identifiers():
 def test_receipt_object_key_rejects_invalid_extension():
     with pytest.raises(ValueError, match="extension"):
         database.build_receipt_object_key(OWNER_ID, BILL_ID, "pdf!")
+
+
+def test_receipt_path_validation_rejects_cross_owner_or_cross_bill_access():
+    path = f"{OWNER_ID}/{BILL_ID}/synthetic.pdf"
+    assert database.validate_receipt_object_key(OWNER_ID, BILL_ID, path) == path
+
+    with pytest.raises(ValueError, match="authenticated bill owner"):
+        database.validate_receipt_object_key(OTHER_OWNER_ID, BILL_ID, path)
+    with pytest.raises(ValueError, match="authenticated bill owner"):
+        database.validate_receipt_object_key(OWNER_ID, OTHER_BILL_ID, path)
+
+
+def test_receipt_path_validation_rejects_nested_or_empty_filename():
+    with pytest.raises(ValueError, match="Invalid receipt object path"):
+        database.validate_receipt_object_key(OWNER_ID, BILL_ID, f"{OWNER_ID}/{BILL_ID}/nested/file.pdf")
+    with pytest.raises(ValueError, match="Invalid receipt object path"):
+        database.validate_receipt_object_key(OWNER_ID, BILL_ID, f"{OWNER_ID}/{BILL_ID}/")
+
+
+@patch("database.get_supabase_storage_client")
+def test_signed_receipt_url_is_short_lived_and_owner_scoped(mock_get_storage):
+    path = f"{OWNER_ID}/{BILL_ID}/synthetic.pdf"
+    bucket = mock_get_storage.return_value.storage.from_.return_value
+    bucket.create_signed_url.return_value = {"signedURL": "https://example.invalid/signed"}
+
+    result = database.create_receipt_signed_url(OWNER_ID, BILL_ID, path)
+
+    mock_get_storage.return_value.storage.from_.assert_called_once_with("receipts")
+    bucket.create_signed_url.assert_called_once_with(
+        path,
+        database.DEFAULT_RECEIPT_SIGNED_URL_TTL_SECONDS,
+    )
+    assert result == {"signedURL": "https://example.invalid/signed"}
+
+
+@patch("database.get_supabase_storage_client")
+def test_signed_receipt_url_rejects_excessive_or_nonpositive_expiry(mock_get_storage):
+    path = f"{OWNER_ID}/{BILL_ID}/synthetic.pdf"
+
+    for expiry in (0, -1, database.MAX_RECEIPT_SIGNED_URL_TTL_SECONDS + 1):
+        with pytest.raises(ValueError, match="expiry"):
+            database.create_receipt_signed_url(OWNER_ID, BILL_ID, path, expires_in=expiry)
+
+    mock_get_storage.assert_not_called()
 
 
 @patch("database.get_supabase_storage_client")
