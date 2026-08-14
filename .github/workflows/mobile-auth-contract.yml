@@ -70,6 +70,7 @@ jobs:
             src/services/userCache.ts \
             src/services/authSession.ts \
             --ignoreConfig \
+            --ignoreDeprecations 6.0 \
             --outDir "$build_dir" \
             --module commonjs \
             --moduleResolution node \
