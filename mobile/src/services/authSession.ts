@@ -26,6 +26,9 @@ interface SupabaseTokenResponse {
   };
 }
 
+class InvalidCredentialsError extends Error {}
+class AuthServiceUnavailableError extends Error {}
+
 let currentSession: AuthSession | null = null;
 
 function getSupabaseConfig() {
@@ -86,25 +89,33 @@ async function persistSession(session: AuthSession | null): Promise<void> {
 async function authRequest<T>(
   path: string,
   init: RequestInit,
-): Promise<T> {
+): Promise<T | null> {
   const { url, publishableKey } = getSupabaseConfig();
-  const response = await fetch(`${url}/auth/v1${path}`, {
-    ...init,
-    headers: {
-      apikey: publishableKey,
-      'Content-Type': 'application/json',
-      ...(init.headers || {}),
-    },
-  });
+  let response: Response;
 
-  if (!response.ok) {
-    if (response.status === 400 || response.status === 401) {
-      throw new Error('Invalid or expired authentication credentials');
-    }
-    throw new Error('Authentication service is unavailable');
+  try {
+    response = await fetch(`${url}/auth/v1${path}`, {
+      ...init,
+      headers: {
+        apikey: publishableKey,
+        'Content-Type': 'application/json',
+        ...(init.headers || {}),
+      },
+    });
+  } catch {
+    throw new AuthServiceUnavailableError('Authentication service is unavailable');
   }
 
-  return response.json() as Promise<T>;
+  if (!response.ok) {
+    if (response.status === 400 || response.status === 401 || response.status === 403) {
+      throw new InvalidCredentialsError('Invalid or expired authentication credentials');
+    }
+    throw new AuthServiceUnavailableError('Authentication service is unavailable');
+  }
+
+  if (response.status === 204) return null;
+  const text = await response.text();
+  return text ? (JSON.parse(text) as T) : null;
 }
 
 async function refreshSession(refreshToken: string): Promise<AuthSession> {
@@ -115,6 +126,9 @@ async function refreshSession(refreshToken: string): Promise<AuthSession> {
       body: JSON.stringify({ refresh_token: refreshToken }),
     },
   );
+  if (!payload) {
+    throw new Error('Supabase returned an empty authentication session');
+  }
   const session = normalizeTokenResponse(payload);
   await persistSession(session);
   return session;
@@ -129,22 +143,34 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
     return null;
   }
 
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(stored);
-    if (!isAuthSession(parsed)) {
-      await persistSession(null);
-      return null;
-    }
-
-    currentSession = parsed;
-    if (parsed.expiresAt <= Date.now() + REFRESH_SKEW_MS) {
-      return await refreshSession(parsed.refreshToken);
-    }
-
-    return parsed;
+    parsed = JSON.parse(stored);
   } catch {
     await persistSession(null);
     return null;
+  }
+
+  if (!isAuthSession(parsed)) {
+    await persistSession(null);
+    return null;
+  }
+
+  currentSession = parsed;
+  if (parsed.expiresAt > Date.now() + REFRESH_SKEW_MS) {
+    return parsed;
+  }
+
+  try {
+    return await refreshSession(parsed.refreshToken);
+  } catch (error) {
+    if (error instanceof InvalidCredentialsError) {
+      await clearUserFinancialCache(parsed.user.id);
+      await persistSession(null);
+      return null;
+    }
+    // Keep the authenticated identity/cache available for offline mode.
+    return parsed;
   }
 }
 
@@ -164,6 +190,9 @@ export async function signInWithPassword(
       body: JSON.stringify({ email: normalizedEmail, password }),
     },
   );
+  if (!payload) {
+    throw new Error('Supabase returned an empty authentication session');
+  }
 
   const session = normalizeTokenResponse(payload);
   await persistSession(session);
@@ -177,10 +206,12 @@ export async function getValidAccessToken(): Promise<string | null> {
     try {
       const refreshed = await refreshSession(currentSession.refreshToken);
       return refreshed.accessToken;
-    } catch {
-      const userId = currentSession.user.id;
-      await persistSession(null);
-      await clearUserFinancialCache(userId);
+    } catch (error) {
+      if (error instanceof InvalidCredentialsError) {
+        const userId = currentSession.user.id;
+        await persistSession(null);
+        await clearUserFinancialCache(userId);
+      }
       return null;
     }
   }
@@ -196,12 +227,12 @@ export async function signOutAuthSession(): Promise<void> {
   const session = currentSession;
   if (session) {
     try {
-      await authRequest<void>('/logout', {
+      await authRequest<never>('/logout', {
         method: 'POST',
         headers: { Authorization: `Bearer ${session.accessToken}` },
       });
     } catch {
-      // Local logout must still complete if the remote session is already invalid/offline.
+      // Local logout must still complete if the remote session is invalid/offline.
     }
     await clearUserFinancialCache(session.user.id);
   }
