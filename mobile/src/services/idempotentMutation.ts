@@ -6,13 +6,14 @@ export type IdempotentOperation =
   | 'income_create'
   | 'recurring_template_create';
 
-interface PendingOperation {
+export interface PendingOperation {
   key: string;
   canonicalPayload: string;
   createdAt: number;
 }
 
 const LOCAL_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+const pendingCreations = new Map<string, Promise<PendingOperation>>();
 
 const normalizeValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(normalizeValue);
@@ -38,6 +39,12 @@ const ownerToken = (ownerId: string) => {
 
 const pendingStorageKey = (ownerId: string, operation: IdempotentOperation) =>
   `@financeflow:idempotency:${ownerToken(ownerId)}:${operation}`;
+
+const pendingCreationKey = (
+  ownerId: string,
+  operation: IdempotentOperation,
+  canonicalPayload: string,
+) => `${ownerToken(ownerId)}:${operation}:${canonicalPayload}`;
 
 const newOperationKey = () => {
   const randomPart = Math.random().toString(36).slice(2, 14);
@@ -85,17 +92,32 @@ export const getOrCreatePendingOperation = async (
   payload: Record<string, unknown>,
 ): Promise<PendingOperation> => {
   const canonicalPayload = canonicalMutationPayload(payload);
-  const pending = await readPending(ownerId, operation);
-  const existing = pending.find((item) => item.canonicalPayload === canonicalPayload);
-  if (existing) return existing;
+  const creationKey = pendingCreationKey(ownerId, operation, canonicalPayload);
+  const inFlight = pendingCreations.get(creationKey);
+  if (inFlight) return inFlight;
 
-  const created: PendingOperation = {
-    key: newOperationKey(),
-    canonicalPayload,
-    createdAt: Date.now(),
-  };
-  await writePending(ownerId, operation, [...pending, created]);
-  return created;
+  const creation = (async () => {
+    const pending = await readPending(ownerId, operation);
+    const existing = pending.find((item) => item.canonicalPayload === canonicalPayload);
+    if (existing) return existing;
+
+    const created: PendingOperation = {
+      key: newOperationKey(),
+      canonicalPayload,
+      createdAt: Date.now(),
+    };
+    await writePending(ownerId, operation, [...pending, created]);
+    return created;
+  })();
+
+  pendingCreations.set(creationKey, creation);
+  try {
+    return await creation;
+  } finally {
+    if (pendingCreations.get(creationKey) === creation) {
+      pendingCreations.delete(creationKey);
+    }
+  }
 };
 
 export const clearPendingOperation = async (
