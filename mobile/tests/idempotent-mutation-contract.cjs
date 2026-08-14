@@ -1,14 +1,17 @@
 'use strict';
 
 const assert = require('assert');
+const path = require('path');
 const AsyncStorage = require('@react-native-async-storage/async-storage');
 
-const modulePath = require.resolve('../__contract__/idempotentMutation.js');
+const buildDir = process.env.FINANCEFLOW_AUTH_CONTRACT_BUILD;
+if (!buildDir) throw new Error('FINANCEFLOW_AUTH_CONTRACT_BUILD is required');
+const modulePath = path.join(buildDir, 'idempotentMutation.js');
 const OWNER_A = '11111111-1111-1111-1111-111111111111';
 const OWNER_B = '22222222-2222-2222-2222-222222222222';
 
 const reloadModule = () => {
-  delete require.cache[modulePath];
+  delete require.cache[require.resolve(modulePath)];
   return require(modulePath);
 };
 
