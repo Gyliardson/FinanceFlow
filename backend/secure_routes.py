@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 
 from fastapi import File, HTTPException, UploadFile
 
@@ -24,6 +25,59 @@ def _authenticated_user_id() -> str:
         # to a shared secret or anonymous client.
         raise HTTPException(status_code=401, detail="Authenticated user context is required.")
     return user_id
+
+
+async def pay_bill_without_receipt(bill_id: str):
+    """Mark an authenticated user's bill paid with compare-and-set idempotency."""
+    _authenticated_user_id()
+    data_client = get_supabase_client()
+
+    try:
+        bill_response = (
+            data_client.table("finance_bills")
+            .select("id,status,description")
+            .eq("id", bill_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        logger.error("Receipt-less payment lookup failed")
+        raise HTTPException(status_code=503, detail="Não foi possível consultar a fatura.") from exc
+
+    rows = getattr(bill_response, "data", None) or []
+    if not rows:
+        # RLS intentionally makes a cross-owner identifier indistinguishable
+        # from a nonexistent bill.
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+
+    bill = rows[0]
+    if bill.get("status") == "paid":
+        return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
+
+    payment_date = date.today().isoformat()
+    try:
+        update_response = (
+            data_client.table("finance_bills")
+            .update({"status": "paid", "payment_date": payment_date})
+            .eq("id", bill_id)
+            .neq("status", "paid")
+            .execute()
+        )
+    except Exception as exc:
+        logger.error("Receipt-less payment persistence failed")
+        raise HTTPException(status_code=503, detail="Não foi possível confirmar o pagamento.") from exc
+
+    if not (getattr(update_response, "data", None) or []):
+        # Another request may have completed the payment between lookup/update.
+        # Treat the target state as idempotently achieved without claiming this
+        # request performed the write.
+        return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
+
+    return {
+        "status": "success",
+        "message": f"Fatura '{bill.get('description', '')}' paga com sucesso!",
+        "payment_date": payment_date,
+    }
 
 
 async def pay_bill_with_private_receipt(
