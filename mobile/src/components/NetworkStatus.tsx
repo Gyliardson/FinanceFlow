@@ -4,23 +4,34 @@ import { Ionicons } from '@expo/vector-icons';
 
 interface NetworkStatusProps {
   isOffline: boolean;
+  cachedAt?: number | null;
   onRetry?: () => void;
 }
 
-export default function NetworkStatus({ isOffline, onRetry }: NetworkStatusProps) {
+function describeFreshness(cachedAt: number | null | undefined): string {
+  if (!cachedAt || !Number.isFinite(cachedAt) || cachedAt <= 0) {
+    return 'Exibindo dados salvos anteriormente; o horário da última atualização não está disponível.';
+  }
+
+  return `Última atualização salva: ${new Date(cachedAt).toLocaleString('pt-BR')}.`;
+}
+
+export default function NetworkStatus({ isOffline, cachedAt, onRetry }: NetworkStatusProps) {
   if (!isOffline) return null;
+  const freshness = describeFreshness(cachedAt);
 
   return (
     <View
       accessibilityLiveRegion="polite"
-      accessibilityLabel="Modo offline. Exibindo os dados salvos neste dispositivo."
+      accessibilityLabel={`Modo offline. ${freshness}`}
       style={styles.container}
     >
       <View style={styles.content}>
         <Ionicons accessibilityElementsHidden name="cloud-offline" size={18} color="#fff" />
         <View style={styles.copy}>
           <Text style={styles.title}>Você está offline</Text>
-          <Text style={styles.text}>Exibindo os últimos dados salvos neste dispositivo.</Text>
+          <Text style={styles.text}>{freshness}</Text>
+          <Text style={styles.readOnlyText}>Alterações financeiras exigem conexão.</Text>
         </View>
       </View>
       {onRetry && (
@@ -77,6 +88,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     fontWeight: '600',
+  },
+  readOnlyText: {
+    color: '#fff7ed',
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: '700',
+    marginTop: 2,
   },
   retryBtn: {
     minHeight: 44,
