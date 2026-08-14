@@ -1,0 +1,50 @@
+name: HomeScreen log sanitization bootstrap
+
+on:
+  push:
+    branches:
+      - work/8-ownership-private-receipts
+
+permissions:
+  contents: write
+
+jobs:
+  sanitize:
+    if: contains(github.event.head_commit.message, '[sanitize-home-logs]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: work/8-ownership-private-receipts
+      - name: Remove raw API error-object logging
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('mobile/src/screens/HomeScreen.tsx')
+          source = path.read_text()
+          replacements = {
+              '    } catch (error) {\n      console.error("Erro ao buscar boletos:", error);\n      setIsOffline(true);':
+              '    } catch {\n      setIsOffline(true);',
+              '    } catch (e) {\n      console.error(e);\n      setIsOffline(true);':
+              '    } catch {\n      setIsOffline(true);',
+          }
+          for old, new in replacements.items():
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one raw log block, found {count}: {old!r}')
+              source = source.replace(old, new, 1)
+          if 'console.error' in source:
+              raise SystemExit('HomeScreen still contains console.error after sanitization')
+          path.write_text(source)
+      - name: Commit sanitization
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mobile/src/screens/HomeScreen.tsx
+          git diff --cached --check
+          git diff --cached --exit-code && exit 0 || true
+          git commit -m 'security(mobile): avoid logging raw API errors'
+          git push origin HEAD:work/8-ownership-private-receipts
