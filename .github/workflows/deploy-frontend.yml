@@ -5,7 +5,10 @@ on:
     branches:
       - main
     paths:
-      - 'mobile/**' # Apenas quando houver mudanças no frontend
+      - 'mobile/**'
+
+permissions:
+  contents: read
 
 jobs:
   update-frontend:
@@ -13,12 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22.13.0
           cache: 'npm'
           cache-dependency-path: 'mobile/package-lock.json'
 
@@ -37,5 +40,4 @@ jobs:
         working-directory: ./mobile
         env:
           EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
-          EXPO_PUBLIC_API_KEY: ${{ secrets.EXPO_PUBLIC_API_KEY }}
         run: eas update --branch production --message "Auto-deploy via GitHub Actions"
