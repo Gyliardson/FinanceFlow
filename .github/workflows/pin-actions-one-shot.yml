@@ -1,0 +1,59 @@
+name: Pin Actions one shot
+
+on:
+  push:
+    branches:
+      - work/30-governance-supply-chain
+    paths:
+      - .github/workflows/pin-actions-one-shot.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact work branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: work/30-governance-supply-chain
+      - name: Replace mutable action tags with immutable SHAs
+        shell: python
+        run: |
+          from pathlib import Path
+
+          replacements = {
+              'actions/checkout@v6': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
+              'actions/setup-node@v6': 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0',
+              'actions/setup-python@v6': 'actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0',
+              'actions/upload-artifact@v4': 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1',
+              'gitleaks/gitleaks-action@v3': 'gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0',
+              'expo/expo-github-action@v8': 'expo/expo-github-action@eab7a230208c952974db8c3245cfd78402c7b385 # 9.0.0',
+              'eas-version: latest': 'eas-version: 21.8.0',
+          }
+          touched = []
+          for path in sorted(Path('.github/workflows').glob('*.yml')):
+              if path.name == 'pin-actions-one-shot.yml':
+                  continue
+              original = path.read_text(encoding='utf-8')
+              updated = original
+              for old, new in replacements.items():
+                  updated = updated.replace(old, new)
+              if updated != original:
+                  path.write_text(updated, encoding='utf-8')
+                  touched.append(str(path))
+          print('\n'.join(touched))
+          if not touched:
+              raise SystemExit('No permanent workflow required pinning; review preconditions.')
+      - name: Commit only permanent workflow changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add .github/workflows/*.yml
+          git reset .github/workflows/pin-actions-one-shot.yml
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'ci(supply-chain): pin Actions and EAS tooling'
+          git push origin HEAD:work/30-governance-supply-chain
