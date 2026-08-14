@@ -2,10 +2,13 @@
 
 const assert = require('assert');
 const path = require('path');
-const AsyncStorage = require('@react-native-async-storage/async-storage');
 
 const buildDir = process.env.FINANCEFLOW_AUTH_CONTRACT_BUILD;
 if (!buildDir) throw new Error('FINANCEFLOW_AUTH_CONTRACT_BUILD is required');
+const AsyncStorage = require(path.join(
+  buildDir,
+  'node_modules/@react-native-async-storage/async-storage/index.js',
+));
 const modulePath = path.join(buildDir, 'idempotentMutation.js');
 const OWNER_A = '11111111-1111-1111-1111-111111111111';
 const OWNER_B = '22222222-2222-2222-2222-222222222222';
