@@ -79,7 +79,6 @@ export async function requestNotificationPermissions(): Promise<boolean> {
     return false;
   }
 
-  // Canal Android (obrigatório para Android 8+)
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('bills', {
       name: 'Contas a Pagar',
@@ -95,14 +94,10 @@ export async function requestNotificationPermissions(): Promise<boolean> {
 
 /**
  * Agenda todas as notificações para uma fatura específica.
- * 
+ *
  * Lógica:
  * - T-3, T-2, T-1: Uma notificação por dia (9h da manhã)
- * - Dia T (vencimento): 3 notificações (9h, 14h, 20h) com tom persuasivo
- * 
- * @param billId - ID da fatura no banco
- * @param billName - Nome/descrição da fatura
- * @param dueDate - Data de vencimento (string YYYY-MM-DD)
+ * - Dia T (vencimento): 3 notificações (9h, 14h, 20h)
  */
 export async function scheduleNotificationsForBill(
   billId: string,
@@ -115,15 +110,14 @@ export async function scheduleNotificationsForBill(
   const due = new Date(dueDate + 'T00:00:00');
   const now = new Date();
 
-  // --- Notificações T-3, T-2, T-1 ---
   for (let daysBefore = 3; daysBefore >= 1; daysBefore--) {
     const triggerDate = new Date(due);
     triggerDate.setDate(triggerDate.getDate() - daysBefore);
-    triggerDate.setHours(9, 0, 0, 0); // 9h da manhã
+    triggerDate.setHours(9, 0, 0, 0);
 
-    if (triggerDate <= now) continue; // Já passou
+    if (triggerDate <= now) continue;
 
-    const msgIndex = 3 - daysBefore; // 0, 1, 2
+    const msgIndex = 3 - daysBefore;
     const msg = MESSAGES_BEFORE[msgIndex];
 
     const promise = Notifications.scheduleNotificationAsync({
@@ -138,13 +132,12 @@ export async function scheduleNotificationsForBill(
         date: triggerDate,
         channelId: 'bills',
       },
-    }).catch(err => {
-      console.warn(`Erro ao agendar notificação T-${daysBefore}:`, err);
+    }).catch(() => {
+      console.warn('[Notificações] Falha ao agendar lembrete.');
     });
     promises.push(promise);
   }
 
-  // --- Notificações no dia do vencimento ---
   const dueDayHours = [
     { hour: 9, period: 'morning' as const },
     { hour: 14, period: 'afternoon' as const },
@@ -171,8 +164,8 @@ export async function scheduleNotificationsForBill(
         date: triggerDate,
         channelId: 'bills',
       },
-    }).catch(err => {
-      console.warn(`Erro ao agendar notificação ${period}:`, err);
+    }).catch(() => {
+      console.warn('[Notificações] Falha ao agendar lembrete de vencimento.');
     });
     promises.push(promise);
   }
@@ -180,7 +173,7 @@ export async function scheduleNotificationsForBill(
   const results = await Promise.all(promises);
   const scheduledIds = results.filter((id): id is string => typeof id === 'string');
 
-  console.log(`[Notificações] Agendadas ${scheduledIds.length} para "${billName}" (venc: ${dueDate})`);
+  console.log(`[Notificações] ${scheduledIds.length} lembrete(s) agendado(s).`);
   return scheduledIds;
 }
 
@@ -194,7 +187,7 @@ export async function cancelNotificationsForBill(billId: string): Promise<void> 
   try {
     const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
     const cancelPromises: Promise<void>[] = [];
-    
+
     for (const notification of allScheduled) {
       if (notification.content.data?.billId === billId) {
         cancelPromises.push(
@@ -202,14 +195,14 @@ export async function cancelNotificationsForBill(billId: string): Promise<void> 
         );
       }
     }
-    
+
     if (cancelPromises.length > 0) {
       await Promise.all(cancelPromises);
     }
-    
-    console.log(`[Notificações] Canceladas (${cancelPromises.length}) para billId: ${billId}`);
-  } catch (err) {
-    console.warn('Erro ao cancelar notificações:', err);
+
+    console.log(`[Notificações] ${cancelPromises.length} lembrete(s) cancelado(s).`);
+  } catch {
+    console.warn('[Notificações] Falha ao cancelar lembretes.');
   }
 }
 
@@ -219,5 +212,5 @@ export async function cancelNotificationsForBill(billId: string): Promise<void> 
 export async function cancelAllNotifications(): Promise<void> {
   if (Platform.OS === 'web') return;
   await Notifications.cancelAllScheduledNotificationsAsync();
-  console.log('[Notificações] Todas canceladas.');
+  console.log('[Notificações] Todos os lembretes foram cancelados.');
 }
