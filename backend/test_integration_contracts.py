@@ -40,6 +40,17 @@ def test_invoice_candidate_uses_exact_money_and_iso_date():
     assert candidate.barcode == "12345"
 
 
+def test_optional_barcode_whitespace_normalizes_to_none():
+    candidate = InvoiceCandidate(
+        description="Conta",
+        amount="10.00",
+        due_date="2026-02-28",
+        barcode="   ",
+    )
+
+    assert candidate.barcode is None
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -47,6 +58,7 @@ def test_invoice_candidate_uses_exact_money_and_iso_date():
         {"description": "Conta", "amount": "NaN", "due_date": "2026-02-28"},
         {"description": "Conta", "amount": "10.00", "due_date": "not-a-date"},
         {"description": "", "amount": "10.00", "due_date": "2026-02-28"},
+        {"description": "   ", "amount": "10.00", "due_date": "2026-02-28"},
     ],
 )
 def test_invalid_financial_candidates_fail_closed(payload):
