@@ -1,22 +1,26 @@
 import axios from 'axios';
 import {
   clearPendingOperation,
-  getOrCreatePendingOperation,
   IdempotentOperation,
+  MutationSessionSnapshot,
+  preparePendingMutation,
 } from './idempotentMutation';
 
-type AccessTokenProvider = () => Promise<string | null> | string | null;
-type AuthenticatedUserIdProvider = () => Promise<string | null> | string | null;
+type AuthSessionSnapshotProvider = () =>
+  Promise<MutationSessionSnapshot | null> | MutationSessionSnapshot | null;
+type AuthSessionSnapshotValidator = (
+  snapshot: MutationSessionSnapshot,
+) => Promise<boolean> | boolean;
 
-let accessTokenProvider: AccessTokenProvider | null = null;
-let authenticatedUserIdProvider: AuthenticatedUserIdProvider | null = null;
+let authSessionSnapshotProvider: AuthSessionSnapshotProvider | null = null;
+let authSessionSnapshotValidator: AuthSessionSnapshotValidator | null = null;
 
-export function configureApiAccessTokenProvider(provider: AccessTokenProvider | null) {
-  accessTokenProvider = provider;
-}
-
-export function configureApiAuthenticatedUserIdProvider(provider: AuthenticatedUserIdProvider | null) {
-  authenticatedUserIdProvider = provider;
+export function configureApiAuthSessionSnapshotProvider(
+  provider: AuthSessionSnapshotProvider | null,
+  validator: AuthSessionSnapshotValidator | null,
+) {
+  authSessionSnapshotProvider = provider;
+  authSessionSnapshotValidator = validator;
 }
 
 const api = axios.create({
@@ -52,25 +56,43 @@ const requestIdempotencyKey = (config: any): string | null => {
 };
 
 api.interceptors.request.use(async (config) => {
-  const token = accessTokenProvider ? await accessTokenProvider() : null;
+  const snapshot = authSessionSnapshotProvider
+    ? await authSessionSnapshotProvider()
+    : null;
 
   config.headers.delete('X-API-KEY');
-  if (token) {
-    config.headers.set('Authorization', `Bearer ${token}`);
+  if (snapshot) {
+    config.headers.set('Authorization', `Bearer ${snapshot.accessToken}`);
   } else {
     config.headers.delete('Authorization');
   }
 
   const operation = operationForRequest(config.method, config.url);
   if (operation) {
-    const ownerId = authenticatedUserIdProvider ? await authenticatedUserIdProvider() : null;
-    if (!ownerId) {
-      throw new Error('Authenticated user identity is required for financial mutations.');
+    if (!snapshot || !authSessionSnapshotValidator) {
+      throw new Error('A coherent authenticated session is required for financial mutations.');
     }
-    const rawPayload = config.data && typeof config.data === 'object' ? config.data : {};
-    const pending = await getOrCreatePendingOperation(ownerId, operation, rawPayload);
-    config.headers.set('Idempotency-Key', pending.key);
-    pendingMetadataByKey.set(pending.key, { ownerId, operation, key: pending.key });
+
+    const rawPayload = config.data && typeof config.data === 'object'
+      ? config.data as Record<string, unknown>
+      : {};
+    const prepared = await preparePendingMutation(
+      snapshot,
+      operation,
+      rawPayload,
+      authSessionSnapshotValidator,
+    );
+
+    // The durable pending record owns both the key and the first submitted payload.
+    // Retries must replay that exact snapshot instead of silently rebuilding fields.
+    config.data = prepared.originalPayload;
+    config.headers.set('Authorization', `Bearer ${prepared.accessToken}`);
+    config.headers.set('Idempotency-Key', prepared.key);
+    pendingMetadataByKey.set(prepared.key, {
+      ownerId: prepared.ownerId,
+      operation,
+      key: prepared.key,
+    });
   }
 
   return config;
@@ -100,8 +122,7 @@ api.interceptors.response.use(
       await clearPendingOperation(metadata.ownerId, metadata.operation, metadata.key);
       pendingMetadataByKey.delete(metadata.key);
     }
-    // Network loss and 5xx responses intentionally retain the operation identity:
-    // PostgreSQL may already have committed, so a later retry must reuse the key.
+    // Network loss and 5xx responses intentionally retain the original key+payload.
     return Promise.reject(error);
   },
 );
