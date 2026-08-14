@@ -11,14 +11,28 @@ export default function NetworkStatus({ isOffline, onRetry }: NetworkStatusProps
   if (!isOffline) return null;
 
   return (
-    <View style={styles.container}>
+    <View
+      accessibilityLiveRegion="polite"
+      accessibilityLabel="Modo offline. Exibindo os dados salvos neste dispositivo."
+      style={styles.container}
+    >
       <View style={styles.content}>
-        <Ionicons name="cloud-offline" size={18} color="#fff" />
-        <Text style={styles.text}>Modo Offline (Mostrando cache)</Text>
+        <Ionicons accessibilityElementsHidden name="cloud-offline" size={18} color="#fff" />
+        <View style={styles.copy}>
+          <Text style={styles.title}>Você está offline</Text>
+          <Text style={styles.text}>Exibindo os últimos dados salvos neste dispositivo.</Text>
+        </View>
       </View>
       {onRetry && (
-        <TouchableOpacity style={styles.retryBtn} onPress={onRetry}>
-          <Text style={styles.retryText}>Atualizar</Text>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Tentar atualizar dados"
+          accessibilityHint="Tenta conectar novamente ao FinanceFlow"
+          hitSlop={8}
+          style={styles.retryBtn}
+          onPress={onRetry}
+        >
+          <Text style={styles.retryText}>Tentar novamente</Text>
         </TouchableOpacity>
       )}
     </View>
@@ -27,12 +41,13 @@ export default function NetworkStatus({ isOffline, onRetry }: NetworkStatusProps
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: '#d97706', // amber-600
+    backgroundColor: '#92400e',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 12,
     paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 12,
     marginTop: 10,
     marginHorizontal: 16,
     borderRadius: 12,
@@ -43,24 +58,37 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
   },
   content: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  text: {
+  copy: {
+    flex: 1,
+  },
+  title: {
     color: '#fff',
     fontSize: 13,
-    fontWeight: '700',
+    lineHeight: 18,
+    fontWeight: '800',
+  },
+  text: {
+    color: '#fef3c7',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
   },
   retryBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    minHeight: 44,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderRadius: 8,
   },
   retryText: {
     color: '#fff',
-    fontSize: 11,
-    fontWeight: 'bold',
+    fontSize: 12,
+    fontWeight: '800',
   },
 });
