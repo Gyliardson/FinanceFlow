@@ -10,7 +10,7 @@ const secureStore = require(path.join(compiledRoot, 'node_modules', 'expo-secure
 const auth = require(path.join(compiledRoot, 'authSession.js'));
 const mutations = require(path.join(compiledRoot, 'idempotentMutation.js'));
 
-const SESSION_KEY = '@financeflow:auth-session:v1';
+const SESSION_KEY = 'financeflow.auth-session.v2';
 const OWNER_A = '11111111-1111-1111-1111-111111111111';
 const OWNER_B = '22222222-2222-2222-2222-222222222222';
 const INTENT_A = 'fi_private_income_a_000001';

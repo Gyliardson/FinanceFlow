@@ -33,7 +33,15 @@ export interface PreparedPendingMutation extends PendingOperation {
 
 type IntentClosedListener = (intentId: string) => void;
 
+type PendingManifest = {
+  version: 1;
+  generation: string;
+  chunks: number;
+  totalLength: number;
+};
+
 const LOCAL_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+const SECURE_CHUNK_SIZE = 1800;
 const INTENT_ID_RE = /^fi_[A-Za-z0-9_-]{12,96}$/;
 export const IDEMPOTENT_OPERATIONS: IdempotentOperation[] = [
   'reserve_add',
@@ -88,21 +96,164 @@ const validateIntentId = (value: string) => {
 const ownerToken = (ownerId: string) => {
   const trimmed = ownerId.trim();
   if (!trimmed) throw new Error('Authenticated owner is required for financial mutations.');
+  if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+    throw new Error('Authenticated owner cannot be represented as a SecureStore key.');
+  }
+  return trimmed;
+};
+
+const legacyOwnerToken = (ownerId: string) => {
+  const trimmed = ownerId.trim();
+  if (!trimmed) throw new Error('Authenticated owner is required for financial mutations.');
   return encodeURIComponent(trimmed);
 };
 
 const legacyAsyncPendingStorageKey = (ownerId: string, operation: IdempotentOperation) =>
-  `@financeflow:idempotency:${ownerToken(ownerId)}:${operation}`;
-
-const legacySecurePendingStorageKey = (ownerId: string, operation: IdempotentOperation) =>
-  `@financeflow:idempotency-secure:v2:${ownerToken(ownerId)}:${operation}`;
+  `@financeflow:idempotency:${legacyOwnerToken(ownerId)}:${operation}`;
 
 export const pendingMutationStorageKey = (ownerId: string, operation: IdempotentOperation) =>
-  `@financeflow:idempotency-secure:v3:${ownerToken(ownerId)}:${operation}`;
+  `financeflow.idempotency.v5.${ownerToken(ownerId)}.${operation}.manifest`;
+
+const pendingChunkKey = (
+  ownerId: string,
+  operation: IdempotentOperation,
+  generation: string,
+  index: number,
+) => `financeflow.idempotency.v5.${ownerToken(ownerId)}.${operation}.${generation}.${index}`;
 
 const newOperationKey = () => {
   const randomPart = Math.random().toString(36).slice(2, 14);
   return `ff_${Date.now().toString(36)}_${randomPart}`;
+};
+
+const newGeneration = () =>
+  `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+
+const parsePendingManifest = (raw: string): PendingManifest | null => {
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingManifest>;
+    if (
+      parsed.version !== 1
+      || typeof parsed.generation !== 'string'
+      || !/^[A-Za-z0-9._-]+$/.test(parsed.generation)
+      || typeof parsed.chunks !== 'number'
+      || !Number.isInteger(parsed.chunks)
+      || parsed.chunks < 1
+      || parsed.chunks > 4096
+      || typeof parsed.totalLength !== 'number'
+      || !Number.isInteger(parsed.totalLength)
+      || parsed.totalLength < 1
+    ) return null;
+    return {
+      version: 1,
+      generation: parsed.generation,
+      chunks: parsed.chunks,
+      totalLength: parsed.totalLength,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const cleanupPendingGeneration = async (
+  ownerId: string,
+  operation: IdempotentOperation,
+  manifest: PendingManifest | null,
+) => {
+  if (!manifest) return;
+  for (let index = 0; index < manifest.chunks; index += 1) {
+    await SecureStore.deleteItemAsync(
+      pendingChunkKey(ownerId, operation, manifest.generation, index),
+    ).catch(() => undefined);
+  }
+};
+
+const readSecurePendingRaw = async (
+  ownerId: string,
+  operation: IdempotentOperation,
+): Promise<string | null> => {
+  const manifestKey = pendingMutationStorageKey(ownerId, operation);
+  const manifestRaw = await SecureStore.getItemAsync(manifestKey);
+  if (manifestRaw === null) return null;
+  const manifest = parsePendingManifest(manifestRaw);
+  if (!manifest) {
+    await SecureStore.deleteItemAsync(manifestKey).catch(() => undefined);
+    return null;
+  }
+
+  const chunks: string[] = [];
+  for (let index = 0; index < manifest.chunks; index += 1) {
+    const chunk = await SecureStore.getItemAsync(
+      pendingChunkKey(ownerId, operation, manifest.generation, index),
+    );
+    if (chunk === null) {
+      await cleanupPendingGeneration(ownerId, operation, manifest);
+      await SecureStore.deleteItemAsync(manifestKey).catch(() => undefined);
+      return null;
+    }
+    chunks.push(chunk);
+  }
+  const raw = chunks.join('');
+  if (raw.length !== manifest.totalLength) {
+    await cleanupPendingGeneration(ownerId, operation, manifest);
+    await SecureStore.deleteItemAsync(manifestKey).catch(() => undefined);
+    return null;
+  }
+  return raw;
+};
+
+const writeSecurePendingRaw = async (
+  ownerId: string,
+  operation: IdempotentOperation,
+  raw: string,
+) => {
+  const manifestKey = pendingMutationStorageKey(ownerId, operation);
+  const oldManifestRaw = await SecureStore.getItemAsync(manifestKey).catch(() => null);
+  const oldManifest = oldManifestRaw ? parsePendingManifest(oldManifestRaw) : null;
+  const generation = newGeneration();
+  const chunks = raw.match(new RegExp(`.{1,${SECURE_CHUNK_SIZE}}`, 'gs')) ?? [];
+  if (!chunks.length) throw new Error('Pending financial state cannot be empty');
+
+  const manifest: PendingManifest = {
+    version: 1,
+    generation,
+    chunks: chunks.length,
+    totalLength: raw.length,
+  };
+  let written = 0;
+  try {
+    for (let index = 0; index < chunks.length; index += 1) {
+      await SecureStore.setItemAsync(
+        pendingChunkKey(ownerId, operation, generation, index),
+        chunks[index],
+      );
+      written += 1;
+    }
+    await SecureStore.setItemAsync(manifestKey, JSON.stringify(manifest));
+  } catch (error) {
+    for (let index = 0; index < written; index += 1) {
+      await SecureStore.deleteItemAsync(
+        pendingChunkKey(ownerId, operation, generation, index),
+      ).catch(() => undefined);
+    }
+    throw error;
+  }
+  if (oldManifest && oldManifest.generation !== generation) {
+    await cleanupPendingGeneration(ownerId, operation, oldManifest);
+  }
+};
+
+const clearSecurePending = async (ownerId: string, operation: IdempotentOperation) => {
+  const manifestKey = pendingMutationStorageKey(ownerId, operation);
+  let manifest: PendingManifest | null = null;
+  try {
+    const raw = await SecureStore.getItemAsync(manifestKey);
+    manifest = raw ? parsePendingManifest(raw) : null;
+  } catch {
+    // Continue: unreadable pending storage is never trusted.
+  }
+  await cleanupPendingGeneration(ownerId, operation, manifest);
+  await SecureStore.deleteItemAsync(manifestKey).catch(() => undefined);
 };
 
 const parsePayload = (value: unknown): Record<string, unknown> | null => {
@@ -152,32 +303,24 @@ const writePendingUnlocked = async (
   operation: IdempotentOperation,
   operations: PendingOperation[],
 ) => {
-  const storageKey = pendingMutationStorageKey(ownerId, operation);
   if (operations.length === 0) {
-    await SecureStore.deleteItemAsync(storageKey);
+    await clearSecurePending(ownerId, operation);
     return;
   }
-  await SecureStore.setItemAsync(storageKey, JSON.stringify(operations));
+  await writeSecurePendingRaw(ownerId, operation, JSON.stringify(operations));
 };
 
 const readPendingUnlocked = async (
   ownerId: string,
   operation: IdempotentOperation,
 ): Promise<PendingOperation[]> => {
-  const storageKey = pendingMutationStorageKey(ownerId, operation);
-  const legacySecureKey = legacySecurePendingStorageKey(ownerId, operation);
   const legacyAsyncKey = legacyAsyncPendingStorageKey(ownerId, operation);
+  let raw = await readSecurePendingRaw(ownerId, operation);
+  let migratedFromAsync = false;
 
-  let raw = await SecureStore.getItemAsync(storageKey);
-  let migrationSource: 'secure-v2' | 'async-v1' | null = null;
-
-  if (raw === null) {
-    raw = await SecureStore.getItemAsync(legacySecureKey);
-    if (raw !== null) migrationSource = 'secure-v2';
-  }
   if (raw === null) {
     raw = await AsyncStorage.getItem(legacyAsyncKey);
-    if (raw !== null) migrationSource = 'async-v1';
+    if (raw !== null) migratedFromAsync = true;
   }
   if (!raw) return [];
 
@@ -202,13 +345,10 @@ const readPendingUnlocked = async (
     return true;
   });
 
-  if (migrationSource || JSON.stringify(parsed) !== JSON.stringify(unique)) {
+  if (migratedFromAsync || JSON.stringify(parsed) !== JSON.stringify(unique)) {
     await writePendingUnlocked(ownerId, operation, unique);
   }
-  if (migrationSource === 'secure-v2') {
-    await SecureStore.deleteItemAsync(legacySecureKey);
-  }
-  if (migrationSource === 'async-v1') {
+  if (migratedFromAsync) {
     await AsyncStorage.removeItem(legacyAsyncKey);
   }
 
@@ -337,8 +477,7 @@ export const runIdempotentMutation = async <T>(
 export const purgePendingOperationsForOwner = async (ownerId: string) => {
   for (const operation of IDEMPOTENT_OPERATIONS) {
     await withStoreLock(ownerId, operation, async () => {
-      await SecureStore.deleteItemAsync(pendingMutationStorageKey(ownerId, operation));
-      await SecureStore.deleteItemAsync(legacySecurePendingStorageKey(ownerId, operation));
+      await clearSecurePending(ownerId, operation);
       await AsyncStorage.removeItem(legacyAsyncPendingStorageKey(ownerId, operation));
     });
   }
