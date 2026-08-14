@@ -74,6 +74,29 @@ def test_create_recurring_bill_passes_same_authenticated_client_to_generator(mon
     assert response["generation"] == {"status": "success", "generated": []}
 
 
+def test_generation_failure_after_insert_reports_partial_success_without_inviting_recreate(monkeypatch):
+    client = DataClient()
+    monkeypatch.setattr(secure_recurring_routes, "get_supabase_client", lambda: client)
+
+    def fail_generation(_client):
+        raise RuntimeError("provider secret detail")
+
+    monkeypatch.setattr(
+        secure_recurring_routes,
+        "generate_recurring_instances_for_client",
+        fail_generation,
+    )
+
+    response = asyncio.run(secure_recurring_routes.create_recurring_bill_user_scoped(_request()))
+
+    assert len(client.inserts) == 1
+    assert response["status"] == "partial_success"
+    assert response["data"][0]["id"] == "template-1"
+    assert response["generation"]["status"] == "deferred"
+    assert "criada" in response["generation"]["message"].lower()
+    assert "secret" not in response["generation"]["message"].lower()
+
+
 def test_explicit_generate_route_passes_request_scoped_client(monkeypatch):
     client = DataClient()
     calls = []
@@ -91,13 +114,20 @@ def test_explicit_generate_route_passes_request_scoped_client(monkeypatch):
     assert response["generated"] == [{"id": "child"}]
 
 
-def test_recurring_route_sanitizes_provider_or_database_error(monkeypatch):
+def test_recurring_template_insert_failure_is_sanitized_and_does_not_call_generator(monkeypatch):
     client = DataClient(insert_error=RuntimeError("provider secret detail"))
+    generation_calls = []
     monkeypatch.setattr(secure_recurring_routes, "get_supabase_client", lambda: client)
+    monkeypatch.setattr(
+        secure_recurring_routes,
+        "generate_recurring_instances_for_client",
+        lambda supplied_client: generation_calls.append(supplied_client),
+    )
 
     with pytest.raises(HTTPException) as captured:
         asyncio.run(secure_recurring_routes.create_recurring_bill_user_scoped(_request()))
 
-    assert captured.value.status_code == 500
-    assert captured.value.detail == "Não foi possível criar ou gerar a conta recorrente."
+    assert captured.value.status_code == 503
+    assert captured.value.detail == "Não foi possível criar a conta recorrente."
     assert "secret" not in captured.value.detail.lower()
+    assert generation_calls == []
