@@ -43,6 +43,7 @@ def test_extract_invoice_data_returns_typed_public_suggestion():
         (FakeProvider(error=OcrProviderTimeout("secret timeout detail")), "timeout"),
         (FakeProvider(error=OcrProviderRateLimited("secret 429 detail")), "rate_limited"),
         (FakeProvider(error=OcrProviderUnavailable("secret provider detail")), "provider_unavailable"),
+        (FakeProvider(error=RuntimeError("secret unexpected detail")), "provider_unavailable"),
     ],
 )
 def test_extract_invoice_data_returns_stable_error_without_provider_details(provider, code, caplog):
@@ -55,3 +56,4 @@ def test_extract_invoice_data_returns_stable_error_without_provider_details(prov
     assert "secret timeout detail" not in serialized
     assert "secret 429 detail" not in serialized
     assert "secret provider detail" not in serialized
+    assert "secret unexpected detail" not in serialized
