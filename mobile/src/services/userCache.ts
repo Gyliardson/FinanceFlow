@@ -53,6 +53,11 @@ function looksLikeMalformedEnvelope(value: unknown): boolean {
   );
 }
 
+function isValidResourcePayload(resource: FinancialResource, value: unknown): boolean {
+  if (resource === 'bills') return Array.isArray(value);
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
 async function discardUnreadableEntry(key: string): Promise<void> {
   try {
     await AsyncStorage.removeItem(key);
@@ -89,6 +94,10 @@ export async function getUserCacheSnapshot<T>(
   }
 
   if (isVersionedEnvelope(parsed)) {
+    if (!isValidResourcePayload(resource, parsed.data)) {
+      await discardUnreadableEntry(key);
+      return null;
+    }
     return {
       data: parsed.data as T,
       cachedAt: parsed.cachedAt,
@@ -96,7 +105,7 @@ export async function getUserCacheSnapshot<T>(
     };
   }
 
-  if (looksLikeMalformedEnvelope(parsed)) {
+  if (looksLikeMalformedEnvelope(parsed) || !isValidResourcePayload(resource, parsed)) {
     await discardUnreadableEntry(key);
     return null;
   }
@@ -104,16 +113,11 @@ export async function getUserCacheSnapshot<T>(
   // Historical owner-scoped cache values were stored as raw JSON. They remain
   // readable for a one-way compatibility period, but have unknown freshness
   // until the next successful server response rewrites them as an envelope.
-  if (parsed !== null) {
-    return {
-      data: parsed as T,
-      cachedAt: null,
-      version: 0,
-    };
-  }
-
-  await discardUnreadableEntry(key);
-  return null;
+  return {
+    data: parsed as T,
+    cachedAt: null,
+    version: 0,
+  };
 }
 
 export async function getUserCache<T>(
@@ -129,6 +133,9 @@ export async function setUserCache(
   resource: FinancialResource,
   value: unknown,
 ): Promise<void> {
+  if (!isValidResourcePayload(resource, value)) {
+    throw new Error(`Invalid ${resource} cache payload`);
+  }
   const envelope: CacheEnvelope<unknown> = {
     version: CACHE_VERSION,
     cachedAt: Date.now(),
