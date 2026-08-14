@@ -53,7 +53,6 @@ def _remove_middleware_classes(app: FastAPI, classes: Iterable[type]) -> None:
     app.user_middleware = [
         item for item in app.user_middleware if getattr(item, "cls", None) not in class_set
     ]
-    # Rebuild from user_middleware on next request/startup if this app object was imported previously.
     app.middleware_stack = None
 
 
@@ -72,4 +71,6 @@ def configure_runtime(app: FastAPI) -> FastAPI:
     return app
 
 
-app = configure_runtime(legacy_app)
+def create_app() -> FastAPI:
+    """Uvicorn factory for the production authorization composition root."""
+    return configure_runtime(legacy_app)
