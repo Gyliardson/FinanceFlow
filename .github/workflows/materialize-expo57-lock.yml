@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: work/5-expo57-dependency-baseline
-          fetch-depth: 1
+          fetch-depth: 0
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -47,4 +47,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add mobile/package-lock.json
           git commit -m "deps(mobile): refresh Expo 57 lockfile [skip ci]"
+          git pull --rebase origin work/5-expo57-dependency-baseline
           git push origin HEAD:work/5-expo57-dependency-baseline
