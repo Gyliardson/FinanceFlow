@@ -36,8 +36,10 @@ jobs:
           packager: npm
           token: ${{ secrets.EXPO_TOKEN }}
 
+      - name: Validate production runtime configuration
+        working-directory: ./mobile
+        run: eas env:exec production 'node scripts/validate-release-env.mjs' --non-interactive
+
       - name: Publish Update
         working-directory: ./mobile
-        env:
-          EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
-        run: eas update --branch production --message "Auto-deploy via GitHub Actions"
+        run: eas update --branch production --environment production --message "Auto-deploy via GitHub Actions"
