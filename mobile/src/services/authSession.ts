@@ -6,7 +6,8 @@ import {
   migrateLegacyFinancialCacheToUser,
 } from './userCache';
 
-const SESSION_STORAGE_KEY = '@financeflow:auth-session:v1';
+const SESSION_STORAGE_KEY = 'financeflow.auth-session.v2';
+const LEGACY_SESSION_STORAGE_KEY = '@financeflow:auth-session:v1';
 const REFRESH_SKEW_MS = 60_000;
 
 export interface AuthUser {
@@ -113,7 +114,7 @@ function normalizeTokenResponse(payload: SupabaseTokenResponse): AuthSession {
 }
 
 async function clearLegacySessionStorage(): Promise<void> {
-  await AsyncStorage.removeItem(SESSION_STORAGE_KEY);
+  await AsyncStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
 }
 
 async function persistSession(session: AuthSession | null): Promise<void> {
@@ -133,7 +134,7 @@ async function readPersistedSession(): Promise<{ raw: string; legacy: boolean } 
     return { raw: secured, legacy: false };
   }
 
-  const legacy = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
+  const legacy = await AsyncStorage.getItem(LEGACY_SESSION_STORAGE_KEY);
   return legacy === null ? null : { raw: legacy, legacy: true };
 }
 
