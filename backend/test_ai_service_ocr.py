@@ -1,7 +1,7 @@
 import pytest
 
 import ai_service
-from ai_service import GeminiOcrProvider, extract_invoice_data
+from ai_service import GeminiOcrProvider, extract_invoice_data, generate_financial_insights
 from ocr_service import OcrProviderRateLimited, OcrProviderTimeout, OcrProviderUnavailable
 
 
@@ -104,6 +104,32 @@ def test_gemini_adapter_maps_provider_429_without_detail_leak(monkeypatch):
         provider.extract(b"synthetic-image", "image/png")
 
     assert "secret provider detail" not in str(captured.value)
+
+
+def test_financial_insights_use_maintained_client_without_real_provider(monkeypatch):
+    clients = []
+
+    def fake_client(*, api_key):
+        client = FakeGenAiClient(api_key=api_key, response_text="Recomendação sintética segura.")
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(ai_service, "API_KEY", "synthetic-key")
+    monkeypatch.setattr(ai_service.genai, "Client", fake_client)
+
+    result = generate_financial_insights(
+        {
+            "current_balance": 100,
+            "estimated_surplus": 25,
+            "emergency_fund_goal": 500,
+        }
+    )
+
+    assert result == {"status": "success", "insight": "Recomendação sintética segura."}
+    assert clients[0].closed is True
+    model, _contents, config = clients[0].calls[0]
+    assert model == "gemini-3.6-flash"
+    assert config is None
 
 
 @pytest.mark.parametrize(
