@@ -3,8 +3,8 @@ from datetime import date
 
 from fastapi import HTTPException
 
+from api_models import RecurringBillCreateRequest
 from database import get_supabase_client
-from main import RecurringBillCreateRequest
 from money import money_to_storage
 from recurrence import recurring_due_date
 from recurring_service import generate_recurring_instances_for_client

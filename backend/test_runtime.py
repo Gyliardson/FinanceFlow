@@ -7,12 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 from auth_middleware import SupabaseAuthMiddleware
-from main import APIKeyMiddleware
-from runtime import (
-    _privacy_safe_http_exception_handler,
-    configure_runtime,
-    configured_cors_origins,
-)
+from runtime import _privacy_safe_http_exception_handler, configured_cors_origins, create_app
 from secure_ocr_routes import upload_receipt_for_ocr
 from secure_recurring_routes import (
     create_recurring_bill_user_scoped,
@@ -32,6 +27,12 @@ def _matching_routes(app: FastAPI, path: str, method: str):
         if getattr(route, "path", None) == path
         and method.upper() in (getattr(route, "methods", None) or set())
     ]
+
+
+def _production_app(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
+    return create_app()
 
 
 def test_production_cors_defaults_to_no_browser_origins():
@@ -57,48 +58,15 @@ def test_development_cors_has_only_explicit_local_origins():
     assert all(origin.startswith(("http://localhost:", "http://127.0.0.1:")) for origin in origins)
 
 
-def test_configure_runtime_removes_legacy_shared_secret_middleware(monkeypatch):
-    monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
-
-    app = FastAPI()
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    app.add_middleware(APIKeyMiddleware)
-
-    configure_runtime(app)
-
+def test_factory_installs_one_auth_and_one_cors_middleware(monkeypatch):
+    app = _production_app(monkeypatch)
     classes = _middleware_classes(app)
-    assert APIKeyMiddleware not in classes
     assert classes.count(SupabaseAuthMiddleware) == 1
     assert classes.count(CORSMiddleware) == 1
 
 
-def test_runtime_replaces_legacy_security_sensitive_routes(monkeypatch):
-    monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
-    app = FastAPI()
-
-    async def legacy_pay(bill_id: str):
-        return {"legacy": bill_id}
-
-    async def legacy_recurring():
-        return {"legacy": True}
-
-    async def legacy_ocr():
-        return {"legacy": "ocr"}
-
-    app.add_api_route("/bills/{bill_id}/pay", legacy_pay, methods=["POST"])
-    app.add_api_route("/recurring-bills", legacy_recurring, methods=["POST"])
-    app.add_api_route("/recurring-bills/generate", legacy_recurring, methods=["POST"])
-    app.add_api_route("/upload-receipt", legacy_ocr, methods=["POST"])
-    configure_runtime(app)
-
+def test_runtime_registers_only_secure_sensitive_handlers(monkeypatch):
+    app = _production_app(monkeypatch)
     expected = (
         ("/bills/{bill_id}/pay", "POST", pay_bill_with_private_receipt),
         ("/bills/{bill_id}/receipt", "GET", get_private_receipt_access),
@@ -112,49 +80,41 @@ def test_runtime_replaces_legacy_security_sensitive_routes(monkeypatch):
         assert routes[0].endpoint is endpoint
 
 
-def test_configure_runtime_is_idempotent(monkeypatch):
-    monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
-    app = FastAPI()
-
-    configure_runtime(app)
-    configure_runtime(app)
-
-    classes = _middleware_classes(app)
-    assert classes.count(SupabaseAuthMiddleware) == 1
-    assert classes.count(CORSMiddleware) == 1
-    assert len(_matching_routes(app, "/bills/{bill_id}/pay", "POST")) == 1
-    assert len(_matching_routes(app, "/bills/{bill_id}/receipt", "GET")) == 1
-    assert len(_matching_routes(app, "/recurring-bills", "POST")) == 1
-    assert len(_matching_routes(app, "/recurring-bills/generate", "POST")) == 1
-    assert len(_matching_routes(app, "/upload-receipt", "POST")) == 1
+def test_repeated_factories_do_not_accumulate_routes_or_middleware(monkeypatch):
+    first = _production_app(monkeypatch)
+    second = _production_app(monkeypatch)
+    assert first is not second
+    assert _middleware_classes(first) == _middleware_classes(second)
+    assert [
+        (route.path, tuple(sorted(route.methods or ())))
+        for route in first.router.routes
+    ] == [
+        (route.path, tuple(sorted(route.methods or ())))
+        for route in second.router.routes
+    ]
 
 
 def test_runtime_rejects_missing_bearer_and_keeps_public_paths_public(monkeypatch):
-    monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
-    app = FastAPI()
-
-    @app.get("/health")
-    async def health():
-        return {"status": "ok"}
-
-    @app.get("/private")
-    async def private():
-        return {"secret": False}
-
-    configure_runtime(app)
+    app = _production_app(monkeypatch)
     client = TestClient(app)
 
     public_response = client.get("/health")
     assert public_response.status_code == 200
 
-    protected_response = client.get("/private")
+    protected_response = client.get("/bills")
     assert protected_response.status_code == 401
     assert protected_response.headers["WWW-Authenticate"] == "Bearer"
     assert protected_response.json() == {
         "detail": "Unauthorized – invalid or expired bearer token."
     }
+
+
+def test_runtime_rejects_malformed_bearer_without_calling_private_handler(monkeypatch):
+    app = _production_app(monkeypatch)
+    client = TestClient(app)
+    response = client.get("/bills", headers={"Authorization": "Token not-a-bearer"})
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
 def test_runtime_sanitizes_internal_http_errors_but_preserves_client_errors():
@@ -178,19 +138,11 @@ def test_runtime_sanitizes_internal_http_errors_but_preserves_client_errors():
 
 
 def test_cors_preflight_allows_only_configured_origin(monkeypatch):
-    monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com")
-    app = FastAPI()
-
-    @app.get("/private")
-    async def private():
-        return {"ok": True}
-
-    configure_runtime(app)
+    app = _production_app(monkeypatch)
     client = TestClient(app)
 
     allowed = client.options(
-        "/private",
+        "/bills",
         headers={
             "Origin": "https://app.example.com",
             "Access-Control-Request-Method": "GET",
@@ -201,7 +153,7 @@ def test_cors_preflight_allows_only_configured_origin(monkeypatch):
     assert allowed.headers["access-control-allow-origin"] == "https://app.example.com"
 
     denied = client.options(
-        "/private",
+        "/bills",
         headers={
             "Origin": "https://evil.example.com",
             "Access-Control-Request-Method": "GET",

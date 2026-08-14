@@ -1,12 +1,31 @@
 import os
-from collections.abc import Iterable
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api_handlers import (
+    add_bill,
+    add_income,
+    add_to_reserve,
+    get_bill_detail,
+    get_bills,
+    get_incomes,
+    get_insights,
+    get_pending_bills,
+    get_recurring_bills,
+    get_settings,
+    health_check,
+    healthz_check,
+    lifespan,
+    pay_bill_no_receipt,
+    refresh_insights,
+    root,
+    update_settings,
+    validate_bill,
+)
+from api_models import HealthResponse
 from auth_middleware import SupabaseAuthMiddleware
-from main import APIKeyMiddleware, PUBLIC_PATHS, app as legacy_app
 from secure_ocr_routes import upload_receipt_for_ocr
 from secure_recurring_routes import (
     create_recurring_bill_user_scoped,
@@ -15,6 +34,7 @@ from secure_recurring_routes import (
 from secure_routes import get_private_receipt_access, pay_bill_with_private_receipt
 
 
+PUBLIC_PATHS = {"/", "/health", "/healthz", "/docs", "/openapi.json", "/redoc"}
 DEFAULT_DEVELOPMENT_ORIGINS = (
     "http://localhost:19006",
     "http://127.0.0.1:19006",
@@ -55,39 +75,43 @@ def configured_cors_origins(
     return []
 
 
-def _remove_middleware_classes(app: FastAPI, classes: Iterable[type]) -> None:
-    class_set = set(classes)
-    app.user_middleware = [
-        item for item in app.user_middleware if getattr(item, "cls", None) not in class_set
-    ]
-    app.middleware_stack = None
+def _install_core_routes(app: FastAPI) -> None:
+    app.add_api_route("/", root, methods=["GET"], tags=["Health"])
+    app.add_api_route(
+        "/healthz", healthz_check, methods=["GET"], tags=["Health"], response_model=HealthResponse
+    )
+    app.add_api_route(
+        "/health", health_check, methods=["GET"], tags=["Health"], response_model=HealthResponse
+    )
+
+    app.add_api_route("/bills", get_bills, methods=["GET"], tags=["Bills"])
+    app.add_api_route("/bills/pending", get_pending_bills, methods=["GET"], tags=["Bills"])
+    app.add_api_route("/add-bill", add_bill, methods=["POST"], tags=["Bills"])
+    app.add_api_route(
+        "/recurring-bills", get_recurring_bills, methods=["GET"], tags=["Recurring Bills"]
+    )
+    app.add_api_route("/bills/{bill_id}/detail", get_bill_detail, methods=["GET"], tags=["Bills"])
+    app.add_api_route(
+        "/bills/{bill_id}/pay-no-receipt",
+        pay_bill_no_receipt,
+        methods=["POST"],
+        tags=["Bills", "Payment"],
+    )
+
+    app.add_api_route("/incomes", get_incomes, methods=["GET"], tags=["Incomes"])
+    app.add_api_route("/incomes", add_income, methods=["POST"], tags=["Incomes"])
+    app.add_api_route("/settings", get_settings, methods=["GET"], tags=["Settings"])
+    app.add_api_route("/settings", update_settings, methods=["POST"], tags=["Settings"])
+
+    app.add_api_route("/insights", get_insights, methods=["GET"], tags=["Insights"])
+    app.add_api_route("/insights/refresh", refresh_insights, methods=["POST"], tags=["Insights"])
+    app.add_api_route("/insights/reserve", add_to_reserve, methods=["POST"], tags=["Insights"])
+    app.add_api_route(
+        "/validate-bill", validate_bill, methods=["POST"], tags=["Bills", "Validation"]
+    )
 
 
-def _remove_route(app: FastAPI, *, path: str, method: str) -> None:
-    target_method = method.upper()
-    app.router.routes = [
-        route
-        for route in app.router.routes
-        if not (
-            getattr(route, "path", None) == path
-            and target_method in (getattr(route, "methods", None) or set())
-        )
-    ]
-
-
-def _install_secure_route_overrides(app: FastAPI) -> None:
-    # Remove route implementations that violate the production security model.
-    # Re-adding on an already configured app is safe because all secure paths are
-    # removed before installation.
-    for path, method in (
-        ("/bills/{bill_id}/pay", "POST"),
-        ("/bills/{bill_id}/receipt", "GET"),
-        ("/recurring-bills", "POST"),
-        ("/recurring-bills/generate", "POST"),
-        ("/upload-receipt", "POST"),
-    ):
-        _remove_route(app, path=path, method=method)
-
+def _install_secure_routes(app: FastAPI) -> None:
     app.add_api_route(
         "/bills/{bill_id}/pay",
         pay_bill_with_private_receipt,
@@ -132,12 +156,17 @@ async def _privacy_safe_http_exception_handler(
     )
 
 
-def configure_runtime(app: FastAPI) -> FastAPI:
-    """Install the production security composition over the legacy route module."""
-    _remove_middleware_classes(app, (APIKeyMiddleware, CORSMiddleware, SupabaseAuthMiddleware))
-    _install_secure_route_overrides(app)
+def create_app() -> FastAPI:
+    """Construct the canonical production application with explicit security boundaries."""
+    app = FastAPI(
+        title="FinanceFlow API",
+        description="Backend API para automação e notificação de contas a pagar.",
+        version="0.2.0",
+        lifespan=lifespan,
+    )
+    _install_core_routes(app)
+    _install_secure_routes(app)
     app.add_exception_handler(HTTPException, _privacy_safe_http_exception_handler)
-
     app.add_middleware(
         CORSMiddleware,
         allow_origins=configured_cors_origins(),
@@ -147,8 +176,3 @@ def configure_runtime(app: FastAPI) -> FastAPI:
     )
     app.add_middleware(SupabaseAuthMiddleware, public_paths=PUBLIC_PATHS)
     return app
-
-
-def create_app() -> FastAPI:
-    """Uvicorn factory for the production authorization composition root."""
-    return configure_runtime(legacy_app)
