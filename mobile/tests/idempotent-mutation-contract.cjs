@@ -210,7 +210,8 @@ async function migrateSecureV2() {
   const legacyKey = `@financeflow:idempotency-secure:v2:${encodeURIComponent(OWNER_A)}:income_create`;
   const originalPayload = { title: 'Legacy salary', amount: 321, date: '2026-08-14', type: 'salary' };
   const legacyRecord = {
-    key: 'ff_legacy_operation_123',
+    // Deliberately low-entropy fixture: this is a migration sentinel, never a credential/API token.
+    key: 'legacy-test-key',
     originalPayload,
     canonicalPayload: mutations.canonicalMutationPayload(originalPayload),
     logicalFingerprint: 'legacy',
