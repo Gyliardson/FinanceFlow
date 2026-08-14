@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -33,6 +33,15 @@ def test_bill_rejects_invalid_or_noncanonical_date(invalid_date):
             description="Invalid date bill",
             amount="10.00",
             due_date=invalid_date,
+        )
+
+
+def test_bill_rejects_datetime_object_for_date_only_contract():
+    with pytest.raises(ValidationError):
+        BillCreateRequest(
+            description="Datetime object",
+            amount="10.00",
+            due_date=datetime(2026, 8, 14, 12, 30),
         )
 
 

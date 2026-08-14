@@ -4,7 +4,7 @@ Keeping route contracts outside the compatibility application module prevents se
 routers from importing and constructing a second FastAPI application as a side effect.
 """
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal, Optional
 
@@ -22,6 +22,10 @@ IncomeType = Literal["salary", "extra", "adjustment"]
 
 def canonical_date(value) -> str:
     """Normalize a date-only API value to strict ISO YYYY-MM-DD semantics."""
+    # ``datetime`` subclasses ``date`` in Python. Reject it explicitly so callers
+    # cannot bypass the date-only contract by supplying an in-process datetime.
+    if isinstance(value, datetime):
+        raise ValueError("Date must use ISO YYYY-MM-DD format without a time component.")
     if isinstance(value, date):
         return value.isoformat()
     if not isinstance(value, str):
