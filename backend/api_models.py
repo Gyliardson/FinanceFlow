@@ -64,7 +64,10 @@ class RecurringBillCreateRequest(BaseModel):
     description: Optional[str] = Field(None, max_length=255)
     amount: CanonicalMoney = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
     recurring_day: int = Field(..., ge=1, le=31)
-    frequency: str = "monthly"
+    # The current recurrence engine is intentionally monthly-only. Rejecting
+    # unsupported labels prevents records that claim one cadence while being
+    # generated with another.
+    frequency: Literal["monthly"] = "monthly"
 
 
 class BillValidationRequest(BaseModel):
