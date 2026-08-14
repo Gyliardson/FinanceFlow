@@ -4,6 +4,12 @@
 -- PostgreSQL transaction. A committed effect therefore always has a durable
 -- replay record; a rolled-back effect has neither. Concurrent requests with the
 -- same owner/operation/key serialize at the composite primary key.
+--
+-- The request fingerprint is derived INSIDE PostgreSQL from canonical mutation
+-- parameters. It is never accepted from the caller, so direct authenticated RPC
+-- access cannot forge the payload identity used for replay/conflict detection.
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE SCHEMA IF NOT EXISTS financeflow_private;
 REVOKE ALL ON SCHEMA financeflow_private FROM PUBLIC;
@@ -55,15 +61,27 @@ WITH CHECK ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
 REVOKE ALL ON financeflow_private.idempotency_operations FROM PUBLIC, anon;
 GRANT SELECT, INSERT, UPDATE ON financeflow_private.idempotency_operations TO authenticated;
 
+CREATE OR REPLACE FUNCTION financeflow_private.payload_fingerprint(p_payload JSONB)
+RETURNS TEXT
+LANGUAGE sql
+IMMUTABLE
+STRICT
+SET search_path = pg_catalog, public
+AS $$
+    SELECT encode(digest(convert_to(p_payload::text, 'UTF8'), 'sha256'), 'hex')
+$$;
+
+REVOKE ALL ON FUNCTION financeflow_private.payload_fingerprint(JSONB) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION financeflow_private.payload_fingerprint(JSONB) TO authenticated;
+
 -- The private schema is not part of the normal Data API exposure. The grants above
 -- exist so SECURITY INVOKER RPCs can operate under the authenticated role while RLS
--- remains authoritative. Clients receive no owner parameter in any RPC below.
+-- remains authoritative. Clients receive no owner or fingerprint parameter.
 
 CREATE OR REPLACE FUNCTION public.finance_idempotent_add_bill(
     p_idempotency_key TEXT,
-    p_request_fingerprint TEXT,
     p_description TEXT,
-    p_amount NUMERIC,
+    p_amount TEXT,
     p_due_date DATE,
     p_barcode TEXT DEFAULT NULL
 ) RETURNS JSONB
@@ -73,6 +91,8 @@ SET search_path = public, financeflow_private, pg_temp
 AS $$
 DECLARE
     v_owner UUID := auth.uid();
+    v_amount NUMERIC;
+    v_request_fingerprint TEXT;
     v_claimed BOOLEAN := false;
     v_existing_fingerprint TEXT;
     v_existing_result JSONB;
@@ -82,13 +102,23 @@ BEGIN
     IF v_owner IS NULL THEN
         RAISE EXCEPTION 'authenticated_owner_required' USING ERRCODE = 'P0001';
     END IF;
-    IF p_amount <= 0 OR p_amount > 1000000.00 THEN
+    v_amount := p_amount::NUMERIC;
+    IF v_amount <= 0 OR v_amount > 1000000.00 THEN
         RAISE EXCEPTION 'bill_amount_out_of_range' USING ERRCODE = '22003';
     END IF;
 
+    v_request_fingerprint := financeflow_private.payload_fingerprint(
+        jsonb_build_object(
+            'description', p_description,
+            'amount', trim_scale(v_amount)::TEXT,
+            'due_date', p_due_date::TEXT,
+            'barcode', p_barcode
+        )
+    );
+
     INSERT INTO financeflow_private.idempotency_operations(
         owner_id, operation_type, idempotency_key, request_fingerprint
-    ) VALUES (v_owner, 'bill_create', p_idempotency_key, p_request_fingerprint)
+    ) VALUES (v_owner, 'bill_create', p_idempotency_key, v_request_fingerprint)
     ON CONFLICT (owner_id, operation_type, idempotency_key) DO NOTHING
     RETURNING true INTO v_claimed;
 
@@ -101,7 +131,7 @@ BEGIN
           AND idempotency_key = p_idempotency_key
         FOR UPDATE;
 
-        IF v_existing_fingerprint IS DISTINCT FROM p_request_fingerprint THEN
+        IF v_existing_fingerprint IS DISTINCT FROM v_request_fingerprint THEN
             RAISE EXCEPTION 'idempotency_key_payload_mismatch' USING ERRCODE = 'P0001';
         END IF;
         IF v_existing_result IS NULL THEN
@@ -113,7 +143,7 @@ BEGIN
     INSERT INTO finance_bills(
         owner_id, description, amount, due_date, barcode, status
     ) VALUES (
-        v_owner, p_description, p_amount, p_due_date, p_barcode, 'pending'
+        v_owner, p_description, v_amount, p_due_date, p_barcode, 'pending'
     ) RETURNING * INTO v_bill;
 
     v_result := jsonb_build_object('status', 'success', 'data', jsonb_build_array(to_jsonb(v_bill)));
@@ -130,9 +160,8 @@ $$;
 
 CREATE OR REPLACE FUNCTION public.finance_idempotent_add_income(
     p_idempotency_key TEXT,
-    p_request_fingerprint TEXT,
     p_title TEXT,
-    p_amount NUMERIC,
+    p_amount TEXT,
     p_date DATE,
     p_description TEXT,
     p_type TEXT,
@@ -144,6 +173,8 @@ SET search_path = public, financeflow_private, pg_temp
 AS $$
 DECLARE
     v_owner UUID := auth.uid();
+    v_amount NUMERIC;
+    v_request_fingerprint TEXT;
     v_claimed BOOLEAN := false;
     v_existing_fingerprint TEXT;
     v_existing_result JSONB;
@@ -153,16 +184,28 @@ BEGIN
     IF v_owner IS NULL THEN
         RAISE EXCEPTION 'authenticated_owner_required' USING ERRCODE = 'P0001';
     END IF;
-    IF p_amount <= 0 OR p_amount > 1000000.00 THEN
+    v_amount := p_amount::NUMERIC;
+    IF v_amount <= 0 OR v_amount > 1000000.00 THEN
         RAISE EXCEPTION 'income_amount_out_of_range' USING ERRCODE = '22003';
     END IF;
     IF p_type NOT IN ('salary', 'extra', 'adjustment') THEN
         RAISE EXCEPTION 'income_type_invalid' USING ERRCODE = '22023';
     END IF;
 
+    v_request_fingerprint := financeflow_private.payload_fingerprint(
+        jsonb_build_object(
+            'title', p_title,
+            'amount', trim_scale(v_amount)::TEXT,
+            'date', p_date::TEXT,
+            'description', p_description,
+            'type', p_type,
+            'is_recurring', p_is_recurring
+        )
+    );
+
     INSERT INTO financeflow_private.idempotency_operations(
         owner_id, operation_type, idempotency_key, request_fingerprint
-    ) VALUES (v_owner, 'income_create', p_idempotency_key, p_request_fingerprint)
+    ) VALUES (v_owner, 'income_create', p_idempotency_key, v_request_fingerprint)
     ON CONFLICT (owner_id, operation_type, idempotency_key) DO NOTHING
     RETURNING true INTO v_claimed;
 
@@ -175,7 +218,7 @@ BEGIN
           AND idempotency_key = p_idempotency_key
         FOR UPDATE;
 
-        IF v_existing_fingerprint IS DISTINCT FROM p_request_fingerprint THEN
+        IF v_existing_fingerprint IS DISTINCT FROM v_request_fingerprint THEN
             RAISE EXCEPTION 'idempotency_key_payload_mismatch' USING ERRCODE = 'P0001';
         END IF;
         IF v_existing_result IS NULL THEN
@@ -187,7 +230,7 @@ BEGIN
     INSERT INTO finance_incomes(
         owner_id, title, amount, date, description, type, is_recurring
     ) VALUES (
-        v_owner, p_title, p_amount, p_date, p_description, p_type, p_is_recurring
+        v_owner, p_title, v_amount, p_date, p_description, p_type, p_is_recurring
     ) RETURNING * INTO v_income;
 
     v_result := jsonb_build_object('status', 'success', 'data', jsonb_build_array(to_jsonb(v_income)));
@@ -204,8 +247,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION public.finance_idempotent_add_reserve(
     p_idempotency_key TEXT,
-    p_request_fingerprint TEXT,
-    p_amount NUMERIC
+    p_amount TEXT
 ) RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -213,6 +255,8 @@ SET search_path = public, financeflow_private, pg_temp
 AS $$
 DECLARE
     v_owner UUID := auth.uid();
+    v_amount NUMERIC;
+    v_request_fingerprint TEXT;
     v_claimed BOOLEAN := false;
     v_existing_fingerprint TEXT;
     v_existing_result JSONB;
@@ -222,13 +266,18 @@ BEGIN
     IF v_owner IS NULL THEN
         RAISE EXCEPTION 'authenticated_owner_required' USING ERRCODE = 'P0001';
     END IF;
-    IF p_amount <= 0 OR p_amount > 1000000.00 THEN
+    v_amount := p_amount::NUMERIC;
+    IF v_amount <= 0 OR v_amount > 1000000.00 THEN
         RAISE EXCEPTION 'reserve_amount_out_of_range' USING ERRCODE = '22003';
     END IF;
 
+    v_request_fingerprint := financeflow_private.payload_fingerprint(
+        jsonb_build_object('amount', trim_scale(v_amount)::TEXT)
+    );
+
     INSERT INTO financeflow_private.idempotency_operations(
         owner_id, operation_type, idempotency_key, request_fingerprint
-    ) VALUES (v_owner, 'reserve_add', p_idempotency_key, p_request_fingerprint)
+    ) VALUES (v_owner, 'reserve_add', p_idempotency_key, v_request_fingerprint)
     ON CONFLICT (owner_id, operation_type, idempotency_key) DO NOTHING
     RETURNING true INTO v_claimed;
 
@@ -241,7 +290,7 @@ BEGIN
           AND idempotency_key = p_idempotency_key
         FOR UPDATE;
 
-        IF v_existing_fingerprint IS DISTINCT FROM p_request_fingerprint THEN
+        IF v_existing_fingerprint IS DISTINCT FROM v_request_fingerprint THEN
             RAISE EXCEPTION 'idempotency_key_payload_mismatch' USING ERRCODE = 'P0001';
         END IF;
         IF v_existing_result IS NULL THEN
@@ -251,7 +300,7 @@ BEGIN
     END IF;
 
     UPDATE finance_user_settings
-    SET emergency_fund_balance = COALESCE(emergency_fund_balance, 0) + p_amount
+    SET emergency_fund_balance = COALESCE(emergency_fund_balance, 0) + v_amount
     WHERE owner_id = v_owner
     RETURNING * INTO v_settings;
 
@@ -277,9 +326,8 @@ $$;
 
 CREATE OR REPLACE FUNCTION public.finance_idempotent_create_recurring_template(
     p_idempotency_key TEXT,
-    p_request_fingerprint TEXT,
     p_title TEXT,
-    p_amount NUMERIC,
+    p_amount TEXT,
     p_due_date DATE,
     p_description TEXT,
     p_frequency TEXT,
@@ -291,6 +339,8 @@ SET search_path = public, financeflow_private, pg_temp
 AS $$
 DECLARE
     v_owner UUID := auth.uid();
+    v_amount NUMERIC;
+    v_request_fingerprint TEXT;
     v_claimed BOOLEAN := false;
     v_existing_fingerprint TEXT;
     v_existing_result JSONB;
@@ -300,16 +350,31 @@ BEGIN
     IF v_owner IS NULL THEN
         RAISE EXCEPTION 'authenticated_owner_required' USING ERRCODE = 'P0001';
     END IF;
-    IF p_amount <= 0 OR p_amount > 1000000.00 THEN
+    v_amount := p_amount::NUMERIC;
+    IF v_amount <= 0 OR v_amount > 1000000.00 THEN
         RAISE EXCEPTION 'recurring_amount_out_of_range' USING ERRCODE = '22003';
     END IF;
     IF p_frequency <> 'monthly' OR p_recurring_day < 1 OR p_recurring_day > 31 THEN
         RAISE EXCEPTION 'recurring_contract_invalid' USING ERRCODE = '22023';
     END IF;
 
+    -- p_due_date is derived by the backend from the financial calendar and is
+    -- deliberately excluded from the logical fingerprint. Retrying the same
+    -- unresolved template intent after midnight/month rollover must replay the
+    -- already-committed template instead of conflicting on a newly-derived date.
+    v_request_fingerprint := financeflow_private.payload_fingerprint(
+        jsonb_build_object(
+            'title', p_title,
+            'amount', trim_scale(v_amount)::TEXT,
+            'description', p_description,
+            'frequency', p_frequency,
+            'recurring_day', p_recurring_day
+        )
+    );
+
     INSERT INTO financeflow_private.idempotency_operations(
         owner_id, operation_type, idempotency_key, request_fingerprint
-    ) VALUES (v_owner, 'recurring_template_create', p_idempotency_key, p_request_fingerprint)
+    ) VALUES (v_owner, 'recurring_template_create', p_idempotency_key, v_request_fingerprint)
     ON CONFLICT (owner_id, operation_type, idempotency_key) DO NOTHING
     RETURNING true INTO v_claimed;
 
@@ -322,7 +387,7 @@ BEGIN
           AND idempotency_key = p_idempotency_key
         FOR UPDATE;
 
-        IF v_existing_fingerprint IS DISTINCT FROM p_request_fingerprint THEN
+        IF v_existing_fingerprint IS DISTINCT FROM v_request_fingerprint THEN
             RAISE EXCEPTION 'idempotency_key_payload_mismatch' USING ERRCODE = 'P0001';
         END IF;
         IF v_existing_result IS NULL THEN
@@ -344,7 +409,7 @@ BEGIN
     ) VALUES (
         v_owner,
         p_title,
-        p_amount,
+        v_amount,
         p_due_date,
         p_description,
         'pending',
@@ -365,22 +430,22 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.finance_idempotent_add_bill(TEXT, TEXT, TEXT, NUMERIC, DATE, TEXT)
+REVOKE ALL ON FUNCTION public.finance_idempotent_add_bill(TEXT, TEXT, TEXT, DATE, TEXT)
     FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.finance_idempotent_add_income(TEXT, TEXT, TEXT, NUMERIC, DATE, TEXT, TEXT, BOOLEAN)
+REVOKE ALL ON FUNCTION public.finance_idempotent_add_income(TEXT, TEXT, TEXT, DATE, TEXT, TEXT, BOOLEAN)
     FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.finance_idempotent_add_reserve(TEXT, TEXT, NUMERIC)
+REVOKE ALL ON FUNCTION public.finance_idempotent_add_reserve(TEXT, TEXT)
     FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.finance_idempotent_create_recurring_template(TEXT, TEXT, TEXT, NUMERIC, DATE, TEXT, TEXT, INTEGER)
+REVOKE ALL ON FUNCTION public.finance_idempotent_create_recurring_template(TEXT, TEXT, TEXT, DATE, TEXT, TEXT, INTEGER)
     FROM PUBLIC, anon;
 
-GRANT EXECUTE ON FUNCTION public.finance_idempotent_add_bill(TEXT, TEXT, TEXT, NUMERIC, DATE, TEXT)
+GRANT EXECUTE ON FUNCTION public.finance_idempotent_add_bill(TEXT, TEXT, TEXT, DATE, TEXT)
     TO authenticated;
-GRANT EXECUTE ON FUNCTION public.finance_idempotent_add_income(TEXT, TEXT, TEXT, NUMERIC, DATE, TEXT, TEXT, BOOLEAN)
+GRANT EXECUTE ON FUNCTION public.finance_idempotent_add_income(TEXT, TEXT, TEXT, DATE, TEXT, TEXT, BOOLEAN)
     TO authenticated;
-GRANT EXECUTE ON FUNCTION public.finance_idempotent_add_reserve(TEXT, TEXT, NUMERIC)
+GRANT EXECUTE ON FUNCTION public.finance_idempotent_add_reserve(TEXT, TEXT)
     TO authenticated;
-GRANT EXECUTE ON FUNCTION public.finance_idempotent_create_recurring_template(TEXT, TEXT, TEXT, NUMERIC, DATE, TEXT, TEXT, INTEGER)
+GRANT EXECUTE ON FUNCTION public.finance_idempotent_create_recurring_template(TEXT, TEXT, TEXT, DATE, TEXT, TEXT, INTEGER)
     TO authenticated;
 
 COMMENT ON TABLE financeflow_private.idempotency_operations IS
