@@ -1,18 +1,13 @@
 """Server-side contract for durable financial mutation idempotency.
 
-The client supplies only an opaque operation identity. Owner identity comes from the
-validated request context and the PostgreSQL RPC derives it again from ``auth.uid()``.
-Canonical payload fingerprints are computed by the backend and are never trusted from
-the caller.
+The client supplies only an opaque operation identity. Owner identity and the
+canonical payload fingerprint are both derived again inside PostgreSQL, which is
+the transaction authority for replay and conflict detection.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-from datetime import date, datetime
-from decimal import Decimal
 from typing import Any, Mapping
 
 
@@ -46,62 +41,24 @@ def validate_idempotency_key(value: str | None) -> str:
     return key
 
 
-def _canonical_value(value: Any) -> Any:
-    if isinstance(value, Decimal):
-        # Pydantic/money validation already applies the authoritative two-decimal
-        # financial scale. String serialization avoids binary-float drift.
-        return format(value, "f")
-    if isinstance(value, (date, datetime)):
-        return value.isoformat()
-    if isinstance(value, Mapping):
-        return {str(key): _canonical_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_canonical_value(item) for item in value]
-    if value is None or isinstance(value, (str, int, bool)):
-        return value
-    if isinstance(value, float):
-        # Financial request models should not reach here with floats, but keeping
-        # JSON normalization deterministic makes the helper safe for non-money
-        # scalar metadata as well.
-        return repr(value)
-    raise TypeError(f"Unsupported idempotency payload value: {type(value).__name__}")
-
-
-def canonical_payload_fingerprint(operation_type: str, payload: Mapping[str, Any]) -> str:
-    canonical = {
-        "operation": operation_type,
-        "payload": _canonical_value(payload),
-    }
-    serialized = json.dumps(
-        canonical,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(serialized).hexdigest()
-
-
 def execute_idempotent_rpc(
     *,
     data_client: Any,
     rpc_name: str,
-    operation_type: str,
     idempotency_key: str | None,
-    fingerprint_payload: Mapping[str, Any],
     rpc_parameters: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Execute one transaction-backed mutation RPC.
 
     A transport exception is intentionally *not* retried with a new key here. The
     HTTP layer reports an indeterminate outcome; the caller must retry the same
-    logical intent using the same key. PostgreSQL then returns the durable result
-    if the first transaction committed, or applies it once if the first rolled back.
+    logical intent using the same key. PostgreSQL then computes the canonical
+    fingerprint itself and either returns the already-committed result or applies
+    a rolled-back attempt once.
     """
     key = validate_idempotency_key(idempotency_key)
-    fingerprint = canonical_payload_fingerprint(operation_type, fingerprint_payload)
     params = {
         "p_idempotency_key": key,
-        "p_request_fingerprint": fingerprint,
         **dict(rpc_parameters),
     }
 
