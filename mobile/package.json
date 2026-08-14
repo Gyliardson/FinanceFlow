@@ -22,6 +22,7 @@
     "expo-image-picker": "~57.0.9",
     "expo-navigation-bar": "~57.0.2",
     "expo-notifications": "~57.0.10",
+    "expo-secure-store": "~57.0.1",
     "expo-status-bar": "~57.0.1",
     "expo-updates": "~57.0.13",
     "react": "^19.2.3",
