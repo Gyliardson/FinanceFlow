@@ -1,0 +1,53 @@
+name: Refresh Expo lock one shot
+
+on:
+  push:
+    branches:
+      - work/29-durable-financial-idempotency
+    paths:
+      - .github/workflows/refresh-expo-lock-one-shot.yml
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-lock:
+    if: github.repository == 'Gyliardson/FinanceFlow'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact work branch
+        uses: actions/checkout@v6
+        with:
+          ref: work/29-durable-financial-idempotency
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.13.0'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Resolve Expo SDK 57 patch baseline
+        working-directory: mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install \
+            'expo@~57.0.13' \
+            '@expo/metro-runtime@~57.0.10' \
+            'expo-image-picker@~57.0.10' \
+            'expo-notifications@~57.0.11' \
+            'expo-updates@~57.0.14'
+          npx expo install --fix
+          npx expo-doctor
+      - name: Commit only resolved manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add mobile/package.json mobile/package-lock.json
+          if git diff --cached --quiet; then
+            echo 'Expo lockfile already aligned.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore(mobile): align Expo SDK 57 patch lockfile'
+          git push origin HEAD:work/29-durable-financial-idempotency
