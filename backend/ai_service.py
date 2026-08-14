@@ -117,6 +117,7 @@ def generate_financial_insights(financial_data: dict) -> dict:
         raise ValueError("Chave de API do Gemini ausente na configuração.")
 
     try:
+        genai.configure(api_key=API_KEY)
         model = genai.GenerativeModel(OCR_MODEL)
         prompt = f"""
         Atue como um consultor financeiro institucional e rigoroso.
