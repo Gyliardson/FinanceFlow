@@ -32,7 +32,7 @@ class InvoiceCandidate(BaseModel):
     due_date: date
     barcode: str | None = Field(default=None, max_length=255)
 
-    @field_validator("description", "barcode")
+    @field_validator("description", "barcode", mode="before")
     @classmethod
     def strip_text(cls, value: str | None) -> str | None:
         if value is None:
