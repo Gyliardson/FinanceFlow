@@ -1,0 +1,188 @@
+# FinanceFlow clean-room validation runbook
+
+This runbook is the operator-oriented path for validating a fresh checkout without relying on developer-machine state. It mirrors repository CI where practical and explicitly separates reproducible local checks from external credentialed deployment checks.
+
+## 1. Fresh clone
+
+```bash
+git clone https://github.com/Gyliardson/FinanceFlow.git
+cd FinanceFlow
+git checkout portfolio/revamp-2026
+```
+
+For a final release candidate, replace the branch above with the exact candidate SHA and record that SHA in the release report.
+
+## 2. Backend environment
+
+Recommended CI-equivalent runtime: Python 3.12.
+
+```bash
+cd backend
+python -m venv .venv
+# Linux/macOS
+source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip check
+python -m compileall -q .
+pytest -q
+```
+
+Use `.env.example` to understand required configuration. Do not place real service-role, database or Gemini secrets into committed files or CI fixtures.
+
+## 3. Disposable PostgreSQL verification
+
+Repository CI uses PostgreSQL 16 for database-level guarantees. A local equivalent can use Docker:
+
+```bash
+docker run --rm --name financeflow-pg \
+  -e POSTGRES_USER=financeflow \
+  -e POSTGRES_PASSWORD=financeflow \
+  -e POSTGRES_DB=financeflow_test \
+  -p 5432:5432 \
+  -d postgres:16
+```
+
+Wait for readiness:
+
+```bash
+docker exec financeflow-pg pg_isready -U financeflow -d financeflow_test
+```
+
+The authoritative disposable-PostgreSQL test procedures live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). They currently prove:
+
+- exact `NUMERIC` money round trips;
+- recurring migration fail-closed behavior on historical duplicates;
+- uniqueness under concurrent generated-instance insertion;
+- retry idempotency and bulk-conflict rollback/recovery;
+- user A / user B RLS isolation;
+- forged-owner rejection;
+- anonymous financial-table denial;
+- fail-closed owner `NOT NULL` promotion until explicit reconciliation.
+
+Prefer executing the workflow itself for release evidence rather than maintaining a second hand-copied SQL harness that can drift.
+
+When finished:
+
+```bash
+docker stop financeflow-pg
+```
+
+## 4. Backend production-image smoke
+
+From the repository root:
+
+```bash
+docker build -f backend/Dockerfile -t financeflow-backend:clean-room backend
+```
+
+The GitHub `Backend container` workflow is the canonical automated proof that the production image builds and uses `runtime:create_app --factory` as the application entrypoint.
+
+A real authenticated runtime smoke additionally requires valid Supabase/server environment values. Do not invent production credentials merely to make this step green.
+
+## 5. Mobile clean install and static/build health
+
+Current baseline: Node.js 22.13+.
+
+```bash
+cd mobile
+npm ci
+npx tsc --noEmit
+npx expo-doctor
+npx expo export --platform web
+```
+
+These commands exercise the reproducible local portion of `Mobile Expo health`.
+
+The mobile application also has deterministic contract workflows for:
+
+- auth/session/cache behavior;
+- owner-scoped offline resilience;
+- critical UX/accessibility source contracts;
+- release-environment configuration.
+
+Run/inspect the corresponding GitHub Actions on the exact candidate head for release evidence.
+
+## 6. Dependency and secret evidence
+
+Backend dependency consistency:
+
+```bash
+cd backend
+python -m pip check
+python -m pip install pip-audit
+python -m pip_audit -r requirements.txt
+```
+
+Mobile audit evidence:
+
+```bash
+cd mobile
+npm ci --ignore-scripts
+npm audit
+```
+
+The repository policy blocks critical mobile findings and preserves the full npm audit artifact. Residual compatible-path limitations must remain documented; do not use forced incompatible downgrades merely to report zero findings.
+
+Secret scanning is a GitHub gate using Gitleaks over repository history. Clean-room reviewers should inspect the exact-head `Secret scan` result/artifact rather than copying secrets into a local test.
+
+## 7. Application configuration smoke
+
+### Backend
+
+Review:
+
+- `backend/.env.example`;
+- `render.yaml`;
+- `docs/DEPLOYMENT.md`.
+
+Server-only values include the Supabase service-role credential and Gemini key. Production CORS origins must be explicit.
+
+### Mobile
+
+Review:
+
+- `mobile/.env.example`;
+- `mobile/eas.json`;
+- `docs/DEPLOYMENT.md`.
+
+The client-visible contract requires:
+
+- `EXPO_PUBLIC_API_URL`;
+- `EXPO_PUBLIC_SUPABASE_URL`;
+- `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+
+All `EXPO_PUBLIC_*` values are public bundle configuration and must never contain server-only credentials.
+
+## 8. External/manual release checks
+
+These cannot be fully proven by repository-only CI without production access:
+
+- Supabase project provisioning, Auth configuration, database/storage state and real credentials;
+- Render service provisioning, server environment values, DNS/networking and live health after deployment;
+- EAS project environment values, `EXPO_TOKEN`, signing credentials and store accounts;
+- signed Android/iOS remote builds and device/store smoke;
+- real third-party experimental adapter compatibility;
+- native visual/device accessibility review.
+
+Record each external check as PASS / FAIL / NOT EXECUTED in the final release report. `NOT EXECUTED` is preferable to claiming evidence that does not exist.
+
+## 9. Release-candidate checklist
+
+Before opening the final integration → `main` PR, require at minimum:
+
+- exact candidate SHA recorded;
+- FinanceFlow CI green;
+- Backend container green;
+- Mobile auth/cache contract green;
+- Mobile UX contract green;
+- Mobile Expo health green;
+- Python dependency audit clean;
+- mobile audit artifact reviewed and no critical findings;
+- Gitleaks green;
+- documentation links/current limitations reviewed;
+- no unresolved program P0/P1/blocker;
+- external/manual steps explicitly listed.
+
+The final `portfolio/revamp-2026 -> main` merge is manual by policy.
