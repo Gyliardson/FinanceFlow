@@ -1,13 +1,31 @@
 import os
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api_handlers import (
+    add_bill,
+    add_income,
+    add_to_reserve,
+    get_bill_detail,
+    get_bills,
+    get_incomes,
+    get_insights,
+    get_pending_bills,
+    get_recurring_bills,
+    get_settings,
+    health_check,
+    healthz_check,
+    lifespan,
+    pay_bill_no_receipt,
+    refresh_insights,
+    root,
+    update_settings,
+    validate_bill,
+)
+from api_models import HealthResponse
 from auth_middleware import SupabaseAuthMiddleware
-from database import ensure_receipts_bucket
-from main import app as route_source_app
 from secure_ocr_routes import upload_receipt_for_ocr
 from secure_recurring_routes import (
     create_recurring_bill_user_scoped,
@@ -17,13 +35,6 @@ from secure_routes import get_private_receipt_access, pay_bill_with_private_rece
 
 
 PUBLIC_PATHS = {"/", "/health", "/healthz", "/docs", "/openapi.json", "/redoc"}
-SECURE_ROUTE_KEYS = {
-    ("/bills/{bill_id}/pay", "POST"),
-    ("/bills/{bill_id}/receipt", "GET"),
-    ("/recurring-bills", "POST"),
-    ("/recurring-bills/generate", "POST"),
-    ("/upload-receipt", "POST"),
-}
 DEFAULT_DEVELOPMENT_ORIGINS = (
     "http://localhost:19006",
     "http://127.0.0.1:19006",
@@ -64,31 +75,40 @@ def configured_cors_origins(
     return []
 
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    ensure_receipts_bucket()
-    # External scrapers/scheduler remain intentionally inactive. They are not
-    # registered as routes in the portfolio runtime.
-    yield
+def _install_core_routes(app: FastAPI) -> None:
+    app.add_api_route("/", root, methods=["GET"], tags=["Health"])
+    app.add_api_route(
+        "/healthz", healthz_check, methods=["GET"], tags=["Health"], response_model=HealthResponse
+    )
+    app.add_api_route(
+        "/health", health_check, methods=["GET"], tags=["Health"], response_model=HealthResponse
+    )
 
+    app.add_api_route("/bills", get_bills, methods=["GET"], tags=["Bills"])
+    app.add_api_route("/bills/pending", get_pending_bills, methods=["GET"], tags=["Bills"])
+    app.add_api_route("/add-bill", add_bill, methods=["POST"], tags=["Bills"])
+    app.add_api_route(
+        "/recurring-bills", get_recurring_bills, methods=["GET"], tags=["Recurring Bills"]
+    )
+    app.add_api_route("/bills/{bill_id}/detail", get_bill_detail, methods=["GET"], tags=["Bills"])
+    app.add_api_route(
+        "/bills/{bill_id}/pay-no-receipt",
+        pay_bill_no_receipt,
+        methods=["POST"],
+        tags=["Bills", "Payment"],
+    )
 
-def _is_security_sensitive_route(route) -> bool:
-    path = getattr(route, "path", None)
-    methods = getattr(route, "methods", None) or set()
-    return any((path, method) in SECURE_ROUTE_KEYS for method in methods)
+    app.add_api_route("/incomes", get_incomes, methods=["GET"], tags=["Incomes"])
+    app.add_api_route("/incomes", add_income, methods=["POST"], tags=["Incomes"])
+    app.add_api_route("/settings", get_settings, methods=["GET"], tags=["Settings"])
+    app.add_api_route("/settings", update_settings, methods=["POST"], tags=["Settings"])
 
-
-def _install_existing_route_contract(app: FastAPI) -> None:
-    """Copy the current non-sensitive route contract onto a fresh application.
-
-    This is an intermediate extraction boundary: production no longer mutates a
-    module-global FastAPI instance, while route handlers are moved out of the
-    legacy module incrementally behind composition regression tests.
-    """
-    for route in route_source_app.router.routes:
-        if _is_security_sensitive_route(route):
-            continue
-        app.router.routes.append(route)
+    app.add_api_route("/insights", get_insights, methods=["GET"], tags=["Insights"])
+    app.add_api_route("/insights/refresh", refresh_insights, methods=["POST"], tags=["Insights"])
+    app.add_api_route("/insights/reserve", add_to_reserve, methods=["POST"], tags=["Insights"])
+    app.add_api_route(
+        "/validate-bill", validate_bill, methods=["POST"], tags=["Bills", "Validation"]
+    )
 
 
 def _install_secure_routes(app: FastAPI) -> None:
@@ -137,17 +157,14 @@ async def _privacy_safe_http_exception_handler(
 
 
 def create_app() -> FastAPI:
-    """Construct a fresh production application with explicit security boundaries."""
+    """Construct the canonical production application with explicit security boundaries."""
     app = FastAPI(
         title="FinanceFlow API",
         description="Backend API para automação e notificação de contas a pagar.",
         version="0.2.0",
         lifespan=lifespan,
-        docs_url=None,
-        redoc_url=None,
-        openapi_url=None,
     )
-    _install_existing_route_contract(app)
+    _install_core_routes(app)
     _install_secure_routes(app)
     app.add_exception_handler(HTTPException, _privacy_safe_http_exception_handler)
     app.add_middleware(
