@@ -54,13 +54,13 @@ async def pay_bill_with_private_receipt(
     except BillAlreadyPaidError as exc:
         raise HTTPException(status_code=409, detail="Esta fatura já foi marcada como paga.") from exc
     except ReceiptStorageError as exc:
-        logger.error("Private receipt storage failed for bill %s", bill_id)
+        logger.error("Private receipt storage failed")
         raise HTTPException(
             status_code=503,
             detail="Não foi possível armazenar o comprovante. A fatura não foi marcada como paga.",
         ) from exc
     except PaymentPersistenceError as exc:
-        logger.error("Payment persistence failed for bill %s", bill_id)
+        logger.error("Payment persistence failed")
         raise HTTPException(
             status_code=409,
             detail="O pagamento não pôde ser confirmado. Atualize os dados e tente novamente.",
@@ -85,7 +85,7 @@ def get_private_receipt_access(bill_id: str):
     except ReceiptNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Comprovante não encontrado.") from exc
     except (ReceiptAccessError, ValueError) as exc:
-        logger.error("Private receipt access generation failed for bill %s", bill_id)
+        logger.error("Private receipt access generation failed")
         raise HTTPException(
             status_code=503,
             detail="Não foi possível gerar acesso temporário ao comprovante.",
