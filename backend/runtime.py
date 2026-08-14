@@ -1,12 +1,13 @@
 import os
-from collections.abc import Iterable
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from auth_middleware import SupabaseAuthMiddleware
-from main import APIKeyMiddleware, PUBLIC_PATHS, app as legacy_app
+from database import ensure_receipts_bucket
+from main import app as route_source_app
 from secure_ocr_routes import upload_receipt_for_ocr
 from secure_recurring_routes import (
     create_recurring_bill_user_scoped,
@@ -15,6 +16,14 @@ from secure_recurring_routes import (
 from secure_routes import get_private_receipt_access, pay_bill_with_private_receipt
 
 
+PUBLIC_PATHS = {"/", "/health", "/healthz", "/docs", "/openapi.json", "/redoc"}
+SECURE_ROUTE_KEYS = {
+    ("/bills/{bill_id}/pay", "POST"),
+    ("/bills/{bill_id}/receipt", "GET"),
+    ("/recurring-bills", "POST"),
+    ("/recurring-bills/generate", "POST"),
+    ("/upload-receipt", "POST"),
+}
 DEFAULT_DEVELOPMENT_ORIGINS = (
     "http://localhost:19006",
     "http://127.0.0.1:19006",
@@ -55,39 +64,34 @@ def configured_cors_origins(
     return []
 
 
-def _remove_middleware_classes(app: FastAPI, classes: Iterable[type]) -> None:
-    class_set = set(classes)
-    app.user_middleware = [
-        item for item in app.user_middleware if getattr(item, "cls", None) not in class_set
-    ]
-    app.middleware_stack = None
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    ensure_receipts_bucket()
+    # External scrapers/scheduler remain intentionally inactive. They are not
+    # registered as routes in the portfolio runtime.
+    yield
 
 
-def _remove_route(app: FastAPI, *, path: str, method: str) -> None:
-    target_method = method.upper()
-    app.router.routes = [
-        route
-        for route in app.router.routes
-        if not (
-            getattr(route, "path", None) == path
-            and target_method in (getattr(route, "methods", None) or set())
-        )
-    ]
+def _is_security_sensitive_route(route) -> bool:
+    path = getattr(route, "path", None)
+    methods = getattr(route, "methods", None) or set()
+    return any((path, method) in SECURE_ROUTE_KEYS for method in methods)
 
 
-def _install_secure_route_overrides(app: FastAPI) -> None:
-    # Remove route implementations that violate the production security model.
-    # Re-adding on an already configured app is safe because all secure paths are
-    # removed before installation.
-    for path, method in (
-        ("/bills/{bill_id}/pay", "POST"),
-        ("/bills/{bill_id}/receipt", "GET"),
-        ("/recurring-bills", "POST"),
-        ("/recurring-bills/generate", "POST"),
-        ("/upload-receipt", "POST"),
-    ):
-        _remove_route(app, path=path, method=method)
+def _install_existing_route_contract(app: FastAPI) -> None:
+    """Copy the current non-sensitive route contract onto a fresh application.
 
+    This is an intermediate extraction boundary: production no longer mutates a
+    module-global FastAPI instance, while route handlers are moved out of the
+    legacy module incrementally behind composition regression tests.
+    """
+    for route in route_source_app.router.routes:
+        if _is_security_sensitive_route(route):
+            continue
+        app.router.routes.append(route)
+
+
+def _install_secure_routes(app: FastAPI) -> None:
     app.add_api_route(
         "/bills/{bill_id}/pay",
         pay_bill_with_private_receipt,
@@ -132,12 +136,20 @@ async def _privacy_safe_http_exception_handler(
     )
 
 
-def configure_runtime(app: FastAPI) -> FastAPI:
-    """Install the production security composition over the legacy route module."""
-    _remove_middleware_classes(app, (APIKeyMiddleware, CORSMiddleware, SupabaseAuthMiddleware))
-    _install_secure_route_overrides(app)
+def create_app() -> FastAPI:
+    """Construct a fresh production application with explicit security boundaries."""
+    app = FastAPI(
+        title="FinanceFlow API",
+        description="Backend API para automação e notificação de contas a pagar.",
+        version="0.2.0",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+    _install_existing_route_contract(app)
+    _install_secure_routes(app)
     app.add_exception_handler(HTTPException, _privacy_safe_http_exception_handler)
-
     app.add_middleware(
         CORSMiddleware,
         allow_origins=configured_cors_origins(),
@@ -147,8 +159,3 @@ def configure_runtime(app: FastAPI) -> FastAPI:
     )
     app.add_middleware(SupabaseAuthMiddleware, public_paths=PUBLIC_PATHS)
     return app
-
-
-def create_app() -> FastAPI:
-    """Uvicorn factory for the production authorization composition root."""
-    return configure_runtime(legacy_app)
