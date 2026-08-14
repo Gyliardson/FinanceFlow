@@ -6,7 +6,7 @@ routers from importing and constructing a second FastAPI application as a side e
 
 from datetime import date
 from decimal import Decimal
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, BeforeValidator, Field
 
@@ -16,6 +16,8 @@ from money import money
 MAX_MONEY = Decimal("1000000.00")
 MIN_SIGNED_MONEY = Decimal("-1000000.00")
 CanonicalMoney = Annotated[Decimal, BeforeValidator(money)]
+BillStatus = Literal["pending", "paid", "overdue"]
+IncomeType = Literal["salary", "extra", "adjustment"]
 
 
 def canonical_date(value) -> str:
@@ -48,7 +50,7 @@ class BillCreateRequest(BaseModel):
     amount: CanonicalMoney = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
     due_date: CanonicalDate
     barcode: Optional[str] = Field(None, max_length=255)
-    status: str = "pending"
+    status: BillStatus = "pending"
 
 
 class RecurringBillCreateRequest(BaseModel):
@@ -71,7 +73,7 @@ class IncomeCreateRequest(BaseModel):
     amount: CanonicalMoney = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
     date: CanonicalDate
     description: Optional[str] = Field(None, max_length=255)
-    type: str = "salary"
+    type: IncomeType = "salary"
     is_recurring: bool = False
 
 
