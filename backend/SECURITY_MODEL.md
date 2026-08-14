@@ -18,7 +18,9 @@ FinanceFlow handles financial records and payment receipts. The portfolio runtim
 - The backend service-role credential is server-only and must never be exposed through `EXPO_PUBLIC_*`, client bundles, logs, fixtures or screenshots.
 - A publishable Supabase key is not an authorization decision by itself; protected requests must carry an authenticated user session before application data is accessed.
 
-The reusable bearer-validation and request-context primitives are implemented independently of the legacy middleware so they can be tested before the route migration is complete. Until `main.py` is switched from the legacy global `X-API-KEY` middleware to the verified bearer middleware and owner-aware writes, the PR must remain draft.
+Production starts through the Uvicorn factory `runtime:create_app`, not `main:app`. That composition root removes the legacy `X-API-KEY` middleware and wildcard CORS, installs verified Supabase Bearer authentication, preserves only explicit browser origins, and replaces security-sensitive legacy receipt/recurring endpoints with user-scoped implementations. `main.py` remains the legacy route module while the migration is incremental; direct `main:app` execution is not the supported production authorization boundary.
+
+The PR must remain draft until the mobile has a real Supabase session lifecycle and the complete application boundary, cache isolation, deployment/build evidence and remaining negative authorization checks are proven.
 
 ## Ownership migration
 
@@ -48,7 +50,7 @@ New receipt object keys use the canonical namespace `<owner_uuid>/<bill_uuid>/<o
 
 Signed receipt URLs are bounded to a maximum of 15 minutes, with a default lifetime of 5 minutes. They are transient response material only and must never be persisted or logged.
 
-The reusable payment service enforces additional invariants before the route migration is completed:
+The production payment route and reusable payment service enforce these invariants:
 
 - bill lookup and the final payment update use the authenticated RLS-scoped Data API client supplied by the request layer;
 - receipt bytes are signature-validated and size-bounded before storage;
@@ -56,17 +58,22 @@ The reusable payment service enforces additional invariants before the route mig
 - the final database write is compare-and-set on `status != paid`, so a concurrent second submit cannot silently overwrite the first payment;
 - a zero-row compare-and-set is treated as an authorization/race failure;
 - if upload succeeds but payment persistence fails, the uploaded object is removed on a best-effort basis so partial failures do not leave unnecessary financial documents behind;
-- storage/provider exception details are not propagated as public domain errors.
+- storage/provider exception details are not propagated as public domain errors;
+- the payment response does not expose the durable storage path or a public URL.
 
-Private receipt access is also split from privileged storage: the user-scoped Data API client must first return the bill and its `receipt_path`; only then may the server-only storage helper create a bounded signed URL. An RLS-filtered cross-user identifier is therefore handled like a missing receipt and never reaches privileged storage.
+Private receipt access is split from privileged storage: the user-scoped Data API client must first return the bill and its `receipt_path`; only then may the server-only storage helper create a bounded signed URL. An RLS-filtered cross-user identifier is therefore handled like a missing receipt and never reaches privileged storage.
 
-The completed access flow must be:
+The completed access flow is:
 
 1. authorize the caller against the bill owner through the user-scoped/RLS client;
 2. upload under an owner-scoped, server-generated object path;
 3. persist only that object path;
 4. generate bounded private access on demand after authorization;
 5. never log temporary access URLs or raw financial-document content.
+
+## Recurring work
+
+Recurring generation in the production composition does not rely on a request `ContextVar` surviving after the response. Both recurring creation and explicit generation receive the already authenticated Data API client and execute within the request lifetime. PostgreSQL uniqueness remains the final idempotency authority for generated instances.
 
 ## Failure behavior
 
@@ -82,6 +89,7 @@ Security-sensitive operations fail closed:
 - receipt MIME spoofing, empty files, unknown formats and oversized uploads are rejected before storage;
 - a payment database failure after upload triggers best-effort orphan cleanup;
 - a concurrent/zero-row payment update fails closed instead of claiming success;
+- production HTTP exceptions with status 5xx are sanitized so provider/database details are not returned to clients;
 - authorization failures must not fall back to the legacy static API key.
 
 ## CI evidence
@@ -96,9 +104,13 @@ The CI security track is expected to prove, with disposable PostgreSQL where app
 - anonymous financial-table access is rejected;
 - historical unowned rows make migration 004 fail without deletion;
 - explicit backfill allows migration 004 to complete;
+- production composition removes the legacy API-key middleware and rejects wildcard CORS;
+- security-sensitive receipt and recurring routes replace their legacy implementations exactly once;
 - private receipt keys are owner/bill scoped and signed URL lifetimes are bounded;
 - receipt payment tests cover MIME spoofing, already-paid state, storage failure, database failure, orphan cleanup and compare-and-set double-submit behavior;
 - private receipt access tests prove an unauthorized/missing bill never invokes privileged storage;
+- recurring tests prove the authenticated client is passed explicitly instead of being recovered after a background handoff;
+- internal HTTP 5xx details are sanitized while client/domain 4xx details remain usable;
 - backend tests, dependency evidence and secret scanning remain green.
 
-This document describes the intended enforced model. A PR must remain draft while any required application-session wiring, private receipt route migration, migration proof or negative authorization test is incomplete.
+This document describes the intended enforced model. A PR must remain draft while any required mobile application-session wiring, cache isolation, deployment proof or negative authorization test is incomplete.
