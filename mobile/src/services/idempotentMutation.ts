@@ -88,17 +88,23 @@ const validateIntentId = (value: string) => {
 const ownerToken = (ownerId: string) => {
   const trimmed = ownerId.trim();
   if (!trimmed) throw new Error('Authenticated owner is required for financial mutations.');
+  if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+    throw new Error('Authenticated owner cannot be represented as a SecureStore key.');
+  }
+  return trimmed;
+};
+
+const legacyOwnerToken = (ownerId: string) => {
+  const trimmed = ownerId.trim();
+  if (!trimmed) throw new Error('Authenticated owner is required for financial mutations.');
   return encodeURIComponent(trimmed);
 };
 
 const legacyAsyncPendingStorageKey = (ownerId: string, operation: IdempotentOperation) =>
-  `@financeflow:idempotency:${ownerToken(ownerId)}:${operation}`;
-
-const legacySecurePendingStorageKey = (ownerId: string, operation: IdempotentOperation) =>
-  `@financeflow:idempotency-secure:v2:${ownerToken(ownerId)}:${operation}`;
+  `@financeflow:idempotency:${legacyOwnerToken(ownerId)}:${operation}`;
 
 export const pendingMutationStorageKey = (ownerId: string, operation: IdempotentOperation) =>
-  `@financeflow:idempotency-secure:v3:${ownerToken(ownerId)}:${operation}`;
+  `financeflow.idempotency.v4.${ownerToken(ownerId)}.${operation}`;
 
 const newOperationKey = () => {
   const randomPart = Math.random().toString(36).slice(2, 14);
@@ -165,19 +171,14 @@ const readPendingUnlocked = async (
   operation: IdempotentOperation,
 ): Promise<PendingOperation[]> => {
   const storageKey = pendingMutationStorageKey(ownerId, operation);
-  const legacySecureKey = legacySecurePendingStorageKey(ownerId, operation);
   const legacyAsyncKey = legacyAsyncPendingStorageKey(ownerId, operation);
 
   let raw = await SecureStore.getItemAsync(storageKey);
-  let migrationSource: 'secure-v2' | 'async-v1' | null = null;
+  let migratedFromAsync = false;
 
   if (raw === null) {
-    raw = await SecureStore.getItemAsync(legacySecureKey);
-    if (raw !== null) migrationSource = 'secure-v2';
-  }
-  if (raw === null) {
     raw = await AsyncStorage.getItem(legacyAsyncKey);
-    if (raw !== null) migrationSource = 'async-v1';
+    if (raw !== null) migratedFromAsync = true;
   }
   if (!raw) return [];
 
@@ -202,13 +203,10 @@ const readPendingUnlocked = async (
     return true;
   });
 
-  if (migrationSource || JSON.stringify(parsed) !== JSON.stringify(unique)) {
+  if (migratedFromAsync || JSON.stringify(parsed) !== JSON.stringify(unique)) {
     await writePendingUnlocked(ownerId, operation, unique);
   }
-  if (migrationSource === 'secure-v2') {
-    await SecureStore.deleteItemAsync(legacySecureKey);
-  }
-  if (migrationSource === 'async-v1') {
+  if (migratedFromAsync) {
     await AsyncStorage.removeItem(legacyAsyncKey);
   }
 
@@ -338,7 +336,6 @@ export const purgePendingOperationsForOwner = async (ownerId: string) => {
   for (const operation of IDEMPOTENT_OPERATIONS) {
     await withStoreLock(ownerId, operation, async () => {
       await SecureStore.deleteItemAsync(pendingMutationStorageKey(ownerId, operation));
-      await SecureStore.deleteItemAsync(legacySecurePendingStorageKey(ownerId, operation));
       await AsyncStorage.removeItem(legacyAsyncPendingStorageKey(ownerId, operation));
     });
   }
