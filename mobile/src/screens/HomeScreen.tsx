@@ -43,8 +43,7 @@ export default function HomeScreen({ navigation }: any) {
       setAllBills(response.data.data || []);
       if (userId) await setUserCache(userId, 'bills', response.data.data || []);
       setIsOffline(false);
-    } catch (error) {
-      console.error("Erro ao buscar boletos:", error);
+    } catch {
       setIsOffline(true);
       const cached = userId ? await getUserCache<Bill[]>(userId, 'bills') : null;
       if (cached) setAllBills(cached);
@@ -64,8 +63,7 @@ export default function HomeScreen({ navigation }: any) {
         setConfigModalVisible(true);
       }
       setIsOffline(false);
-    } catch (e) {
-      console.error(e);
+    } catch {
       setIsOffline(true);
       const cached = userId ? await getUserCache<any>(userId, 'settings') : null;
       if (cached) {
