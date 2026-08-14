@@ -64,6 +64,34 @@ async function testMalformedEnvelopeFailsClosedAndIsDiscarded() {
   assert.equal(await asyncStorage.getItem(key), null);
 }
 
+async function testWrongResourcePayloadShapeFailsClosed() {
+  await reset();
+  const billsKey = cache.userCacheKey('user-a', 'bills');
+  await asyncStorage.setItem(billsKey, JSON.stringify({
+    version: 1,
+    cachedAt: Date.now(),
+    data: { id: 'not-an-array' },
+  }));
+  assert.equal(await cache.getUserCacheSnapshot('user-a', 'bills'), null);
+  assert.equal(await asyncStorage.getItem(billsKey), null);
+
+  await asyncStorage.setItem(billsKey, JSON.stringify({ id: 'legacy-object-not-array' }));
+  assert.equal(await cache.getUserCacheSnapshot('user-a', 'bills'), null);
+  assert.equal(await asyncStorage.getItem(billsKey), null);
+
+  const settingsKey = cache.userCacheKey('user-a', 'settings');
+  await asyncStorage.setItem(settingsKey, JSON.stringify([]));
+  assert.equal(await cache.getUserCacheSnapshot('user-a', 'settings'), null);
+  assert.equal(await asyncStorage.getItem(settingsKey), null);
+}
+
+async function testInvalidPayloadCannotBePersisted() {
+  await reset();
+  await assert.rejects(() => cache.setUserCache('user-a', 'bills', { id: 'not-an-array' }));
+  assert.equal(await cache.trySetUserCache('user-a', 'bills', { id: 'not-an-array' }), false);
+  assert.equal(await asyncStorage.getItem(cache.userCacheKey('user-a', 'bills')), null);
+}
+
 async function testStorageReadFailureFailsClosed() {
   await reset();
   const originalGetItem = asyncStorage.getItem;
@@ -117,6 +145,8 @@ async function main() {
     testLegacyRawOwnerCacheRemainsReadableWithUnknownFreshness,
     testMalformedJsonFailsClosedAndIsDiscarded,
     testMalformedEnvelopeFailsClosedAndIsDiscarded,
+    testWrongResourcePayloadShapeFailsClosed,
+    testInvalidPayloadCannotBePersisted,
     testStorageReadFailureFailsClosed,
     testBestEffortWriteFailureDoesNotThrow,
     testEmptyBillListIsAuthoritativeCacheData,
