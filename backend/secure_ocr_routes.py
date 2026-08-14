@@ -1,7 +1,12 @@
 from fastapi import File, HTTPException, UploadFile
 
 from ai_service import extract_invoice_data
-from receipt_uploads import MAX_RECEIPT_BYTES, ReceiptValidationError, validate_receipt_upload
+from receipt_uploads import (
+    MAX_RECEIPT_BYTES,
+    ReceiptValidationError,
+    sanitize_receipt_for_external_processing,
+    validate_receipt_upload,
+)
 
 
 async def upload_receipt_for_ocr(file: UploadFile = File(...)):
@@ -9,10 +14,11 @@ async def upload_receipt_for_ocr(file: UploadFile = File(...)):
     content = await file.read(MAX_RECEIPT_BYTES + 1)
     try:
         validated = validate_receipt_upload(content, file.content_type)
+        provider_content = sanitize_receipt_for_external_processing(validated)
     except ReceiptValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    result = extract_invoice_data(validated.content, mime_type=validated.mime_type)
+    result = extract_invoice_data(provider_content, mime_type=validated.mime_type)
     if result.get("status") == "success":
         return {
             "message": "Documento processado. Revise os dados extraídos antes de confirmar.",
