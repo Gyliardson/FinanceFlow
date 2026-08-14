@@ -14,6 +14,7 @@ from secure_recurring_routes import (
     generate_recurring_instances_user_scoped,
 )
 from secure_routes import (
+    add_to_reserve_atomic,
     get_private_receipt_access,
     pay_bill_with_private_receipt,
     pay_bill_without_receipt,
@@ -78,6 +79,7 @@ def test_runtime_registers_only_secure_sensitive_handlers(monkeypatch):
         ("/recurring-bills", "POST", create_recurring_bill_user_scoped),
         ("/recurring-bills/generate", "POST", generate_recurring_instances_user_scoped),
         ("/upload-receipt", "POST", upload_receipt_for_ocr),
+        ("/insights/reserve", "POST", add_to_reserve_atomic),
     )
     for path, method, endpoint in expected:
         routes = _matching_routes(app, path, method)
