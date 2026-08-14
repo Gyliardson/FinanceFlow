@@ -1,5 +1,7 @@
 from datetime import date
+from io import BytesIO
 
+from PIL import Image
 import pytest
 
 import receipt_access
@@ -13,7 +15,15 @@ from receipt_payments import (
 
 OWNER_ID = "11111111-1111-4111-8111-111111111111"
 BILL_ID = "22222222-2222-4222-8222-222222222222"
-JPEG_BYTES = b"\xff\xd8\xffsynthetic-receipt"
+
+
+def _jpeg_bytes():
+    output = BytesIO()
+    Image.new("RGB", (4, 4), (20, 40, 60)).save(output, format="JPEG")
+    return output.getvalue()
+
+
+JPEG_BYTES = _jpeg_bytes()
 OTHER_PATH = f"{OWNER_ID}/{BILL_ID}/other.jpg"
 
 
