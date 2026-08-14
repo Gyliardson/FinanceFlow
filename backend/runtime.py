@@ -6,6 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from auth_middleware import SupabaseAuthMiddleware
 from main import APIKeyMiddleware, PUBLIC_PATHS, app as legacy_app
+from secure_recurring_routes import (
+    create_recurring_bill_user_scoped,
+    generate_recurring_instances_user_scoped,
+)
 from secure_routes import get_private_receipt_access, pay_bill_with_private_receipt
 
 
@@ -70,10 +74,16 @@ def _remove_route(app: FastAPI, *, path: str, method: str) -> None:
 
 
 def _install_secure_route_overrides(app: FastAPI) -> None:
-    # Remove the legacy route that persists public receipt URLs. Re-adding on an
-    # already configured app is safe because both secure paths are removed first.
-    _remove_route(app, path="/bills/{bill_id}/pay", method="POST")
-    _remove_route(app, path="/bills/{bill_id}/receipt", method="GET")
+    # Remove route implementations that violate the production security model.
+    # Re-adding on an already configured app is safe because all secure paths are
+    # removed before installation.
+    for path, method in (
+        ("/bills/{bill_id}/pay", "POST"),
+        ("/bills/{bill_id}/receipt", "GET"),
+        ("/recurring-bills", "POST"),
+        ("/recurring-bills/generate", "POST"),
+    ):
+        _remove_route(app, path=path, method=method)
 
     app.add_api_route(
         "/bills/{bill_id}/pay",
@@ -86,6 +96,18 @@ def _install_secure_route_overrides(app: FastAPI) -> None:
         get_private_receipt_access,
         methods=["GET"],
         tags=["Bills", "Payment"],
+    )
+    app.add_api_route(
+        "/recurring-bills",
+        create_recurring_bill_user_scoped,
+        methods=["POST"],
+        tags=["Recurring Bills"],
+    )
+    app.add_api_route(
+        "/recurring-bills/generate",
+        generate_recurring_instances_user_scoped,
+        methods=["POST"],
+        tags=["Recurring Bills"],
     )
 
 
