@@ -1,8 +1,9 @@
 import logging
 import os
 
-import google.generativeai as genai
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 
 from ocr_service import (
     OcrInvalidOutput,
@@ -45,11 +46,14 @@ class GeminiOcrProvider:
             raise OcrProviderUnavailable("OCR provider is not configured")
 
         try:
-            genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel(self.model_name)
-            response = model.generate_content(
-                [OCR_PROMPT, {"mime_type": mime_type, "data": file_bytes}]
-            )
+            with genai.Client(api_key=self.api_key) as client:
+                response = client.models.generate_content(
+                    model=self.model_name,
+                    contents=[
+                        OCR_PROMPT,
+                        types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+                    ],
+                )
             text = getattr(response, "text", None)
             if not isinstance(text, str) or not text.strip():
                 raise OcrInvalidOutput("OCR provider returned no text")
@@ -123,8 +127,6 @@ def generate_financial_insights(financial_data: dict) -> dict:
         raise ValueError("Chave de API do Gemini ausente na configuração.")
 
     try:
-        genai.configure(api_key=API_KEY)
-        model = genai.GenerativeModel(GEMINI_MODEL)
         prompt = f"""
         Atue como um consultor financeiro institucional e rigoroso.
         Abaixo está o retrato financeiro atual do usuário:
@@ -141,7 +143,11 @@ def generate_financial_insights(financial_data: dict) -> dict:
         Seja profissional, técnico e objetivo. Não use emojis, gírias ou cumprimentos.
         Limite a resposta a 3 ou 4 frases curtas.
         """
-        response = model.generate_content(prompt)
+        with genai.Client(api_key=API_KEY) as client:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+            )
         return {"status": "success", "insight": response.text.strip()}
     except Exception:
         logger.error("Financial insight provider failed")
