@@ -34,6 +34,8 @@ The same checks run in GitHub Actions through the `Mobile Expo health` workflow.
 - Session tokens are stored through `expo-secure-store`; do not replace this with plain AsyncStorage for authentication credentials.
 - `expo-notifications` uses explicit date trigger types and the Android `bills` channel. Validate scheduling/cancellation after SDK upgrades.
 - `expo-updates`, `runtimeVersion`, EAS project metadata, and build/update channels are configured in `app.json` / `eas.json`; changes to them require build/update validation rather than TypeScript-only evidence.
+- The Expo 57 native migration bumps the app version to `1.1.0`. Because `runtimeVersion.policy` is `appVersion`, this creates a new OTA runtime boundary and prevents Expo 57 updates from targeting older Expo 54 binaries.
+- The production EAS Update workflow uses Node 22.13 and only injects the public API URL. The removed legacy mobile API key must not be reintroduced.
 - Legacy icon/splash declarations that pointed at files with mismatched image content were removed during the SDK 57 migration. New production artwork should only be reintroduced with correctly encoded assets and Expo config validation.
 
 ## Dependency security
