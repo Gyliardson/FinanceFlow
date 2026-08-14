@@ -77,4 +77,14 @@ jobs:
           echo "FINANCEFLOW_AUTH_CONTRACT_BUILD=$build_dir" >> "$GITHUB_ENV"
           echo "NODE_PATH=$build_dir/node_modules" >> "$GITHUB_ENV"
       - name: Run restart, expiry, logout and account-switch contract
-        run: node tests/auth-session-contract.cjs
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/auth-session-contract.cjs 2>&1 | tee auth-session-contract.log
+      - name: Upload auth contract diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-auth-contract-log
+          path: mobile/auth-session-contract.log
+          if-no-files-found: error
