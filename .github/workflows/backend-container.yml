@@ -1,0 +1,38 @@
+name: Backend container
+
+on:
+  pull_request:
+    branches:
+      - portfolio/revamp-2026
+      - main
+    paths:
+      - 'backend/**'
+      - 'render.yaml'
+      - '.github/workflows/backend-container.yml'
+  push:
+    branches:
+      - portfolio/revamp-2026
+      - 'work/**'
+    paths:
+      - 'backend/**'
+      - 'render.yaml'
+      - '.github/workflows/backend-container.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build production backend image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Build backend image
+        run: docker build --tag financeflow-backend:ci backend
+      - name: Verify production entrypoint
+        run: |
+          entrypoint=$(docker inspect --format '{{json .Config.Cmd}}' financeflow-backend:ci)
+          echo "$entrypoint"
+          echo "$entrypoint" | grep -F 'runtime:create_app'
+          echo "$entrypoint" | grep -F -- '--factory'

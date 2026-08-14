@@ -1,12 +1,20 @@
 -- ==========================================================
--- FinanceFlow - Schema Inicial (PostgreSQL / Supabase)
--- Descrição: Tabelas primárias para a funcionalidade da API.
--- Uso: Execute este script no SQL Editor do Supabase antes de rodar a API.
+-- FinanceFlow - Initial PostgreSQL / Supabase schema
+--
+-- Security baseline:
+-- * financial rows are owned by auth.users;
+-- * authenticated users can only access rows where owner_id = auth.uid();
+-- * anonymous access is not granted;
+-- * no temporary allow-all MVP policy is created.
+--
+-- Apply the numbered migrations after this bootstrap schema. Existing databases
+-- created from an older permissive baseline must still run migrations 003/004
+-- and perform the documented explicit owner backfill before NOT NULL promotion.
 -- ==========================================================
 
--- Tabela principal de Faturas/Boletos
 CREATE TABLE IF NOT EXISTS finance_bills (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    owner_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
     description TEXT NOT NULL,
     amount DECIMAL(10, 2) NOT NULL,
     due_date DATE NOT NULL,
@@ -15,23 +23,26 @@ CREATE TABLE IF NOT EXISTS finance_bills (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- Ativar Row Level Security (RLS) para proteger acessos
+CREATE INDEX IF NOT EXISTS ix_finance_bills_owner_id ON finance_bills(owner_id);
 ALTER TABLE finance_bills ENABLE ROW LEVEL SECURITY;
 
--- Política de acesso público temporária para a Fase de MVP (Ausência de sistema de autenticação focado).
--- Em um ambiente de produção real, é fundamental aplicar restrições vinculadas ao 'auth.uid()'.
-CREATE POLICY "allow_all_mvp" ON finance_bills
-    FOR ALL
-    USING (true)
-    WITH CHECK (true);
+CREATE POLICY finance_bills_owner_select
+ON finance_bills FOR SELECT TO authenticated
+USING ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
+CREATE POLICY finance_bills_owner_insert
+ON finance_bills FOR INSERT TO authenticated
+WITH CHECK ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
+CREATE POLICY finance_bills_owner_update
+ON finance_bills FOR UPDATE TO authenticated
+USING ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id)
+WITH CHECK ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
+CREATE POLICY finance_bills_owner_delete
+ON finance_bills FOR DELETE TO authenticated
+USING ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
 
--- ==========================================================
--- Tabelas para Gestão de Renda e Configurações (Fase 6)
--- ==========================================================
-
--- Tabela de Receitas / Renda
 CREATE TABLE IF NOT EXISTS finance_incomes (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    owner_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     description TEXT,
     amount DECIMAL(10, 2) NOT NULL,
@@ -41,14 +52,26 @@ CREATE TABLE IF NOT EXISTS finance_incomes (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS ix_finance_incomes_owner_id ON finance_incomes(owner_id);
 ALTER TABLE finance_incomes ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "allow_all_mvp_incomes" ON finance_incomes
-    FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY finance_incomes_owner_select
+ON finance_incomes FOR SELECT TO authenticated
+USING ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
+CREATE POLICY finance_incomes_owner_insert
+ON finance_incomes FOR INSERT TO authenticated
+WITH CHECK ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
+CREATE POLICY finance_incomes_owner_update
+ON finance_incomes FOR UPDATE TO authenticated
+USING ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id)
+WITH CHECK ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
+CREATE POLICY finance_incomes_owner_delete
+ON finance_incomes FOR DELETE TO authenticated
+USING ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
 
--- Tabela de Configurações do Usuário (Saldo Inicial, Metas)
 CREATE TABLE IF NOT EXISTS finance_user_settings (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    owner_id UUID DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
     initial_balance DECIMAL(10, 2) DEFAULT 0.0,
     initial_balance_date DATE DEFAULT CURRENT_DATE,
     emergency_fund_goal DECIMAL(10, 2) DEFAULT 0.0,
@@ -59,7 +82,29 @@ CREATE TABLE IF NOT EXISTS finance_user_settings (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS ux_finance_user_settings_owner_id
+    ON finance_user_settings(owner_id)
+    WHERE owner_id IS NOT NULL;
 ALTER TABLE finance_user_settings ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "allow_all_mvp_settings" ON finance_user_settings
-    FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY finance_settings_owner_select
+ON finance_user_settings FOR SELECT TO authenticated
+USING ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
+CREATE POLICY finance_settings_owner_insert
+ON finance_user_settings FOR INSERT TO authenticated
+WITH CHECK ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
+CREATE POLICY finance_settings_owner_update
+ON finance_user_settings FOR UPDATE TO authenticated
+USING ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id)
+WITH CHECK ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
+CREATE POLICY finance_settings_owner_delete
+ON finance_user_settings FOR DELETE TO authenticated
+USING ((SELECT auth.uid()) IS NOT NULL AND (SELECT auth.uid()) = owner_id);
+
+REVOKE ALL ON finance_bills FROM anon;
+REVOKE ALL ON finance_incomes FROM anon;
+REVOKE ALL ON finance_user_settings FROM anon;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON finance_bills TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON finance_incomes TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON finance_user_settings TO authenticated;

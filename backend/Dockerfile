@@ -21,6 +21,6 @@ COPY . .
 # Expõe a porta que o Render vai usar (será sobrescrita pela env PORT no runtime)
 EXPOSE 8000
 
-# Comando para iniciar a aplicação usando uvicorn
-# O Render passa a porta via variável de ambiente $PORT
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Production composition root removes the legacy shared API-key middleware and
+# installs verified Supabase Bearer auth + explicit CORS before the app starts.
+CMD uvicorn runtime:create_app --factory --host 0.0.0.0 --port ${PORT:-8000}
