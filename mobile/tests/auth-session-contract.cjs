@@ -100,7 +100,7 @@ async function testMalformedSecureSessionFailsClosedWithoutLegacyFallback() {
   assert.equal(restored, null);
   assert.equal(await secureStore.getItemAsync(SESSION_KEY), null);
   assert.equal(await asyncStorage.getItem(SESSION_KEY), null);
-  assert.equal(await cache.getUserCache('user-a', 'bills'), [{ id: 'sensitive-a' }]);
+  assert.deepEqual(await cache.getUserCache('user-a', 'bills'), [{ id: 'sensitive-a' }]);
   assert.equal(await asyncStorage.getItem(LEGACY_BILLS), null);
 }
 
