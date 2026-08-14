@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const compiledRoot = process.env.FINANCEFLOW_AUTH_CONTRACT_BUILD;
@@ -11,6 +12,7 @@ const asyncStorage = require(path.join(
   'async-storage',
 ));
 const cache = require(path.join(compiledRoot, 'userCache.js'));
+const mobileRoot = path.resolve(__dirname, '..');
 
 async function reset() {
   asyncStorage.__reset();
@@ -95,6 +97,20 @@ async function testEmptyBillListIsAuthoritativeCacheData() {
   assert.deepEqual(snapshot.data, []);
 }
 
+async function testDashboardKeepsNetworkReadAuthoritativeAndShowsFreshness() {
+  const home = fs.readFileSync(path.join(mobileRoot, 'src/screens/HomeScreen.tsx'), 'utf8');
+  const networkStatus = fs.readFileSync(path.join(mobileRoot, 'src/components/NetworkStatus.tsx'), 'utf8');
+
+  assert.match(home, /getUserCacheSnapshot/);
+  assert.match(home, /void trySetUserCache\(userId, 'bills', bills\)/);
+  assert.match(home, /void trySetUserCache\(userId, 'settings', settings\)/);
+  assert.doesNotMatch(home, /await setUserCache\(/, 'cache persistence must not downgrade a successful API read');
+  assert.match(home, /const usableOfflineData = billsResult\.hasData;/, 'settings cache cannot substitute for bills cache');
+  assert.match(home, /cachedAt=\{offlineCachedAt\}/, 'offline banner must receive bill-cache freshness');
+  assert.match(networkStatus, /Última atualização salva:/, 'known cache freshness must be visible');
+  assert.match(networkStatus, /Alterações financeiras exigem conexão\./, 'offline financial writes must remain explicitly unsupported');
+}
+
 async function main() {
   const tests = [
     testVersionedCacheRoundTripHasFreshness,
@@ -104,6 +120,7 @@ async function main() {
     testStorageReadFailureFailsClosed,
     testBestEffortWriteFailureDoesNotThrow,
     testEmptyBillListIsAuthoritativeCacheData,
+    testDashboardKeepsNetworkReadAuthoritativeAndShowsFreshness,
   ];
 
   for (const test of tests) {
