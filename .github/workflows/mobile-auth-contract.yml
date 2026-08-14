@@ -91,10 +91,17 @@ jobs:
         run: |
           set -o pipefail
           node tests/auth-session-contract.cjs 2>&1 | tee auth-session-contract.log
-      - name: Upload auth contract diagnostics
+      - name: Run offline cache corruption and persistence contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/offline-cache-contract.cjs 2>&1 | tee offline-cache-contract.log
+      - name: Upload auth and cache contract diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mobile-auth-contract-log
-          path: mobile/auth-session-contract.log
+          path: |
+            mobile/auth-session-contract.log
+            mobile/offline-cache-contract.log
           if-no-files-found: warn
