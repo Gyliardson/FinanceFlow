@@ -44,29 +44,41 @@ export default function LoginScreen() {
     >
       <View style={styles.card}>
         <Text style={styles.eyebrow}>FinanceFlow</Text>
-        <Text style={styles.title}>Acesse seus dados financeiros</Text>
+        <Text accessibilityRole="header" style={styles.title}>
+          Acesse seus dados financeiros
+        </Text>
         <Text style={styles.subtitle}>
           Sua sessão é validada pelo Supabase e o aplicativo só carrega dados do usuário autenticado.
         </Text>
 
-        <Text style={styles.label}>Email</Text>
+        <Text nativeID="login-email-label" style={styles.label}>Email</Text>
         <TextInput
           accessibilityLabel="Email"
+          accessibilityHint="Informe o email da sua conta FinanceFlow"
+          accessibilityLabelledBy="login-email-label"
           autoCapitalize="none"
           autoComplete="email"
+          editable={!submitting}
           keyboardType="email-address"
+          returnKeyType="next"
+          textContentType="emailAddress"
           value={email}
           onChangeText={setEmail}
           placeholder="voce@exemplo.com"
           style={styles.input}
         />
 
-        <Text style={styles.label}>Senha</Text>
+        <Text nativeID="login-password-label" style={styles.label}>Senha</Text>
         <TextInput
           accessibilityLabel="Senha"
+          accessibilityHint="Informe a senha da sua conta FinanceFlow"
+          accessibilityLabelledBy="login-password-label"
           autoCapitalize="none"
           autoComplete="password"
+          editable={!submitting}
+          returnKeyType="done"
           secureTextEntry
+          textContentType="password"
           value={password}
           onChangeText={setPassword}
           placeholder="Sua senha"
@@ -76,12 +88,15 @@ export default function LoginScreen() {
 
         <TouchableOpacity
           accessibilityRole="button"
+          accessibilityLabel={submitting ? 'Entrando na conta' : 'Entrar'}
+          accessibilityHint="Autentica sua conta e abre o painel financeiro"
+          accessibilityState={{ disabled: submitting, busy: submitting }}
           disabled={submitting}
           onPress={handleSignIn}
           style={[styles.button, submitting && styles.buttonDisabled]}
         >
           {submitting ? (
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator accessibilityLabel="Autenticando" color="#fff" />
           ) : (
             <Text style={styles.buttonText}>Entrar</Text>
           )}

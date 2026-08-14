@@ -1,5 +1,16 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Alert, ScrollView, Platform } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { scheduleNotificationsForBill } from '../services/NotificationService';
@@ -16,8 +27,7 @@ export default function RecurringBillScreen({ navigation }: any) {
     if (numericValue) {
       let valNum = Number(numericValue) / 100;
       if (valNum > 1000000) valNum = 1000000;
-      const val = valNum.toFixed(2);
-      setAmount(val.replace('.', ','));
+      setAmount(valNum.toFixed(2).replace('.', ','));
     } else {
       setAmount('');
     }
@@ -38,12 +48,13 @@ export default function RecurringBillScreen({ navigation }: any) {
   };
 
   const handleSave = async () => {
+    if (loading) return;
     if (!title.trim()) {
-      Alert.alert('Campo obrigatório', 'Informe o título/nome da conta.');
+      Alert.alert('Campo obrigatório', 'Informe o título da conta.');
       return;
     }
     if (!amount) {
-      Alert.alert('Campo obrigatório', 'Informe o valor da conta.');
+      Alert.alert('Campo obrigatório', 'Informe o valor mensal da conta.');
       return;
     }
     if (!recurringDay) {
@@ -51,9 +62,9 @@ export default function RecurringBillScreen({ navigation }: any) {
       return;
     }
 
-    const cleanAmount = parseFloat(amount.replace(',', '.'));
-    if (isNaN(cleanAmount) || cleanAmount <= 0) {
-      Alert.alert('Valor inválido', 'Digite um valor numérico correto.');
+    const cleanAmount = Number(amount.replace(',', '.'));
+    if (!Number.isFinite(cleanAmount) || cleanAmount <= 0) {
+      Alert.alert('Valor inválido', 'Informe um valor maior que zero.');
       return;
     }
 
@@ -68,116 +79,150 @@ export default function RecurringBillScreen({ navigation }: any) {
       };
 
       const response = await api.post('/recurring-bills', payload);
-      
-      // Agendar notificações para a primeira instância em background
+
       if (response.data?.data?.[0]) {
         const newBill = response.data.data[0];
-        scheduleNotificationsForBill(newBill.id, title.trim(), newBill.due_date).catch(err => {
-          console.warn('Erro fatal ao agendar notificações em background:', err);
-        });
+        scheduleNotificationsForBill(newBill.id, title.trim(), newBill.due_date).catch(() => undefined);
       }
-      
+
       Alert.alert(
-        '✅ Conta Criada!',
-        `"${title}" será cobrada todo dia ${recurringDay} de cada mês. Você receberá notificações automáticas antes do vencimento.`,
-        [{ text: 'Perfeito!', onPress: () => navigation.goBack() }]
+        'Conta recorrente criada',
+        `“${title.trim()}” será cobrada todo dia ${recurringDay} de cada mês.`,
+        [{ text: 'OK', onPress: () => navigation.goBack() }]
       );
     } catch (error: any) {
-      console.error('Erro ao criar conta recorrente:', error?.response?.data || error.message);
-      Alert.alert('Erro', error?.response?.data?.detail || 'Não foi possível cadastrar a conta recorrente.');
+      Alert.alert(
+        'Não foi possível cadastrar',
+        error?.response?.data?.detail || 'Verifique sua conexão e tente novamente.'
+      );
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 40 }}>
-      <View style={styles.header}>
-        <View style={styles.iconRow}>
-          <Ionicons name="repeat" size={28} color="#8e44ad" />
-          <Text style={styles.title}>Nova Conta Recorrente</Text>
-        </View>
-        <Text style={styles.subtitle}>
-          Configure uma conta que se repete todo mês. Você será notificado automaticamente antes de cada vencimento.
-        </Text>
-      </View>
-
-      <View style={styles.form}>
-        <Text style={styles.inputLabel}>Título da Conta *</Text>
-        <TextInput
-          style={styles.input}
-          value={title}
-          onChangeText={setTitle}
-          placeholder="Ex: Internet Vivo, Aluguel, Netflix..."
-          placeholderTextColor="#95a5a6"
-          maxLength={100}
-        />
-
-        <Text style={styles.inputLabel}>Descrição (opcional)</Text>
-        <TextInput
-          style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
-          value={description}
-          onChangeText={setDescription}
-          placeholder="Anotações extras, número do contrato, etc."
-          placeholderTextColor="#95a5a6"
-          multiline
-          maxLength={255}
-        />
-
-        <Text style={styles.inputLabel}>Valor Mensal (R$) *</Text>
-        <TextInput
-          style={styles.input}
-          keyboardType="numeric"
-          value={amount}
-          onChangeText={handleAmountChange}
-          placeholder="0,00"
-          placeholderTextColor="#95a5a6"
-        />
-
-        <Text style={styles.inputLabel}>Dia do Vencimento (1-31) *</Text>
-        <TextInput
-          style={styles.input}
-          keyboardType="numeric"
-          value={recurringDay}
-          onChangeText={handleDayChange}
-          placeholder="Ex: 10"
-          placeholderTextColor="#95a5a6"
-          maxLength={2}
-        />
-
-        <View style={styles.infoBox}>
-          <Ionicons name="notifications-outline" size={20} color="#2980b9" />
-          <Text style={styles.infoText}>
-            Você receberá lembretes 3 dias antes do vencimento, e alertas reforçados no dia caso não registre o pagamento.
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={styles.container}
+    >
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.header}>
+          <View style={styles.iconRow}>
+            <Ionicons accessibilityElementsHidden name="repeat" size={28} color="#6d28d9" />
+            <Text accessibilityRole="header" style={styles.title}>Nova conta recorrente</Text>
+          </View>
+          <Text style={styles.subtitle}>
+            Configure uma conta mensal. O FinanceFlow gera as próximas instâncias e pode avisar antes do vencimento.
           </Text>
         </View>
 
-        <TouchableOpacity
-          style={[styles.saveButton, loading && styles.saveButtonDisabled]}
-          onPress={handleSave}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <View style={styles.saveButtonContent}>
-              <Ionicons name="checkmark-circle" size={20} color="#fff" />
-              <Text style={styles.saveButtonText}>  Cadastrar Conta Recorrente</Text>
-            </View>
-          )}
-        </TouchableOpacity>
-      </View>
-    </ScrollView>
+        <View style={styles.form}>
+          <Text nativeID="recurring-title-label" style={styles.inputLabel}>Título da conta</Text>
+          <TextInput
+            accessibilityLabel="Título da conta recorrente"
+            accessibilityLabelledBy="recurring-title-label"
+            editable={!loading}
+            style={styles.input}
+            value={title}
+            onChangeText={setTitle}
+            placeholder="Ex.: Internet, aluguel, streaming"
+            placeholderTextColor="#64748b"
+            maxLength={100}
+            returnKeyType="next"
+          />
+
+          <Text nativeID="recurring-description-label" style={styles.inputLabel}>Descrição opcional</Text>
+          <TextInput
+            accessibilityLabel="Descrição opcional da conta recorrente"
+            accessibilityLabelledBy="recurring-description-label"
+            editable={!loading}
+            style={[styles.input, styles.descriptionInput]}
+            value={description}
+            onChangeText={setDescription}
+            placeholder="Anotações, contrato ou referência"
+            placeholderTextColor="#64748b"
+            multiline
+            textAlignVertical="top"
+            maxLength={255}
+          />
+
+          <Text nativeID="recurring-amount-label" style={styles.inputLabel}>Valor mensal</Text>
+          <View style={styles.moneyInput}>
+            <Text style={styles.moneyPrefix}>R$</Text>
+            <TextInput
+              accessibilityLabel="Valor mensal em reais"
+              accessibilityLabelledBy="recurring-amount-label"
+              editable={!loading}
+              style={styles.moneyTextInput}
+              keyboardType="numeric"
+              value={amount}
+              onChangeText={handleAmountChange}
+              placeholder="0,00"
+              placeholderTextColor="#64748b"
+              returnKeyType="next"
+            />
+          </View>
+
+          <Text nativeID="recurring-day-label" style={styles.inputLabel}>Dia do vencimento</Text>
+          <TextInput
+            accessibilityLabel="Dia do vencimento mensal, de 1 a 31"
+            accessibilityHint="Em meses mais curtos, o backend aplica a regra mensal validada"
+            accessibilityLabelledBy="recurring-day-label"
+            editable={!loading}
+            style={styles.input}
+            keyboardType="number-pad"
+            value={recurringDay}
+            onChangeText={handleDayChange}
+            placeholder="Ex.: 10"
+            placeholderTextColor="#64748b"
+            maxLength={2}
+            returnKeyType="done"
+            onSubmitEditing={handleSave}
+          />
+
+          <View accessible accessibilityLabel="Notificações: lembretes podem ser enviados antes do vencimento quando permitidos no dispositivo." style={styles.infoBox}>
+            <Ionicons accessibilityElementsHidden name="notifications-outline" size={20} color="#1d4ed8" />
+            <Text style={styles.infoText}>
+              Se as notificações estiverem permitidas, o aplicativo pode enviar lembretes antes do vencimento.
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={loading ? 'Cadastrando conta recorrente' : 'Cadastrar conta recorrente'}
+            accessibilityHint="Salva esta conta e gera o primeiro vencimento mensal"
+            accessibilityState={{ disabled: loading, busy: loading }}
+            style={[styles.saveButton, loading && styles.saveButtonDisabled]}
+            onPress={handleSave}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator accessibilityLabel="Salvando conta recorrente" color="#fff" />
+            ) : (
+              <View style={styles.saveButtonContent}>
+                <Ionicons accessibilityElementsHidden name="checkmark-circle" size={20} color="#fff" />
+                <Text style={styles.saveButtonText}>Cadastrar conta recorrente</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f8f9fa' },
+  container: { flex: 1, backgroundColor: '#f8fafc' },
+  content: { paddingBottom: 40 },
   header: {
-    padding: 25,
+    padding: 24,
     backgroundColor: '#fff',
     elevation: 2,
-    marginBottom: 15,
+    marginBottom: 16,
     borderBottomLeftRadius: 20,
     borderBottomRightRadius: 20,
   },
@@ -187,79 +232,114 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   title: {
+    flexShrink: 1,
     fontSize: 22,
+    lineHeight: 28,
     fontWeight: '800',
-    color: '#2c3e50',
+    color: '#1e293b',
     marginLeft: 10,
   },
   subtitle: {
-    fontSize: 13,
-    color: '#7f8c8d',
-    lineHeight: 20,
+    fontSize: 14,
+    color: '#475569',
+    lineHeight: 21,
   },
   form: {
     padding: 20,
     backgroundColor: '#fff',
     marginHorizontal: 16,
     borderRadius: 15,
-    elevation: 4,
+    elevation: 3,
     shadowColor: '#000',
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.08,
     shadowRadius: 5,
     shadowOffset: { width: 0, height: 2 },
     marginBottom: 30,
   },
   inputLabel: {
     fontSize: 13,
-    color: '#34495e',
-    fontWeight: 'bold',
+    color: '#334155',
+    fontWeight: '700',
     marginBottom: 8,
   },
   input: {
-    backgroundColor: '#f1f2f6',
+    minHeight: 52,
+    backgroundColor: '#f8fafc',
     borderRadius: 10,
     paddingHorizontal: 15,
     paddingVertical: 14,
     marginBottom: 20,
     fontSize: 16,
-    color: '#2c3e50',
+    color: '#1e293b',
     borderWidth: 1,
-    borderColor: '#dcdde1',
+    borderColor: '#cbd5e1',
+  },
+  descriptionInput: { minHeight: 88 },
+  moneyInput: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    marginBottom: 20,
+    paddingLeft: 15,
+  },
+  moneyPrefix: {
+    color: '#475569',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  moneyTextInput: {
+    flex: 1,
+    minHeight: 50,
+    paddingHorizontal: 8,
+    color: '#1e293b',
+    fontSize: 16,
   },
   infoBox: {
     flexDirection: 'row',
-    backgroundColor: '#eaf6fd',
+    backgroundColor: '#eff6ff',
     padding: 14,
     borderRadius: 10,
     alignItems: 'flex-start',
     marginBottom: 20,
     borderWidth: 1,
-    borderColor: '#bde0f5',
+    borderColor: '#bfdbfe',
   },
   infoText: {
-    fontSize: 12,
-    color: '#2c3e50',
+    fontSize: 13,
+    color: '#334155',
     marginLeft: 10,
     flex: 1,
-    lineHeight: 18,
+    lineHeight: 19,
   },
   saveButton: {
-    backgroundColor: '#8e44ad',
-    paddingVertical: 16,
+    minHeight: 52,
+    backgroundColor: '#6d28d9',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     borderRadius: 10,
     alignItems: 'center',
+    justifyContent: 'center',
     elevation: 3,
   },
   saveButtonDisabled: {
-    opacity: 0.6,
+    opacity: 0.65,
   },
   saveButtonContent: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
   saveButtonText: {
+    flexShrink: 1,
+    textAlign: 'center',
     color: '#fff',
     fontSize: 15,
+    lineHeight: 20,
     fontWeight: '900',
   },
 });

@@ -1,0 +1,37 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const root = path.resolve(__dirname, '..');
+const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
+const home = read('src/screens/HomeScreen.tsx');
+const detail = read('src/screens/DetailScreen.tsx');
+
+const requireMatch = (source, pattern, message) => {
+  assert.match(source, pattern, message);
+};
+
+// Dashboard financial data must fail closed when neither the API nor the
+// owner-scoped bills cache can provide an authoritative bill list.
+requireMatch(home, /type LoadState = 'ready' \| 'offline-cache' \| 'unavailable'/, 'Home must model ready/offline/unavailable states explicitly');
+requireMatch(home, /const usableOfflineData = billsResult\.hasData;/, 'Bills availability must be required for offline dashboard data');
+assert.doesNotMatch(home, /billsResult\.hasData\s*\|\|\s*settingsResult\.hasData/, 'Settings cache must never substitute for the bill list');
+requireMatch(home, /accessibilityRole="tab"/, 'Dashboard tabs must expose tab semantics');
+requireMatch(home, /accessibilityState=\{\{ selected \}\}/, 'Dashboard tabs must expose selected state');
+requireMatch(home, /accessibilityLabel="Adicionar nova fatura"/, 'Dashboard FAB must have an accessible name');
+requireMatch(home, /accessibilityLiveRegion="assertive"/, 'Dashboard unavailable state must be announced');
+requireMatch(home, /new Intl\.NumberFormat\('pt-BR'/, 'Dashboard monetary display must use the locale-aware formatter');
+requireMatch(home, /KeyboardAvoidingView/, 'Dashboard settings form must be keyboard-safe');
+
+// Creation/OCR is a high-risk input path. Keep provider details out of UX/logs,
+// retain upload guardrails, and require explicit review/accessibility cues.
+requireMatch(detail, /MAX_CLIENT_UPLOAD_BYTES = 10 \* 1024 \* 1024/, 'Client upload path must retain its 10 MiB early guard');
+requireMatch(detail, /type: 'application\/pdf'/, 'Document picker must be restricted to PDF in the PDF action');
+requireMatch(detail, /accessibilityLabel="Usar preenchimento manual"/, 'Creation mode switch must have an accessible name');
+requireMatch(detail, /accessibilityLabel="Salvar nova fatura"/, 'Save action must have an accessible name');
+requireMatch(detail, /Revise valor, vencimento e linha digitável antes de confirmar\./, 'OCR flow must tell users to review critical extracted fields');
+requireMatch(detail, /KeyboardAvoidingView/, 'Creation form must be keyboard-safe');
+assert.doesNotMatch(detail, /console\.(?:log|error)\s*\(/, 'Creation/OCR screen must not log raw provider/request errors');
+assert.doesNotMatch(detail, /Gemini/, 'User-facing creation flow must not be coupled to a specific AI provider');
+
+console.log('Mobile UX/accessibility contract passed.');
