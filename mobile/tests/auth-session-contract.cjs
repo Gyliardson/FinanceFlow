@@ -14,7 +14,8 @@ const secureStore = require(path.join(compiledRoot, 'node_modules', 'expo-secure
 const auth = require(path.join(compiledRoot, 'authSession.js'));
 const cache = require(path.join(compiledRoot, 'userCache.js'));
 
-const SESSION_KEY = '@financeflow:auth-session:v1';
+const SECURE_SESSION_KEY = 'financeflow.auth-session.v2';
+const LEGACY_SESSION_KEY = '@financeflow:auth-session:v1';
 const LEGACY_BILLS = '@bills_cache';
 const LEGACY_SETTINGS = '@settings_cache';
 const LEGACY_OWNER = '@financeflow:legacy-cache-owner:v1';
@@ -59,11 +60,11 @@ async function resetStorage() {
 }
 
 async function writeSecureSession(session) {
-  await secureStore.setItemAsync(SESSION_KEY, JSON.stringify(session));
+  await secureStore.setItemAsync(SECURE_SESSION_KEY, JSON.stringify(session));
 }
 
 async function readSecureSession() {
-  const value = await secureStore.getItemAsync(SESSION_KEY);
+  const value = await secureStore.getItemAsync(SECURE_SESSION_KEY);
   return value ? JSON.parse(value) : null;
 }
 
@@ -79,14 +80,14 @@ async function testOwnerScopedCacheNeverCrossesUsers() {
   await cache.setUserCache('user-b', 'bills', [{ id: 'bill-b' }]);
   assert.deepEqual(await cache.getUserCache('user-a', 'bills'), [{ id: 'bill-a' }]);
   assert.deepEqual(await cache.getUserCache('user-b', 'bills'), [{ id: 'bill-b' }]);
-  assert.notEqual(cache.userCacheKey('user-a', 'bills'), cache.userCacheKey('user-b', 'bills'));
+  assert.notEqual(cache.secureUserCacheManifestKey('user-a', 'bills'), cache.secureUserCacheManifestKey('user-b', 'bills'));
   assert.throws(() => cache.userCacheKey('   ', 'bills'), /Authenticated user id is required/);
 }
 
 async function testLegacySessionAndTaggedFinancialCacheMigrateOnce() {
   await resetStorage();
   const session = makeSession('user-a');
-  await asyncStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  await asyncStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(session));
   await asyncStorage.multiSet([
     [LEGACY_OWNER, 'user-a'],
     [LEGACY_BILLS, JSON.stringify([{ id: 'legacy-bill-a' }])],
@@ -95,7 +96,7 @@ async function testLegacySessionAndTaggedFinancialCacheMigrateOnce() {
 
   const restored = await auth.initializeAuthSession();
   assert.equal(restored.user.id, 'user-a');
-  assert.equal(await asyncStorage.getItem(SESSION_KEY), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_SESSION_KEY), null);
   assert.equal((await readSecureSession()).user.id, 'user-a');
   assert.deepEqual(await cache.getUserCache('user-a', 'bills'), [{ id: 'legacy-bill-a' }]);
   assert.deepEqual(await cache.getUserCache('user-a', 'settings'), { initial_balance: 123 });
@@ -118,14 +119,14 @@ async function testMismatchedLegacyFinancialCacheFailsClosed() {
 
 async function testMalformedSecureSessionFailsClosedWithoutLegacyFallback() {
   await resetStorage();
-  await secureStore.setItemAsync(SESSION_KEY, '{not-json');
-  await asyncStorage.setItem(SESSION_KEY, JSON.stringify(makeSession('user-a')));
+  await secureStore.setItemAsync(SECURE_SESSION_KEY, '{not-json');
+  await asyncStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(makeSession('user-a')));
   await cache.setUserCache('user-a', 'bills', [{ id: 'sensitive-a' }]);
 
   const restored = await auth.initializeAuthSession();
   assert.equal(restored, null);
-  assert.equal(await secureStore.getItemAsync(SESSION_KEY), null);
-  assert.equal(await asyncStorage.getItem(SESSION_KEY), null);
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_KEY), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_SESSION_KEY), null);
   assert.deepEqual(await cache.getUserCache('user-a', 'bills'), [{ id: 'sensitive-a' }]);
   await assertLegacyFinancialCacheCleared();
 }
@@ -139,7 +140,7 @@ async function testExpiredSessionInvalidRefreshFailsClosed() {
 
   const restored = await auth.initializeAuthSession();
   assert.equal(restored, null);
-  assert.equal(await secureStore.getItemAsync(SESSION_KEY), null);
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_KEY), null);
   assert.equal(await cache.getUserCache('user-a', 'bills'), null);
   await assertLegacyFinancialCacheCleared();
 }
@@ -170,7 +171,7 @@ async function testSuccessfulRefreshRotatesTokensOnlyInSecureStore() {
   const restored = await auth.initializeAuthSession();
   assert.equal(restored.accessToken, 'new-access-user-a');
   assert.equal((await readSecureSession()).refreshToken, 'new-refresh-user-a');
-  assert.equal(await asyncStorage.getItem(SESSION_KEY), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_SESSION_KEY), null);
   await assertLegacyFinancialCacheCleared();
 }
 
@@ -262,8 +263,8 @@ async function testLogoutPurgesOnlyCurrentOwnersFinancialStateAndSession() {
   global.fetch = async () => response(204);
 
   await auth.signOutAuthSession();
-  assert.equal(await secureStore.getItemAsync(SESSION_KEY), null);
-  assert.equal(await asyncStorage.getItem(SESSION_KEY), null);
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_KEY), null);
+  assert.equal(await asyncStorage.getItem(LEGACY_SESSION_KEY), null);
   assert.equal(await cache.getUserCache('user-a', 'bills'), null);
   assert.deepEqual(await cache.getUserCache('user-b', 'bills'), [{ id: 'bill-b' }]);
   await assertLegacyFinancialCacheCleared();
