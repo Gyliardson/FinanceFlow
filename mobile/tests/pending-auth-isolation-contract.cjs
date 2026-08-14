@@ -19,6 +19,8 @@ const mutations = require(path.join(compiledRoot, 'idempotentMutation.js'));
 const SESSION_KEY = '@financeflow:auth-session:v1';
 const OWNER_A = '11111111-1111-1111-1111-111111111111';
 const OWNER_B = '22222222-2222-2222-2222-222222222222';
+const INTENT_A = 'fi_private_income_a_000001';
+const INTENT_B = 'fi_private_income_b_000001';
 
 function makeSession(userId) {
   return {
@@ -66,7 +68,12 @@ async function testPendingFinancialStateRemainsEncryptedAndOwnerIsolatedAcrossLo
   await reset();
   await activateSession(makeSession(OWNER_A));
   const payload = { title: 'Private salary', amount: 5000, date: '2026-08-14', type: 'salary' };
-  const pendingA = await mutations.getOrCreatePendingOperation(OWNER_A, 'income_create', payload);
+  const pendingA = await mutations.getOrCreatePendingOperation(
+    OWNER_A,
+    'income_create',
+    INTENT_A,
+    payload,
+  );
 
   global.fetch = async () => response(204);
   await auth.signOutAuthSession();
@@ -88,15 +95,32 @@ async function testPendingFinancialStateRemainsEncryptedAndOwnerIsolatedAcrossLo
   assert.equal(snapshotB.userId, OWNER_B);
   assert.equal(snapshotB.accessToken, `new-access-${OWNER_B}`);
 
-  const pendingB = await mutations.getOrCreatePendingOperation(OWNER_B, 'income_create', payload);
+  const pendingB = await mutations.getOrCreatePendingOperation(
+    OWNER_B,
+    'income_create',
+    INTENT_B,
+    payload,
+  );
   assert.notEqual(pendingB.key, pendingA.key, 'B cannot inherit or reuse A operation identity');
+  assert.notEqual(pendingB.intentId, pendingA.intentId, 'B has an independent explicit user intent');
+
+  const visibleToB = await mutations.listPendingOperationsForOwner(OWNER_B);
+  assert.equal(visibleToB.length, 1);
+  assert.equal(visibleToB[0].intentId, INTENT_B);
+  assert.equal(visibleToB.some((item) => item.intentId === INTENT_A), false);
 
   global.fetch = async () => response(204);
   await auth.signOutAuthSession();
   global.fetch = async () => response(200, tokenPayload(OWNER_A));
   await auth.signInWithPassword('a@example.test', 'secret');
-  const restoredA = await mutations.getOrCreatePendingOperation(OWNER_A, 'income_create', payload);
-  assert.equal(restoredA.key, pendingA.key, 'A can safely reconcile its own ambiguous intent later');
+  const restoredA = await mutations.getOrCreatePendingOperation(
+    OWNER_A,
+    'income_create',
+    INTENT_A,
+    { ...payload, date: '2026-08-15' },
+  );
+  assert.equal(restoredA.key, pendingA.key, 'A can safely reconcile its own explicit ambiguous intent later');
+  assert.equal(restoredA.originalPayload.date, '2026-08-14');
 }
 
 async function testStaleSessionSnapshotIsInvalidAfterAccountSwitch() {
@@ -119,7 +143,7 @@ async function testStaleSessionSnapshotIsInvalidAfterAccountSwitch() {
 
 (async () => {
   await testPendingFinancialStateRemainsEncryptedAndOwnerIsolatedAcrossLogout();
-  process.stdout.write('PASS pending logout/account-switch isolation\n');
+  process.stdout.write('PASS explicit pending logout/account-switch isolation\n');
   await testStaleSessionSnapshotIsInvalidAfterAccountSwitch();
   process.stdout.write('PASS coherent session snapshot invalidation\n');
 })().catch((error) => {
