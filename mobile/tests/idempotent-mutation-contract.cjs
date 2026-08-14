@@ -33,6 +33,21 @@ const reloadModule = () => {
   );
   assert.strictEqual(sameBeforeRestart.key, first.key, 'mapping order must not create a new intent');
 
+  const concurrentPayload = { title: 'Concurrent', amount: 42, date: '2026-08-14' };
+  const [concurrentA, concurrentB] = await Promise.all([
+    mutations.getOrCreatePendingOperation(OWNER_A, 'income_create', concurrentPayload),
+    mutations.getOrCreatePendingOperation(
+      OWNER_A,
+      'income_create',
+      { date: '2026-08-14', amount: 42, title: 'Concurrent' },
+    ),
+  ]);
+  assert.strictEqual(
+    concurrentA.key,
+    concurrentB.key,
+    'concurrent transport attempts for the same unresolved intent must share one key',
+  );
+
   // Simulate application/module restart while AsyncStorage survives.
   mutations = reloadModule();
   const afterRestart = await mutations.getOrCreatePendingOperation(OWNER_A, 'reserve_add', payload);
@@ -84,8 +99,8 @@ const reloadModule = () => {
   await assert.rejects(
     mutations.runIdempotentMutation(
       OWNER_A,
-      'income_create',
-      { title: 'Salary', amount: 1000, date: '2026-08-14' },
+      'recurring_template_create',
+      { title: 'Rent', amount: 900, frequency: 'monthly', recurring_day: 5 },
       async (key) => {
         definitiveKeys.push(key);
         const error = new Error('validation rejected');
@@ -96,8 +111,8 @@ const reloadModule = () => {
   );
   const afterDefinitiveRejection = await mutations.getOrCreatePendingOperation(
     OWNER_A,
-    'income_create',
-    { title: 'Salary', amount: 1000, date: '2026-08-14' },
+    'recurring_template_create',
+    { title: 'Rent', amount: 900, frequency: 'monthly', recurring_day: 5 },
   );
   assert.notStrictEqual(
     afterDefinitiveRejection.key,
