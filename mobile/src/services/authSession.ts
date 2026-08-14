@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import {
   clearLegacyGlobalFinancialCache,
   clearUserFinancialCache,
@@ -91,13 +92,29 @@ function normalizeTokenResponse(payload: SupabaseTokenResponse): AuthSession {
   };
 }
 
+async function clearLegacySessionStorage(): Promise<void> {
+  await AsyncStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
 async function persistSession(session: AuthSession | null): Promise<void> {
   currentSession = session;
   if (session) {
-    await AsyncStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    await SecureStore.setItemAsync(SESSION_STORAGE_KEY, JSON.stringify(session));
+    await clearLegacySessionStorage();
   } else {
-    await AsyncStorage.removeItem(SESSION_STORAGE_KEY);
+    await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
+    await clearLegacySessionStorage();
   }
+}
+
+async function readPersistedSession(): Promise<{ raw: string; legacy: boolean } | null> {
+  const secured = await SecureStore.getItemAsync(SESSION_STORAGE_KEY);
+  if (secured !== null) {
+    return { raw: secured, legacy: false };
+  }
+
+  const legacy = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
+  return legacy === null ? null : { raw: legacy, legacy: true };
 }
 
 async function authRequest<T>(
@@ -178,12 +195,11 @@ async function commitRefreshedSession(
     return true;
   }
 
-  // Another caller may already have committed this same single-flight result.
   return sameSessionIdentity(currentSession, refreshedSession);
 }
 
 export async function initializeAuthSession(): Promise<AuthSession | null> {
-  const stored = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
+  const stored = await readPersistedSession();
   if (!stored) {
     currentSession = null;
     await clearLegacyGlobalFinancialCache();
@@ -192,7 +208,7 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stored);
+    parsed = JSON.parse(stored.raw);
   } catch {
     await persistSession(null);
     await clearLegacyGlobalFinancialCache();
@@ -205,10 +221,16 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
     return null;
   }
 
-  // Capture compatibility-cache values only if their owner marker matches this
-  // persisted identity. Untagged or mismatched legacy state is discarded.
+  // A valid session from the historical AsyncStorage location is migrated
+  // atomically to encrypted native storage before it becomes authoritative.
+  if (stored.legacy) {
+    await persistSession(parsed);
+  } else {
+    currentSession = parsed;
+    await clearLegacySessionStorage();
+  }
+
   await migrateLegacyFinancialCacheToUser(parsed.user.id);
-  currentSession = parsed;
 
   if (parsed.expiresAt > Date.now() + REFRESH_SKEW_MS) {
     await hydrateLegacyFinancialCacheForUser(parsed.user.id);
@@ -224,16 +246,12 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
     return currentSession;
   } catch (error) {
     if (error instanceof InvalidCredentialsError) {
-      // Only the session that initiated this refresh may be invalidated. A
-      // delayed failure from an older session must never clear a newer login.
       if (sameSessionIdentity(currentSession, parsed)) {
         await clearLocalFinancialState(parsed.user.id);
         await persistSession(null);
       }
       return currentSession;
     }
-    // A transient Auth outage must not destroy the owner's offline cache. Only
-    // hydrate if this persisted identity is still the active session.
     if (sameSessionIdentity(currentSession, parsed)) {
       await hydrateLegacyFinancialCacheForUser(parsed.user.id);
       return parsed;
@@ -265,9 +283,6 @@ export async function signInWithPassword(
   const session = normalizeTokenResponse(payload);
   await clearLegacyGlobalFinancialCache();
   await persistSession(session);
-  // HomeScreen still writes compatibility keys. Tag that bridge immediately so
-  // any values produced during this authenticated run can only be recovered by
-  // the same owner on restart.
   await hydrateLegacyFinancialCacheForUser(session.user.id);
   return session;
 }
@@ -282,8 +297,6 @@ export async function getValidAccessToken(): Promise<string | null> {
       if (await commitRefreshedSession(sourceSession, refreshed)) {
         return refreshed.accessToken;
       }
-      // The account changed while refresh was in flight. Never return a token
-      // from the stale session; use only the session that is active now.
       return currentSession?.accessToken ?? null;
     } catch (error) {
       if (
@@ -315,8 +328,6 @@ export async function signOutAuthSession(): Promise<void> {
     } catch {
       // Local logout must still complete if the remote session is invalid/offline.
     }
-    // Clear only if this is still the session being signed out. A newer login
-    // must not be erased by a delayed remote logout response.
     if (sameSessionIdentity(currentSession, session)) {
       await clearLocalFinancialState(session.user.id);
       await persistSession(null);
