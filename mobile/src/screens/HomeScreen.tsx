@@ -129,7 +129,7 @@ export default function HomeScreen({ navigation }: any) {
     try {
       const [billsResult, settingsResult] = await Promise.all([fetchBills(), fetchSettings()]);
       const fullyOnline = billsResult.online && settingsResult.online;
-      const usableOfflineData = billsResult.hasData || settingsResult.hasData;
+      const usableOfflineData = billsResult.hasData;
       setLoadState(fullyOnline ? 'ready' : usableOfflineData ? 'offline-cache' : 'unavailable');
     } finally {
       setLoading(false);
