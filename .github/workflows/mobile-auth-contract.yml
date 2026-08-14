@@ -31,6 +31,8 @@ jobs:
           cache-dependency-path: mobile/package-lock.json
       - name: Install mobile dependencies
         run: npm ci
+      - name: Resolve Expo native config
+        run: npx expo config --type public > "$RUNNER_TEMP/expo-public-config.json"
       - name: Compile production auth/cache modules for Node harness
         shell: bash
         run: |
