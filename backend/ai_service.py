@@ -17,7 +17,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 API_KEY = os.getenv("GEMINI_API_KEY")
-OCR_MODEL = "gemini-3-flash-preview"
+GEMINI_MODEL = "gemini-3.6-flash"
 
 
 OCR_PROMPT = """
@@ -36,7 +36,7 @@ Nunca invente campos ilegíveis. Quando houver dúvida relevante, use null e red
 class GeminiOcrProvider:
     """Production OCR adapter. Provider responses remain untrusted until parsed."""
 
-    def __init__(self, api_key: str | None = None, model_name: str = OCR_MODEL):
+    def __init__(self, api_key: str | None = None, model_name: str = GEMINI_MODEL):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model_name = model_name
 
@@ -124,7 +124,7 @@ def generate_financial_insights(financial_data: dict) -> dict:
 
     try:
         genai.configure(api_key=API_KEY)
-        model = genai.GenerativeModel(OCR_MODEL)
+        model = genai.GenerativeModel(GEMINI_MODEL)
         prompt = f"""
         Atue como um consultor financeiro institucional e rigoroso.
         Abaixo está o retrato financeiro atual do usuário:
