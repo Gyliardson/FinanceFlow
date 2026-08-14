@@ -50,7 +50,9 @@ Wait for readiness:
 docker exec financeflow-pg pg_isready -U financeflow -d financeflow_test
 ```
 
-The authoritative disposable-PostgreSQL test procedures live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). They currently prove:
+FinanceFlow currently stores migrations as explicit SQL files in `backend/migrations/001_...` through `005_...`. Some migrations intentionally depend on existing Supabase-compatible schema objects or explicit historical reconciliation, so blindly replaying every file against an empty generic PostgreSQL database is **not** equivalent to provisioning a production Supabase project. The disposable CI creates focused fixtures and then applies the migrations needed to prove each invariant.
+
+The authoritative disposable-PostgreSQL procedures live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). They currently prove:
 
 - exact `NUMERIC` money round trips;
 - recurring migration fail-closed behavior on historical duplicates;
@@ -62,6 +64,10 @@ The authoritative disposable-PostgreSQL test procedures live in [`.github/workfl
 - fail-closed owner `NOT NULL` promotion until explicit reconciliation.
 
 Prefer executing the workflow itself for release evidence rather than maintaining a second hand-copied SQL harness that can drift.
+
+### Seed status
+
+There is currently **no canonical repository seed script**. CI uses synthetic, scoped fixtures created inside deterministic tests/workflows. Do not claim a `seed` step exists or use real financial data as substitute seed content. If a future demo seed is added, it must contain only synthetic data and become part of this runbook and clean-room gates.
 
 When finished:
 
