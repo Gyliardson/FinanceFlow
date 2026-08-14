@@ -1,0 +1,69 @@
+name: Mobile auth contract
+
+on:
+  pull_request:
+    branches:
+      - portfolio/revamp-2026
+      - main
+  push:
+    branches:
+      - portfolio/revamp-2026
+      - 'work/**'
+
+permissions:
+  contents: read
+
+jobs:
+  auth-cache-contract:
+    name: Auth session and cache isolation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.13.0'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install mobile dependencies
+        run: npm ci
+      - name: Compile production auth/cache modules for Node harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_dir="$RUNNER_TEMP/financeflow-auth-contract"
+          rm -rf "$build_dir"
+          mkdir -p "$build_dir/node_modules/@react-native-async-storage/async-storage"
+          cat > "$build_dir/node_modules/@react-native-async-storage/async-storage/index.js" <<'JS'
+          const store = new Map();
+          const api = {
+            async getItem(key) { return store.has(key) ? store.get(key) : null; },
+            async setItem(key, value) { store.set(key, String(value)); },
+            async removeItem(key) { store.delete(key); },
+            async multiGet(keys) { return keys.map((key) => [key, store.has(key) ? store.get(key) : null]); },
+            async multiSet(entries) { for (const [key, value] of entries) store.set(key, String(value)); },
+            async multiRemove(keys) { for (const key of keys) store.delete(key); },
+            __reset() { store.clear(); },
+            __store: store,
+          };
+          module.exports = api;
+          module.exports.default = api;
+          JS
+          npx tsc \
+            src/services/userCache.ts \
+            src/services/authSession.ts \
+            --outDir "$build_dir" \
+            --module commonjs \
+            --moduleResolution node \
+            --target ES2022 \
+            --lib ES2022,DOM \
+            --esModuleInterop \
+            --skipLibCheck
+          echo "FINANCEFLOW_AUTH_CONTRACT_BUILD=$build_dir" >> "$GITHUB_ENV"
+          echo "NODE_PATH=$build_dir/node_modules" >> "$GITHUB_ENV"
+      - name: Run restart, expiry, logout and account-switch contract
+        run: node tests/auth-session-contract.cjs
