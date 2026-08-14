@@ -1,5 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { configureApiAccessTokenProvider } from './api';
+import {
+  configureApiAccessTokenProvider,
+  configureApiAuthenticatedUserIdProvider,
+} from './api';
 import {
   AuthSession,
   getCurrentAuthSession,
@@ -29,12 +32,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(latest);
       return token;
     });
+    configureApiAuthenticatedUserIdProvider(() => getCurrentAuthSession()?.user.id ?? null);
 
     initializeAuthSession()
       .then(setSession)
       .finally(() => setLoading(false));
 
-    return () => configureApiAccessTokenProvider(null);
+    return () => {
+      configureApiAccessTokenProvider(null);
+      configureApiAuthenticatedUserIdProvider(null);
+    };
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
