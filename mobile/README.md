@@ -44,6 +44,23 @@ Authentication credentials and unresolved financial-mutation state are private d
 
 The PostgreSQL/RLS layer remains the authority for owner isolation and durable replay. Mobile persistence does not replace the database idempotency ledger; it preserves the logical identity needed to use that ledger correctly across uncertain transport outcomes.
 
+## Financial date-only semantics
+
+FinanceFlow distinguishes a **financial calendar date** from a timestamp/instant.
+
+- The product financial timezone is the IANA zone `America/Sao_Paulo`.
+- `src/services/financialDate.ts` is the canonical mobile boundary for deriving the current financial `YYYY-MM-DD` from an instant.
+- Initial-balance defaults, income dates, dashboard month selection, due-date distance/status and bill-history status use that financial calendar rather than the device timezone or UTC day.
+- A UTC instant may already be on the next calendar day while São Paulo is still on the previous financial day. For example, `2026-08-15T01:30:00Z` is `2026-08-14 22:30` in São Paulo and therefore has financial date `2026-08-14`.
+- Never derive financial date-only values with `new Date().toISOString().split('T')[0]`, `toISOString().slice(0, 10)`, UTC getters, or equivalent UTC slicing.
+- Do not hard-code a `-03:00` offset. `Intl`/IANA timezone rules are the authority so historical DST/offset changes remain correct even though São Paulo currently has no DST.
+- User-selected due dates are already calendar values. Serialize their chosen year/month/day directly; do not convert them through a UTC timestamp just to obtain `YYYY-MM-DD`.
+- `YYYY-MM-DD` rendering, comparison and day-distance should use date-only helpers instead of parsing the string as a JavaScript instant.
+- `toISOString()` remains valid for a **real UTC timestamp** when the domain requires an instant. The prohibition applies to financial DATE-only derivation, not timestamp serialization generally.
+- Notification triggers are scheduling instants built from an already-authoritative due-date calendar value; they are not persisted as the financial date authority.
+
+The Mobile auth contract includes deterministic financial-date tests for the UTC-next-day window, local midnight, month/year rollovers, IANA historical offset behavior and a static guard against reintroducing UTC slicing in financial screens. Backend tests separately prove that shifting `initial_balance_date` from D to D+1 changes which same-day incomes/payments enter authoritative balance calculation.
+
 ## Native/runtime notes
 
 - `react-native-gesture-handler` is imported before application bootstrap because the navigation stack depends on its native initialization.
