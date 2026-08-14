@@ -9,6 +9,7 @@ EXPECTED_MIGRATIONS = [
     "003_user_ownership_rls.sql",
     "004_enforce_owner_not_null.sql",
     "005_private_receipt_paths.sql",
+    "006_financial_idempotency.sql",
 ]
 
 
