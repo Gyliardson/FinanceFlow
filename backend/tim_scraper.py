@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
@@ -33,10 +34,22 @@ ALL_PAID_KEYWORDS = (
     "contas estão todas pagas",
     "próximas faturas iremos apresentar aqui",
 )
+PortalState = Literal["blocked", "unavailable", "all_paid"]
 
 
 def _payload(result: IntegrationResult) -> dict:
     return result.model_dump(mode="json", exclude_none=True)
+
+
+def _classify_portal_text(text: str) -> PortalState | None:
+    normalized = text.lower()
+    if "captcha" in normalized or "verificação de segurança" in normalized:
+        return "blocked"
+    if "indisponível" in normalized or "tente novamente" in normalized:
+        return "unavailable"
+    if any(keyword in normalized for keyword in ALL_PAID_KEYWORDS):
+        return "all_paid"
+    return None
 
 
 async def _first_visible(*locators):
@@ -83,9 +96,13 @@ async def scrape_tim() -> dict:
                     timeout=NAVIGATION_TIMEOUT_MS,
                 )
 
-                body_text = (await page.locator("body").inner_text()).lower()
-                if "captcha" in body_text or "verificação de segurança" in body_text:
+                initial_state = _classify_portal_text(
+                    await page.locator("body").inner_text()
+                )
+                if initial_state == "blocked":
                     return _payload(blocked_result("TIM"))
+                if initial_state == "unavailable":
+                    return _payload(unavailable_result("TIM portal"))
 
                 phone_input = await _first_visible(
                     page.get_by_label("Telefone", exact=False),
@@ -110,10 +127,12 @@ async def scrape_tim() -> dict:
                 await submit.click()
                 await page.wait_for_load_state("domcontentloaded")
 
-                body_text = (await page.locator("body").inner_text()).lower()
-                if "captcha" in body_text or "verificação de segurança" in body_text:
+                authenticated_state = _classify_portal_text(
+                    await page.locator("body").inner_text()
+                )
+                if authenticated_state == "blocked":
                     return _payload(blocked_result("TIM"))
-                if "indisponível" in body_text or "tente novamente" in body_text:
+                if authenticated_state == "unavailable":
                     return _payload(unavailable_result("TIM portal"))
 
                 accounts_control = await _first_visible(
@@ -128,8 +147,14 @@ async def scrape_tim() -> dict:
 
                 await accounts_control.click()
                 await page.wait_for_load_state("domcontentloaded")
-                accounts_text = (await page.locator("body").inner_text()).lower()
-                if any(keyword in accounts_text for keyword in ALL_PAID_KEYWORDS):
+                accounts_state = _classify_portal_text(
+                    await page.locator("body").inner_text()
+                )
+                if accounts_state == "blocked":
+                    return _payload(blocked_result("TIM"))
+                if accounts_state == "unavailable":
+                    return _payload(unavailable_result("TIM portal"))
+                if accounts_state == "all_paid":
                     return _payload(
                         IntegrationResult(
                             status="info",
