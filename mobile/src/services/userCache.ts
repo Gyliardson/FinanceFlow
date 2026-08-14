@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const CACHE_PREFIX = '@financeflow:user:';
 const LEGACY_BILLS_KEY = '@bills_cache';
 const LEGACY_SETTINGS_KEY = '@settings_cache';
+const LEGACY_OWNER_KEY = '@financeflow:legacy-cache-owner:v1';
 
 type FinancialResource = 'bills' | 'settings';
 
@@ -42,17 +43,29 @@ export async function clearUserFinancialCache(userId: string): Promise<void> {
 }
 
 export async function clearLegacyGlobalFinancialCache(): Promise<void> {
-  await AsyncStorage.multiRemove([LEGACY_BILLS_KEY, LEGACY_SETTINGS_KEY]);
+  await AsyncStorage.multiRemove([
+    LEGACY_BILLS_KEY,
+    LEGACY_SETTINGS_KEY,
+    LEGACY_OWNER_KEY,
+  ]);
 }
 
 /**
  * Transitional bridge while screens are moved away from the historical global
- * AsyncStorage keys. It may only be called after a structurally valid persisted
- * session identifies the owner. This snapshots the legacy values into the
- * owner namespace before the globals are cleared.
+ * AsyncStorage keys. Global financial values are only trusted when the bridge
+ * marker proves they were produced while the same authenticated owner was
+ * active. Untagged legacy values and owner mismatches fail closed and are
+ * deleted rather than attributed to the current account.
  */
 export async function migrateLegacyFinancialCacheToUser(userId: string): Promise<void> {
   const normalizedUserId = normalizeUserId(userId);
+  const legacyOwner = await AsyncStorage.getItem(LEGACY_OWNER_KEY);
+
+  if (legacyOwner !== normalizedUserId) {
+    await clearLegacyGlobalFinancialCache();
+    return;
+  }
+
   const entries = await AsyncStorage.multiGet([LEGACY_BILLS_KEY, LEGACY_SETTINGS_KEY]);
   const writes: [string, string][] = [];
 
@@ -73,8 +86,10 @@ export async function migrateLegacyFinancialCacheToUser(userId: string): Promise
 
 /**
  * Hydrates the old screen-facing keys only for the currently authenticated
- * owner. App startup remains gated by AuthProvider, so another account cannot
- * render these values. This function can be removed once HomeScreen consumes
+ * owner and tags those globals with the same owner. App startup remains gated
+ * by AuthProvider, so another account cannot render these values. The marker
+ * makes the bridge fail closed if storage state and authenticated identity ever
+ * diverge. This compatibility layer can be removed once HomeScreen consumes
  * getUserCache/setUserCache directly.
  */
 export async function hydrateLegacyFinancialCacheForUser(userId: string): Promise<void> {
@@ -85,7 +100,7 @@ export async function hydrateLegacyFinancialCacheForUser(userId: string): Promis
     userCacheKey(normalizedUserId, 'bills'),
     userCacheKey(normalizedUserId, 'settings'),
   ]);
-  const writes: [string, string][] = [];
+  const writes: [string, string][] = [[LEGACY_OWNER_KEY, normalizedUserId]];
 
   for (const [key, value] of entries) {
     if (!value) continue;
@@ -96,7 +111,5 @@ export async function hydrateLegacyFinancialCacheForUser(userId: string): Promis
     }
   }
 
-  if (writes.length) {
-    await AsyncStorage.multiSet(writes);
-  }
+  await AsyncStorage.multiSet(writes);
 }
