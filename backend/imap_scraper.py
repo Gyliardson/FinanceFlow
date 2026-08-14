@@ -1,153 +1,230 @@
-import os
-import imaplib
+"""Experimental IMAP/PDF invoice collector.
+
+The collector is intentionally non-destructive and does not persist financial records.
+It narrows messages by an explicit sender allowlist, uses BODY.PEEK to avoid marking
+messages as read, validates PDF content/size, and returns deterministic source IDs so
+an owner-scoped caller can implement persistence/idempotency separately.
+"""
+
+from __future__ import annotations
+
 import email
-from email.header import decode_header
-import logging
+import hashlib
+import imaplib
 import io
+import logging
+import os
+from email.header import decode_header
+from email.utils import parseaddr
+from typing import Callable
+
 from dotenv import load_dotenv
+from pydantic import ValidationError
 from pypdf import PdfReader, PdfWriter
-from ai_service import extract_invoice_data
-from database import get_supabase_client
+
+from integration_contracts import (
+    InvoiceCandidate,
+    disabled_result,
+    error_result,
+    experimental_integrations_enabled,
+)
 
 load_dotenv()
-
 logger = logging.getLogger(__name__)
 
-IMAP_SERVER = "imap.gmail.com"
-EMAIL_ACCOUNT = os.getenv("GMAIL_EMAIL") or os.getenv("IMAP_EMAIL")
-EMAIL_PASSWORD = (os.getenv("GMAIL_APP_PASSWORD") or os.getenv("IMAP_PASSWORD", "")).replace(" ", "")
-TARGET_CNPJ = os.getenv("TARGET_CNPJ", "")
+DEFAULT_IMAP_SERVER = "imap.gmail.com"
+MAX_PDF_BYTES = 10 * 1024 * 1024
+MAX_MESSAGES_PER_RUN = 25
 
-def decrypt_pdf(encrypted_bytes: bytes, password: str) -> bytes:
-    """
-    Remove a senha do PDF usando os 4 primeiros dígitos do CNPJ
-    """
+
+def decode_mime_words(value: str | None) -> str:
+    if not value:
+        return ""
+    pieces: list[str] = []
+    for word, encoding in decode_header(value):
+        if isinstance(word, bytes):
+            pieces.append(word.decode(encoding or "utf-8", errors="replace"))
+        else:
+            pieces.append(word)
+    return "".join(pieces)
+
+
+def decrypt_pdf(encrypted_bytes: bytes, password: str | None) -> bytes:
+    """Decrypt a configured PDF without deriving passwords from identity data."""
+
     reader = PdfReader(io.BytesIO(encrypted_bytes))
-    
     if not reader.is_encrypted:
-         return encrypted_bytes
-         
-    # Tenta descriptografar usando a senha fornecida
-    decrypted = reader.decrypt(password)
-    if not decrypted:
-        raise ValueError("Falha ao descriptografar o PDF. Senha incorreta.")
-        
+        return encrypted_bytes
+    if not password or not reader.decrypt(password):
+        raise ValueError("Encrypted PDF requires a valid configured password.")
+
     writer = PdfWriter()
     for page in reader.pages:
         writer.add_page(page)
-        
     output = io.BytesIO()
     writer.write(output)
     return output.getvalue()
 
-def decode_mime_words(s):
-    if not s:
-        return ""
-    decoded_string = ""
-    for word, encoding in decode_header(s):
-        if isinstance(word, bytes):
-            decoded_string += word.decode(encoding if encoding else "utf-8", errors="ignore")
-        else:
-            decoded_string += word
-    return decoded_string
 
-async def scrape_vivo_email():
-    """
-    Conecta ao servidor IMAP, busca por e-mails não lidos contendo PDF,
-    descriptografa (se tiver configurada a senha baseada no CNPJ), 
-    processa no Gemini e salva no banco.
-    """
-    if not EMAIL_ACCOUNT or not EMAIL_PASSWORD:
+def _allowed_senders() -> set[str]:
+    raw = os.getenv("IMAP_ALLOWED_SENDERS", "")
+    return {
+        item.strip().lower()
+        for item in raw.split(",")
+        if item.strip() and "@" in item
+    }
+
+
+def _subject_tokens() -> tuple[str, ...]:
+    raw = os.getenv("IMAP_SUBJECT_CONTAINS", "")
+    return tuple(item.strip().lower() for item in raw.split(",") if item.strip())
+
+
+def _is_allowed_message(message) -> bool:
+    sender = parseaddr(message.get("From", ""))[1].lower()
+    if sender not in _allowed_senders():
+        return False
+    tokens = _subject_tokens()
+    if not tokens:
+        return True
+    subject = decode_mime_words(message.get("Subject")).lower()
+    return any(token in subject for token in tokens)
+
+
+def _pdf_attachments(message):
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        filename = decode_mime_words(part.get_filename())
+        if not filename or not filename.lower().endswith(".pdf"):
+            continue
+        if part.get_content_type().lower() != "application/pdf":
+            continue
+        payload = part.get_payload(decode=True) or b""
+        if not payload or len(payload) > MAX_PDF_BYTES:
+            continue
+        if not payload.lstrip().startswith(b"%PDF-"):
+            continue
+        yield filename, payload
+
+
+def _source_id(message, filename: str, payload: bytes) -> str:
+    message_id = (message.get("Message-ID") or "").strip()
+    digest = hashlib.sha256(payload).hexdigest()
+    return hashlib.sha256(
+        f"{message_id}\n{filename}\n{digest}".encode("utf-8")
+    ).hexdigest()
+
+
+async def scrape_vivo_email(
+    *,
+    ocr_extract: Callable[[bytes, str], dict] | None = None,
+) -> dict:
+    """Collect validated candidates without changing mailbox state or database state."""
+
+    if not experimental_integrations_enabled():
+        return disabled_result("IMAP/PDF collector").model_dump(
+            mode="json", exclude_none=True
+        )
+
+    load_dotenv(override=True)
+    account = os.getenv("GMAIL_EMAIL") or os.getenv("IMAP_EMAIL")
+    password = (os.getenv("GMAIL_APP_PASSWORD") or os.getenv("IMAP_PASSWORD", "")).replace(
+        " ", ""
+    )
+    allowed_senders = _allowed_senders()
+    if not account or not password or not allowed_senders:
         return {
             "status": "error",
-            "message": "Credenciais OUTLOOK_EMAIL ou OUTLOOK_PASSWORD ausentes no .env"
+            "message": "IMAP collector requires account credentials and IMAP_ALLOWED_SENDERS.",
         }
+
+    if ocr_extract is None:
+        from ai_service import extract_invoice_data
+
+        ocr_extract = extract_invoice_data
+
+    server = os.getenv("IMAP_SERVER", DEFAULT_IMAP_SERVER).strip() or DEFAULT_IMAP_SERVER
+    pdf_password = os.getenv("IMAP_PDF_PASSWORD") or None
+    mail = None
+    candidates: list[dict] = []
 
     try:
-        # 1. Conexão e Login IMAP
-        mail = imaplib.IMAP4_SSL(IMAP_SERVER)
-        mail.login(EMAIL_ACCOUNT, EMAIL_PASSWORD)
-        mail.select("inbox")
+        mail = imaplib.IMAP4_SSL(server, timeout=20)
+        mail.login(account, password)
+        status, _ = mail.select("inbox", readonly=True)
+        if status != "OK":
+            return error_result("IMAP mailbox").model_dump(mode="json", exclude_none=True)
 
-        # 2. Busca e-mails não lidos (pode ser ajustado para FROM specific se desejar)
         status, messages = mail.search(None, "UNSEEN")
-        if status != "OK" or not messages[0]:
-            mail.logout()
-            return {"status": "info", "message": "Nenhum e-mail não lido encontrado."}
+        if status != "OK" or not messages or not messages[0]:
+            return {"status": "info", "message": "No unread allowed invoice messages found.", "candidates": []}
 
-        email_ids = messages[0].split()
-        processed_bills = []
-        supabase = get_supabase_client()
-        password_pdf = TARGET_CNPJ[:4] if TARGET_CNPJ else ""
-
-        # 3. Itera sobre os e-mails
-        for e_id in email_ids:
-            res, msg_data = mail.fetch(e_id, "(RFC822)")
-            if res != "OK":
+        email_ids = messages[0].split()[:MAX_MESSAGES_PER_RUN]
+        for email_id in email_ids:
+            # BODY.PEEK keeps collection non-destructive even if downstream OCR fails.
+            fetch_status, msg_data = mail.fetch(email_id, "(BODY.PEEK[])")
+            if fetch_status != "OK":
                 continue
 
-            for response_part in msg_data:
-                if isinstance(response_part, tuple):
-                    msg = email.message_from_bytes(response_part[1])
-                    subject = decode_mime_words(msg.get("Subject"))
-                    
-                    found_pdf = False
-                    
-                    for part in msg.walk():
-                        if part.get_content_maintype() == "multipart":
-                            continue
-                        if part.get("Content-Disposition") is None:
-                            continue
-                            
-                        filename = part.get_filename()
-                        if filename:
-                            filename = decode_mime_words(filename)
-                            if filename.lower().endswith(".pdf"):
-                                # 4. Baixa o PDF
-                                encrypted_pdf_bytes = part.get_payload(decode=True)
-                                
-                                try:
-                                    # 5. Descriptografa com 4 primeiros digitos do CNPJ
-                                    pdf_bytes = decrypt_pdf(encrypted_pdf_bytes, password_pdf) if password_pdf else encrypted_pdf_bytes
-                                except Exception as dec_err:
-                                    logger.error(f"Erro ao descriptografar PDF {filename}: {dec_err}")
-                                    continue # Pula se falhou a senha
+            raw_message = next(
+                (
+                    item[1]
+                    for item in msg_data
+                    if isinstance(item, tuple) and isinstance(item[1], bytes)
+                ),
+                None,
+            )
+            if raw_message is None:
+                continue
 
-                                # 6. Envia para o Gemini Extrair
-                                ocr_result = extract_invoice_data(pdf_bytes, mime_type="application/pdf")
-                                
-                                if ocr_result.get("status") == "success":
-                                    ext_data = ocr_result.get("extracted_data", {})
-                                    
-                                    # 7. Salva no banco "finance_bills"
-                                    amount = ext_data.get("amount")
-                                    due_date = ext_data.get("due_date")
-                                    barcode = ext_data.get("barcode")
-                                    
-                                    if amount is not None and due_date:
-                                        db_data = {
-                                            "description": f"Fatura Vivo Fixo (E-mail) - {subject}",
-                                            "amount": amount,
-                                            "due_date": due_date,
-                                            "barcode": barcode,
-                                            "status": "pending"
-                                        }
-                                        db_response = supabase.table("finance_bills").insert(db_data).execute()
-                                        processed_bills.append(db_response.data[0] if db_response.data else db_data)
-                                        found_pdf = True
-                                        
-                    # Marca como lido apenas se processou um PDF válido
-                    # Porém o fetch original de RFC822 já marca como lido (SEEN) automaticamente em muitos provedores.
-                    # Se não houvesse PDF, o ideal seria re-marcar como UNSEEN, ou apenas aceitar.
-        mail.logout()
-        
-        message = f"Processados {len(processed_bills)} boletos com sucesso." if processed_bills else "Nenhum boleto em anexo suportado encontrado nos e-mails novos."
+            message = email.message_from_bytes(raw_message)
+            if not _is_allowed_message(message):
+                continue
+
+            subject = decode_mime_words(message.get("Subject"))[:80]
+            for filename, encrypted_payload in _pdf_attachments(message):
+                try:
+                    pdf_bytes = decrypt_pdf(encrypted_payload, pdf_password)
+                    if len(pdf_bytes) > MAX_PDF_BYTES or not pdf_bytes.lstrip().startswith(b"%PDF-"):
+                        continue
+                    ocr_result = ocr_extract(pdf_bytes, "application/pdf")
+                    if ocr_result.get("status") != "success":
+                        continue
+                    extracted = ocr_result.get("extracted_data") or {}
+                    candidate = InvoiceCandidate(
+                        description=f"Fatura recebida por e-mail - {subject or 'sem assunto'}",
+                        amount=extracted.get("amount"),
+                        due_date=extracted.get("due_date"),
+                        barcode=extracted.get("barcode"),
+                    )
+                except (ValidationError, ValueError, TypeError):
+                    continue
+
+                candidates.append(
+                    {
+                        "source_id": _source_id(message, filename, encrypted_payload),
+                        "candidate": candidate.model_dump(mode="json"),
+                    }
+                )
+
+        if not candidates:
+            return {
+                "status": "info",
+                "message": "No validated invoice PDF was produced from allowed unread messages.",
+                "candidates": [],
+            }
         return {
             "status": "success",
-            "message": message,
-            "data": processed_bills
+            "message": f"Collected {len(candidates)} validated invoice candidate(s) without persistence.",
+            "candidates": candidates,
         }
-
-    except Exception as e:
-        logger.error(f"Erro no IMAP Scraper: {str(e)}")
-        return {"status": "error", "message": f"Erro interno ao buscar e-mails: {str(e)}"}
+    except Exception as exc:
+        logger.warning("IMAP collector failed safely: %s", type(exc).__name__)
+        return error_result("IMAP collector").model_dump(mode="json", exclude_none=True)
+    finally:
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception:
+                pass
