@@ -136,7 +136,9 @@ async function restartOwnerAndSecureStorage() {
   const otherOwner = await mutations.getOrCreatePendingOperation(OWNER_B, 'reserve_add', intentB, { amount: 10 });
   assert.notEqual(otherOwner.key, first.key);
   assert.equal(await AsyncStorage.getItem(`@financeflow:idempotency:${encodeURIComponent(OWNER_A)}:reserve_add`), null);
-  assert.ok(await SecureStore.getItemAsync(mutations.pendingMutationStorageKey(OWNER_A, 'reserve_add')));
+  const secureKey = mutations.pendingMutationStorageKey(OWNER_A, 'reserve_add');
+  assert.match(secureKey, /^[A-Za-z0-9._-]+$/);
+  assert.ok(await SecureStore.getItemAsync(secureKey));
 }
 
 async function rejectionLifecycle() {
@@ -204,13 +206,19 @@ async function accountSwitchPreparationFailsClosed() {
   assert.equal(preparedB.accessToken, 'token-b');
 }
 
-async function migrateSecureV2() {
+async function invalidSecureNamespaceIsRejectedAndAsyncV1Migrates() {
   resetStorage();
   let mutations = reloadModule();
-  const legacyKey = `@financeflow:idempotency-secure:v2:${encodeURIComponent(OWNER_A)}:income_create`;
+  const invalidLegacySecureKey = `@financeflow:idempotency-secure:v2:${encodeURIComponent(OWNER_A)}:income_create`;
+  await assert.rejects(
+    () => SecureStore.setItemAsync(invalidLegacySecureKey, '[]'),
+    /Invalid SecureStore key/,
+    'hardened mock must reproduce native key validation',
+  );
+
+  const legacyAsyncKey = `@financeflow:idempotency:${encodeURIComponent(OWNER_A)}:income_create`;
   const originalPayload = { title: 'Legacy salary', amount: 321, date: '2026-08-14', type: 'salary' };
   const legacyRecord = {
-    // Deliberately low-entropy fixture: this is a migration sentinel, never a credential/API token.
     key: 'legacy-test-key',
     originalPayload,
     canonicalPayload: mutations.canonicalMutationPayload(originalPayload),
@@ -218,13 +226,14 @@ async function migrateSecureV2() {
     createdAt: Date.now(),
     state: 'pending',
   };
-  await SecureStore.setItemAsync(legacyKey, JSON.stringify([legacyRecord]));
+  await AsyncStorage.setItem(legacyAsyncKey, JSON.stringify([legacyRecord]));
   const migrated = await mutations.listPendingOperationsForOwner(OWNER_A);
   assert.equal(migrated.length, 1);
   assert.match(migrated[0].intentId, /^fi_legacy_/);
   assert.equal(migrated[0].key, legacyRecord.key);
   assert.deepEqual(migrated[0].originalPayload, originalPayload);
-  assert.equal(await SecureStore.getItemAsync(legacyKey), null);
+  assert.equal(await AsyncStorage.getItem(legacyAsyncKey), null);
+  assert.ok(await SecureStore.getItemAsync(mutations.pendingMutationStorageKey(OWNER_A, 'income_create')));
 
   const legacyIntentId = migrated[0].intentId;
   mutations = reloadModule();
@@ -240,7 +249,7 @@ async function migrateSecureV2() {
   await restartOwnerAndSecureStorage();
   await rejectionLifecycle();
   await accountSwitchPreparationFailsClosed();
-  await migrateSecureV2();
+  await invalidSecureNamespaceIsRejectedAndAsyncV1Migrates();
   console.log('EXPLICIT_INTENT_IDENTITY_CONTRACT=pass');
   console.log('IDEMPOTENT_MUTATION_CONTRACT=pass');
 })().catch((error) => {
