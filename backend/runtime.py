@@ -18,7 +18,6 @@ from api_handlers import (
     health_check,
     healthz_check,
     lifespan,
-    pay_bill_no_receipt,
     refresh_insights,
     root,
     update_settings,
@@ -31,7 +30,11 @@ from secure_recurring_routes import (
     create_recurring_bill_user_scoped,
     generate_recurring_instances_user_scoped,
 )
-from secure_routes import get_private_receipt_access, pay_bill_with_private_receipt
+from secure_routes import (
+    get_private_receipt_access,
+    pay_bill_with_private_receipt,
+    pay_bill_without_receipt,
+)
 
 
 PUBLIC_PATHS = {"/", "/health", "/healthz", "/docs", "/openapi.json", "/redoc"}
@@ -93,7 +96,7 @@ def _install_core_routes(app: FastAPI) -> None:
     app.add_api_route("/bills/{bill_id}/detail", get_bill_detail, methods=["GET"], tags=["Bills"])
     app.add_api_route(
         "/bills/{bill_id}/pay-no-receipt",
-        pay_bill_no_receipt,
+        pay_bill_without_receipt,
         methods=["POST"],
         tags=["Bills", "Payment"],
     )
