@@ -1,5 +1,6 @@
 import asyncio
 from email.message import EmailMessage
+from pathlib import Path
 
 from dasmei_scraper import scrape_dasmei
 from imap_scraper import _is_allowed_message, _pdf_attachments, _source_id, scrape_vivo_email
@@ -7,6 +8,15 @@ from integration_contracts import IntegrationResult, InvoiceCandidate
 from scheduler import ServiceSpec, _run_service, run_scheduler_cycle
 from tim_scraper import scrape_tim
 from unopar_scraper import scrape_unopar
+
+
+BACKEND_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BACKEND_DIR.parent
+BROWSER_ADAPTERS = (
+    "dasmei_scraper.py",
+    "tim_scraper.py",
+    "unopar_scraper.py",
+)
 
 
 def test_browser_adapters_are_disabled_without_explicit_opt_in(monkeypatch):
@@ -161,3 +171,33 @@ def test_scheduler_timeout_is_bounded_and_sanitized():
     assert result.status == "unavailable"
     assert result.candidate is None
     assert "timed out" in result.message
+
+
+def test_browser_adapters_do_not_reintroduce_evasion_or_persistent_screenshots():
+    forbidden_tokens = (
+        "playwright_stealth",
+        "Stealth(",
+        "page.mouse.click(",
+        "user_agent=",
+        "screenshot(path=",
+        "random.uniform(",
+        "random.randint(",
+    )
+
+    for filename in BROWSER_ADAPTERS:
+        source = (BACKEND_DIR / filename).read_text(encoding="utf-8")
+        for token in forbidden_tokens:
+            assert token not in source, f"{filename} reintroduced forbidden pattern: {token}"
+
+
+def test_readme_does_not_describe_antibot_bypass_as_a_feature():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8").lower()
+    forbidden_claims = (
+        "para burlar bloqueios antibot",
+        "to bypass antibot protections",
+        "playwright-stealth",
+        "superando os desafios do canvaskit",
+    )
+
+    for claim in forbidden_claims:
+        assert claim not in readme
