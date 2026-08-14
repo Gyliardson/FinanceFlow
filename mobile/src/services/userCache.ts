@@ -51,11 +51,11 @@ export async function clearLegacyGlobalFinancialCache(): Promise<void> {
 }
 
 /**
- * Transitional bridge while screens are moved away from the historical global
- * AsyncStorage keys. Global financial values are only trusted when the bridge
- * marker proves they were produced while the same authenticated owner was
- * active. Untagged legacy values and owner mismatches fail closed and are
- * deleted rather than attributed to the current account.
+ * One-time compatibility import for users upgrading from the historical global
+ * financial cache. Values are accepted only when the legacy owner marker
+ * matches the authenticated user; untagged/mismatched data fails closed. The
+ * global keys are always deleted after the migration attempt and are never
+ * re-created by current application code.
  */
 export async function migrateLegacyFinancialCacheToUser(userId: string): Promise<void> {
   const normalizedUserId = normalizeUserId(userId);
@@ -82,34 +82,4 @@ export async function migrateLegacyFinancialCacheToUser(userId: string): Promise
     await AsyncStorage.multiSet(writes);
   }
   await clearLegacyGlobalFinancialCache();
-}
-
-/**
- * Hydrates the old screen-facing keys only for the currently authenticated
- * owner and tags those globals with the same owner. App startup remains gated
- * by AuthProvider, so another account cannot render these values. The marker
- * makes the bridge fail closed if storage state and authenticated identity ever
- * diverge. This compatibility layer can be removed once HomeScreen consumes
- * getUserCache/setUserCache directly.
- */
-export async function hydrateLegacyFinancialCacheForUser(userId: string): Promise<void> {
-  const normalizedUserId = normalizeUserId(userId);
-  await clearLegacyGlobalFinancialCache();
-
-  const entries = await AsyncStorage.multiGet([
-    userCacheKey(normalizedUserId, 'bills'),
-    userCacheKey(normalizedUserId, 'settings'),
-  ]);
-  const writes: [string, string][] = [[LEGACY_OWNER_KEY, normalizedUserId]];
-
-  for (const [key, value] of entries) {
-    if (!value) continue;
-    if (key.endsWith(':bills')) {
-      writes.push([LEGACY_BILLS_KEY, value]);
-    } else if (key.endsWith(':settings')) {
-      writes.push([LEGACY_SETTINGS_KEY, value]);
-    }
-  }
-
-  await AsyncStorage.multiSet(writes);
 }
