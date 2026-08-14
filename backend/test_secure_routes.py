@@ -1,4 +1,4 @@
-from types import SimpleNamespace
+import asyncio
 
 import pytest
 from fastapi import HTTPException
@@ -39,8 +39,7 @@ def _install_authenticated_context(monkeypatch):
     return data_client, storage_client
 
 
-@pytest.mark.asyncio
-async def test_private_payment_route_uses_bounded_read_and_returns_no_receipt_url(monkeypatch):
+def test_private_payment_route_uses_bounded_read_and_returns_no_receipt_url(monkeypatch):
     data_client, storage_client = _install_authenticated_context(monkeypatch)
     upload = FakeUpload(b"synthetic")
     calls = []
@@ -54,8 +53,7 @@ async def test_private_payment_route_uses_bounded_read_and_returns_no_receipt_ur
         )
 
     monkeypatch.setattr(secure_routes, "persist_private_receipt_payment", fake_persist)
-
-    response = await secure_routes.pay_bill_with_private_receipt(BILL_ID, upload)
+    response = asyncio.run(secure_routes.pay_bill_with_private_receipt(BILL_ID, upload))
 
     assert upload.read_sizes == [MAX_RECEIPT_BYTES + 1]
     assert calls == [
@@ -77,7 +75,6 @@ async def test_private_payment_route_uses_bounded_read_and_returns_no_receipt_ur
     assert "receipt_path" not in response
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error", "status_code", "public_detail"),
     [
@@ -96,7 +93,7 @@ async def test_private_payment_route_uses_bounded_read_and_returns_no_receipt_ur
         ),
     ],
 )
-async def test_private_payment_route_maps_failures_without_provider_leak(
+def test_private_payment_route_maps_failures_without_provider_leak(
     monkeypatch, error, status_code, public_detail
 ):
     _install_authenticated_context(monkeypatch)
@@ -107,19 +104,18 @@ async def test_private_payment_route_maps_failures_without_provider_leak(
     )
 
     with pytest.raises(HTTPException) as captured:
-        await secure_routes.pay_bill_with_private_receipt(BILL_ID, FakeUpload())
+        asyncio.run(secure_routes.pay_bill_with_private_receipt(BILL_ID, FakeUpload()))
 
     assert captured.value.status_code == status_code
     assert captured.value.detail == public_detail
     assert "secret detail" not in str(captured.value.detail)
 
 
-@pytest.mark.asyncio
-async def test_private_payment_route_fails_closed_without_user_context(monkeypatch):
+def test_private_payment_route_fails_closed_without_user_context(monkeypatch):
     monkeypatch.setattr(secure_routes, "get_request_user_id", lambda: None)
 
     with pytest.raises(HTTPException) as captured:
-        await secure_routes.pay_bill_with_private_receipt(BILL_ID, FakeUpload())
+        asyncio.run(secure_routes.pay_bill_with_private_receipt(BILL_ID, FakeUpload()))
 
     assert captured.value.status_code == 401
 
@@ -138,7 +134,6 @@ def test_private_receipt_access_returns_only_temporary_url_metadata(monkeypatch)
         )
 
     monkeypatch.setattr(secure_routes, "create_authorized_receipt_access", fake_access)
-
     response = secure_routes.get_private_receipt_access(BILL_ID)
 
     assert calls == [
