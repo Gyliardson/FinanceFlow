@@ -67,6 +67,10 @@ class GeminiOcrProvider:
             raise OcrProviderUnavailable("OCR provider is unavailable") from exc
 
 
+def _provider_error(code: str, message: str) -> dict:
+    return {"status": "error", "error_code": code, "message": message}
+
+
 def extract_invoice_data(
     file_bytes: bytes,
     mime_type: str,
@@ -83,32 +87,34 @@ def extract_invoice_data(
         }
     except OcrInvalidOutput:
         logger.warning("OCR provider returned invalid structured output")
-        return {
-            "status": "error",
-            "error_code": "invalid_output",
-            "message": "O documento não pôde ser interpretado com segurança.",
-        }
+        return _provider_error(
+            "invalid_output",
+            "O documento não pôde ser interpretado com segurança.",
+        )
     except OcrProviderTimeout:
         logger.warning("OCR provider timed out")
-        return {
-            "status": "error",
-            "error_code": "timeout",
-            "message": "O serviço de OCR excedeu o tempo de resposta.",
-        }
+        return _provider_error(
+            "timeout",
+            "O serviço de OCR excedeu o tempo de resposta.",
+        )
     except OcrProviderRateLimited:
         logger.warning("OCR provider rate limited a request")
-        return {
-            "status": "error",
-            "error_code": "rate_limited",
-            "message": "O serviço de OCR está temporariamente ocupado.",
-        }
+        return _provider_error(
+            "rate_limited",
+            "O serviço de OCR está temporariamente ocupado.",
+        )
     except OcrProviderUnavailable:
         logger.warning("OCR provider is unavailable")
-        return {
-            "status": "error",
-            "error_code": "provider_unavailable",
-            "message": "O serviço de OCR está temporariamente indisponível.",
-        }
+        return _provider_error(
+            "provider_unavailable",
+            "O serviço de OCR está temporariamente indisponível.",
+        )
+    except Exception:
+        logger.error("Unexpected OCR provider failure")
+        return _provider_error(
+            "provider_unavailable",
+            "O serviço de OCR está temporariamente indisponível.",
+        )
 
 
 def generate_financial_insights(financial_data: dict) -> dict:
