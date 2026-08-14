@@ -13,6 +13,7 @@ from runtime import (
     configure_runtime,
     configured_cors_origins,
 )
+from secure_ocr_routes import upload_receipt_for_ocr
 from secure_recurring_routes import (
     create_recurring_bill_user_scoped,
     generate_recurring_instances_user_scoped,
@@ -89,9 +90,13 @@ def test_runtime_replaces_legacy_security_sensitive_routes(monkeypatch):
     async def legacy_recurring():
         return {"legacy": True}
 
+    async def legacy_ocr():
+        return {"legacy": "ocr"}
+
     app.add_api_route("/bills/{bill_id}/pay", legacy_pay, methods=["POST"])
     app.add_api_route("/recurring-bills", legacy_recurring, methods=["POST"])
     app.add_api_route("/recurring-bills/generate", legacy_recurring, methods=["POST"])
+    app.add_api_route("/upload-receipt", legacy_ocr, methods=["POST"])
     configure_runtime(app)
 
     expected = (
@@ -99,6 +104,7 @@ def test_runtime_replaces_legacy_security_sensitive_routes(monkeypatch):
         ("/bills/{bill_id}/receipt", "GET", get_private_receipt_access),
         ("/recurring-bills", "POST", create_recurring_bill_user_scoped),
         ("/recurring-bills/generate", "POST", generate_recurring_instances_user_scoped),
+        ("/upload-receipt", "POST", upload_receipt_for_ocr),
     )
     for path, method, endpoint in expected:
         routes = _matching_routes(app, path, method)
@@ -121,6 +127,7 @@ def test_configure_runtime_is_idempotent(monkeypatch):
     assert len(_matching_routes(app, "/bills/{bill_id}/receipt", "GET")) == 1
     assert len(_matching_routes(app, "/recurring-bills", "POST")) == 1
     assert len(_matching_routes(app, "/recurring-bills/generate", "POST")) == 1
+    assert len(_matching_routes(app, "/upload-receipt", "POST")) == 1
 
 
 def test_runtime_rejects_missing_bearer_and_keeps_public_paths_public(monkeypatch):

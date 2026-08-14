@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from auth_middleware import SupabaseAuthMiddleware
 from main import APIKeyMiddleware, PUBLIC_PATHS, app as legacy_app
+from secure_ocr_routes import upload_receipt_for_ocr
 from secure_recurring_routes import (
     create_recurring_bill_user_scoped,
     generate_recurring_instances_user_scoped,
@@ -83,6 +84,7 @@ def _install_secure_route_overrides(app: FastAPI) -> None:
         ("/bills/{bill_id}/receipt", "GET"),
         ("/recurring-bills", "POST"),
         ("/recurring-bills/generate", "POST"),
+        ("/upload-receipt", "POST"),
     ):
         _remove_route(app, path=path, method=method)
 
@@ -109,6 +111,12 @@ def _install_secure_route_overrides(app: FastAPI) -> None:
         generate_recurring_instances_user_scoped,
         methods=["POST"],
         tags=["Recurring Bills"],
+    )
+    app.add_api_route(
+        "/upload-receipt",
+        upload_receipt_for_ocr,
+        methods=["POST"],
+        tags=["Bills", "OCR"],
     )
 
 
