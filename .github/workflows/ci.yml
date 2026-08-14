@@ -288,6 +288,20 @@ jobs:
       - name: Capture mobile dependency audit
         working-directory: mobile
         run: npm audit --json > npm-audit.json || true
+      - name: Require zero critical mobile vulnerabilities
+        working-directory: mobile
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const audit = JSON.parse(fs.readFileSync('npm-audit.json', 'utf8'));
+          const counts = audit.metadata?.vulnerabilities || {};
+          console.log(`MOBILE_AUDIT_COUNTS=${JSON.stringify(counts)}`);
+          if ((counts.critical || 0) > 0) {
+            console.error('Critical mobile dependency findings block this baseline.');
+            process.exit(1);
+          }
+          NODE
       - name: Upload mobile audit evidence
         if: always()
         uses: actions/upload-artifact@v4

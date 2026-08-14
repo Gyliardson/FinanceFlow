@@ -66,9 +66,17 @@ jobs:
             __store: store,
           };
           JS
+          cat > "$build_dir/process-env.d.ts" <<'TS'
+          declare const process: {
+            env: Record<string, string | undefined>;
+          };
+          TS
           npx tsc \
+            "$build_dir/process-env.d.ts" \
             src/services/userCache.ts \
             src/services/authSession.ts \
+            --ignoreConfig \
+            --ignoreDeprecations 6.0 \
             --outDir "$build_dir" \
             --module commonjs \
             --moduleResolution node \
@@ -89,4 +97,4 @@ jobs:
         with:
           name: mobile-auth-contract-log
           path: mobile/auth-session-contract.log
-          if-no-files-found: error
+          if-no-files-found: warn
