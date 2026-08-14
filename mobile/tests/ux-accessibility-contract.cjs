@@ -7,6 +7,7 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const home = read('src/screens/HomeScreen.tsx');
 const detail = read('src/screens/DetailScreen.tsx');
 const income = read('src/screens/IncomeScreen.tsx');
+const financialDate = read('src/services/financialDate.ts');
 
 const requireMatch = (source, pattern, message) => {
   assert.match(source, pattern, message);
@@ -35,10 +36,15 @@ requireMatch(detail, /KeyboardAvoidingView/, 'Creation form must be keyboard-saf
 assert.doesNotMatch(detail, /console\.(?:log|error)\s*\(/, 'Creation/OCR screen must not log raw provider/request errors');
 assert.doesNotMatch(detail, /Gemini/, 'User-facing creation flow must not be coupled to a specific AI provider');
 
-// Financial date-only values must never round-trip through UTC Date parsing.
-// UTC conversion can move a Brazilian calendar date to the previous/next day.
-requireMatch(income, /const localIsoDate =/, 'Income creation must derive a local date-only value');
+// Financial date-only values use the product IANA calendar, never UTC slicing or
+// the device-local calendar. Keep this UX-level contract aligned with the deeper
+// deterministic financial-date contract.
+requireMatch(financialDate, /FINANCIAL_TIME_ZONE = 'America\/Sao_Paulo'/, 'Financial date helper must use the product IANA timezone');
+requireMatch(financialDate, /timeZone: FINANCIAL_TIME_ZONE/, 'Financial date derivation must explicitly bind Intl to the product timezone');
+requireMatch(income, /from '\.\.\/services\/financialDate'/, 'Income creation must use the canonical financial date boundary');
+requireMatch(income, /date:\s*financialDateOnly\(\)/, 'Income creation must derive its business date from the canonical financial calendar');
 requireMatch(income, /const formatDateOnly =/, 'Income display must format date-only strings without UTC parsing');
+assert.doesNotMatch(income, /const localIsoDate =/, 'Device-local date helpers must not replace the fixed product financial timezone');
 assert.doesNotMatch(income, /toISOString\(\)\.split\(/, 'Income creation must not derive the business date from UTC ISO time');
 assert.doesNotMatch(income, /new Date\(item\.date\)/, 'Stored date-only income values must not be parsed as UTC Date objects');
 
