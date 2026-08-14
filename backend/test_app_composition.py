@@ -46,3 +46,14 @@ def test_legacy_shared_api_key_is_not_part_of_production_composition():
     assert "APIKeyMiddleware" not in runtime_source
     assert "API_SECRET_KEY" not in runtime_source
     assert "X-API-KEY" not in runtime_source
+
+
+def test_security_sensitive_route_modules_do_not_import_main():
+    for filename in (
+        "secure_routes.py",
+        "secure_ocr_routes.py",
+        "secure_recurring_routes.py",
+    ):
+        source = (BACKEND_DIR / filename).read_text(encoding="utf-8")
+        assert "from main import" not in source
+        assert "import main" not in source
