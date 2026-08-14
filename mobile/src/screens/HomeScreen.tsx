@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../services/AuthContext';
-import { getUserCache, setUserCache } from '../services/userCache';
+import { getUserCacheSnapshot, trySetUserCache } from '../services/userCache';
 import NetworkStatus from '../components/NetworkStatus';
 import api from '../services/api';
 
@@ -71,6 +71,7 @@ export default function HomeScreen({ navigation }: any) {
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('pending');
   const [loadState, setLoadState] = useState<LoadState>('ready');
+  const [offlineCachedAt, setOfflineCachedAt] = useState<number | null>(null);
   const [configModalVisible, setConfigModalVisible] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [initialBalance, setInitialBalance] = useState('');
@@ -90,16 +91,16 @@ export default function HomeScreen({ navigation }: any) {
       const response = await api.get('/bills');
       const bills = response.data?.data || [];
       setAllBills(bills);
-      if (userId) await setUserCache(userId, 'bills', bills);
-      return { online: true, hasData: true };
+      if (userId) void trySetUserCache(userId, 'bills', bills);
+      return { online: true, hasData: true, cachedAt: null as number | null };
     } catch {
-      const cached = userId ? await getUserCache<Bill[]>(userId, 'bills') : null;
+      const cached = userId ? await getUserCacheSnapshot<Bill[]>(userId, 'bills') : null;
       if (cached) {
-        setAllBills(cached);
-        return { online: false, hasData: true };
+        setAllBills(cached.data);
+        return { online: false, hasData: true, cachedAt: cached.cachedAt };
       }
       setAllBills([]);
-      return { online: false, hasData: false };
+      return { online: false, hasData: false, cachedAt: null as number | null };
     }
   };
 
@@ -109,15 +110,15 @@ export default function HomeScreen({ navigation }: any) {
       const settings = response.data?.data as SettingsCache | undefined;
       if (settings) {
         hydrateSettings(settings);
-        if (userId) await setUserCache(userId, 'settings', settings);
+        if (userId) void trySetUserCache(userId, 'settings', settings);
       } else {
         setConfigModalVisible(true);
       }
       return { online: true, hasData: Boolean(settings) };
     } catch {
-      const cached = userId ? await getUserCache<SettingsCache>(userId, 'settings') : null;
+      const cached = userId ? await getUserCacheSnapshot<SettingsCache>(userId, 'settings') : null;
       if (cached) {
-        hydrateSettings(cached);
+        hydrateSettings(cached.data);
         return { online: false, hasData: true };
       }
       return { online: false, hasData: false };
@@ -130,7 +131,9 @@ export default function HomeScreen({ navigation }: any) {
       const [billsResult, settingsResult] = await Promise.all([fetchBills(), fetchSettings()]);
       const fullyOnline = billsResult.online && settingsResult.online;
       const usableOfflineData = billsResult.hasData;
-      setLoadState(fullyOnline ? 'ready' : usableOfflineData ? 'offline-cache' : 'unavailable');
+      const nextState: LoadState = fullyOnline ? 'ready' : usableOfflineData ? 'offline-cache' : 'unavailable';
+      setLoadState(nextState);
+      setOfflineCachedAt(nextState === 'offline-cache' ? billsResult.cachedAt : null);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -344,7 +347,11 @@ export default function HomeScreen({ navigation }: any) {
         )}
       </View>
 
-      <NetworkStatus isOffline={loadState === 'offline-cache'} onRetry={loadAllData} />
+      <NetworkStatus
+        isOffline={loadState === 'offline-cache'}
+        cachedAt={offlineCachedAt}
+        onRetry={loadAllData}
+      />
 
       <View style={styles.monthFilter} accessibilityLabel={`Período selecionado: ${selectedPeriod}`}>
         <TouchableOpacity
