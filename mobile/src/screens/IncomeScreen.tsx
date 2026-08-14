@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
+import { financialDateOnly, formatFinancialDatePtBr } from '../services/financialDate';
 
 interface Income {
   id: string;
@@ -21,16 +22,12 @@ const formatMoney = (value: number) => new Intl.NumberFormat('pt-BR', {
   minimumFractionDigits: 2,
 }).format(Number(value || 0));
 
-const localIsoDate = (value: Date = new Date()) => {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, '0');
-  const day = String(value.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
 const formatDateOnly = (value: string) => {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  return match ? `${match[3]}/${match[2]}/${match[1]}` : value;
+  try {
+    return formatFinancialDatePtBr(value);
+  } catch {
+    return value;
+  }
 };
 
 export default function IncomeScreen({ navigation }: any) {
@@ -92,7 +89,7 @@ export default function IncomeScreen({ navigation }: any) {
       const payload = {
         title: title.trim(),
         amount: nAmount,
-        date: localIsoDate(),
+        date: financialDateOnly(),
         description: description.trim() || null,
         type,
         is_recurring: false
