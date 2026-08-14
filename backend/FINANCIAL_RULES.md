@@ -59,11 +59,22 @@ The logical identity is:
 
 `authenticated owner + operation type + Idempotency-Key`
 
-The backend computes a canonical SHA-256 fingerprint of the validated logical payload. The client never supplies an owner id or trusted fingerprint.
+The product currently exposes reserve **addition only**. There is no reserve-withdrawal/decrement endpoint. A future decrement mutation must adopt this same durable boundary before it is exposed; it is not silently treated as supported today.
+
+### Database-owned payload fingerprint
+
+The canonical request fingerprint is computed **inside PostgreSQL**, not supplied by the mobile client or trusted from the FastAPI caller. Each RPC canonicalizes its own logical parameters and derives a SHA-256 fingerprint from that canonical payload.
+
+Consequences:
+
+- the caller cannot choose a fingerprint to make a changed payload look equivalent;
+- owner identity is always `auth.uid()` and is not an RPC argument;
+- equivalent decimal spellings such as `10`, `10.0` and `10.00` canonicalize to the same logical amount;
+- the derived first due date of a recurring template is intentionally excluded from that template's fingerprint, because retrying the same unresolved intent after a calendar rollover must replay the already-committed template rather than become a false mismatch.
 
 ### Transaction boundary
 
-Migration `006_financial_idempotency.sql` provides PostgreSQL RPCs that coordinate three things in the **same transaction**:
+Migration `006_financial_idempotency.sql` provides PostgreSQL `SECURITY INVOKER` RPCs that coordinate three things in the **same transaction**:
 
 1. claim the owner/operation/key row;
 2. apply the financial effect;
@@ -94,7 +105,11 @@ For these four operations the mobile client creates/persists the operation ident
 - definitive non-retryable 4xx rejection → close that rejected identity;
 - after confirmed completion, intentionally repeating the same business values is a new intent and receives a new key.
 
+While a mobile operation is still indeterminate, the same owner/operation/canonical payload is conservatively treated as the same unresolved intent. This prevents an accidental duplicate during uncertainty. If a user truly needs an identical second business operation, the first one must reach a definitive outcome before the mobile client starts the second identity.
+
 The mobile pending-operation retention window is currently 90 days. Server replay records are not automatically deleted by migration 006; they remain durable until an explicit operator-managed lifecycle policy is introduced. The server therefore does not expire a key while a supported mobile pending record can still legitimately retry it.
+
+Logout does not erase unresolved operation identities globally. They remain owner-scoped so a later login by the same owner can safely reconcile an ambiguous outcome, while another owner cannot reuse or observe them.
 
 ## Payment convergence and ambiguous receipt commits
 
@@ -162,9 +177,9 @@ The FinanceFlow gates prove these invariants with:
 - exact-money unit tests and canonical API payload tests;
 - financial-calendar boundary tests;
 - receipt payment tests that distinguish fail-before-commit from commit-then-response-failure and verify signed access to retained evidence;
-- a disposable PostgreSQL 16 financial-idempotency contract covering replay, payload mismatch, owner isolation, intentional new-key repetition and concurrent same-key requests for reserve/bill/income/recurring-template mutations;
+- a disposable PostgreSQL 16 financial-idempotency contract covering database-owned fingerprinting, replay, payload mismatch, owner isolation, intentional new-key repetition and concurrent same-key requests for reserve/bill/income/recurring-template mutations;
 - backend adapter tests that model commit-before-timeout for all four durable mutation classes;
-- a mobile contract proving owner-scoped unresolved key reuse across concurrency, reconnect-style retry and module/app restart;
+- a mobile contract proving owner-scoped unresolved key reuse across same-process concurrency, reconnect-style retry and module/app restart;
 - PostgreSQL `NUMERIC(...,2)` persistence round-trip checks;
 - recurring calendar edge cases, historical-duplicate fail-closed behavior, concurrent generated-child writers, retry uniqueness and bulk-conflict recovery.
 
