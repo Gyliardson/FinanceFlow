@@ -22,16 +22,36 @@ GEMINI_MODEL = "gemini-3.6-flash"
 
 
 OCR_PROMPT = """
-Atue como um extrator OCR de documentos financeiros.
-Retorne EXCLUSIVAMENTE um objeto JSON válido, sem texto adicional, com estas chaves:
-{
-  "amount": string decimal ou null,
-  "due_date": "YYYY-MM-DD" ou null,
-  "barcode": string ou null,
-  "confidence": número entre 0 e 1 ou null
-}
-Nunca invente campos ilegíveis. Quando houver dúvida relevante, use null e reduza confidence.
+Extraia os dados financeiros legíveis do documento com postura conservadora.
+Não invente valores. Se um campo estiver ausente, ilegível ou ambíguo, retorne null para esse campo e reduza a confiança.
+A confiança deve refletir apenas a qualidade da extração do documento, não uma estimativa sobre o usuário.
 """.strip()
+
+OCR_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "amount": {
+            "type": ["string", "null"],
+            "description": "Valor monetário decimal usando ponto como separador, ou null.",
+        },
+        "due_date": {
+            "type": ["string", "null"],
+            "description": "Data em formato ISO YYYY-MM-DD, ou null.",
+        },
+        "barcode": {
+            "type": ["string", "null"],
+            "description": "Linha digitável/código de barras como texto, ou null.",
+        },
+        "confidence": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Confiança da extração entre 0 e 1, ou null.",
+        },
+    },
+    "required": ["amount", "due_date", "barcode", "confidence"],
+}
 
 
 class GeminiOcrProvider:
@@ -53,6 +73,14 @@ class GeminiOcrProvider:
                         OCR_PROMPT,
                         types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
                     ],
+                    config={
+                        "response_format": {
+                            "text": {
+                                "mime_type": "application/json",
+                                "schema": OCR_RESPONSE_SCHEMA,
+                            }
+                        }
+                    },
                 )
             text = getattr(response, "text", None)
             if not isinstance(text, str) or not text.strip():
