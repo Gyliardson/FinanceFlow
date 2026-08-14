@@ -3,7 +3,13 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from dasmei_scraper import scrape_dasmei
-from imap_scraper import _is_allowed_message, _pdf_attachments, _source_id, scrape_vivo_email
+from imap_scraper import (
+    _is_allowed_message,
+    _looks_encrypted_pdf,
+    _pdf_attachments,
+    _source_id,
+    scrape_vivo_email,
+)
 from integration_contracts import IntegrationResult, InvoiceCandidate
 from scheduler import ServiceSpec, _run_service, run_scheduler_cycle
 from tim_scraper import scrape_tim
@@ -95,6 +101,11 @@ def test_pdf_attachment_requires_filename_mime_size_and_pdf_signature(monkeypatc
     assert len(attachments) == 1
     assert attachments[0][0] == "invoice.pdf"
     assert attachments[0][1].startswith(b"%PDF-")
+
+
+def test_encrypted_pdf_marker_is_quarantined_without_parser_dependency():
+    assert _looks_encrypted_pdf(b"%PDF-1.7\ntrailer << /Encrypt 12 0 R >>") is True
+    assert _looks_encrypted_pdf(b"%PDF-1.7\nsynthetic unencrypted fixture") is False
 
 
 def test_imap_source_id_is_deterministic_and_content_sensitive():
