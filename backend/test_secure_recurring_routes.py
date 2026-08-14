@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 import secure_recurring_routes
-from main import RecurringBillCreateRequest
+from api_models import RecurringBillCreateRequest
 
 
 class Response:
