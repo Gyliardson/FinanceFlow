@@ -1,0 +1,30 @@
+name: Supply-chain policy
+
+on:
+  pull_request:
+    branches:
+      - portfolio/revamp-2026
+      - main
+    paths:
+      - '.github/workflows/**'
+      - '.github/scripts/check_supply_chain.py'
+  push:
+    branches:
+      - portfolio/revamp-2026
+      - 'work/**'
+    paths:
+      - '.github/workflows/**'
+      - '.github/scripts/check_supply_chain.py'
+
+permissions:
+  contents: read
+
+jobs:
+  action-pins:
+    name: Immutable Actions and reproducible tooling
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify workflow supply-chain policy
+        run: python .github/scripts/check_supply_chain.py
