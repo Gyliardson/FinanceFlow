@@ -35,6 +35,7 @@ class InvalidCredentialsError extends Error {}
 class AuthServiceUnavailableError extends Error {}
 
 let currentSession: AuthSession | null = null;
+let refreshInFlight: { refreshToken: string; promise: Promise<AuthSession> } | null = null;
 
 function getSupabaseConfig() {
   const url = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim().replace(/\/$/, '');
@@ -58,6 +59,14 @@ function isAuthSession(value: unknown): value is AuthSession {
     typeof session.refreshToken === 'string' && session.refreshToken &&
     typeof session.expiresAt === 'number' && Number.isFinite(session.expiresAt) &&
     session.user && typeof session.user.id === 'string' && session.user.id.trim()
+  );
+}
+
+function sameSessionIdentity(left: AuthSession | null, right: AuthSession): boolean {
+  return Boolean(
+    left &&
+    left.user.id === right.user.id &&
+    left.refreshToken === right.refreshToken
   );
 }
 
@@ -130,7 +139,7 @@ async function clearLocalFinancialState(userId?: string): Promise<void> {
   await clearLegacyGlobalFinancialCache();
 }
 
-async function refreshSession(refreshToken: string): Promise<AuthSession> {
+async function requestRefreshedSession(refreshToken: string): Promise<AuthSession> {
   const payload = await authRequest<SupabaseTokenResponse>(
     '/token?grant_type=refresh_token',
     {
@@ -141,9 +150,36 @@ async function refreshSession(refreshToken: string): Promise<AuthSession> {
   if (!payload) {
     throw new Error('Supabase returned an empty authentication session');
   }
-  const session = normalizeTokenResponse(payload);
-  await persistSession(session);
-  return session;
+  return normalizeTokenResponse(payload);
+}
+
+async function refreshSessionSingleFlight(refreshToken: string): Promise<AuthSession> {
+  if (refreshInFlight?.refreshToken === refreshToken) {
+    return refreshInFlight.promise;
+  }
+
+  const promise = requestRefreshedSession(refreshToken);
+  refreshInFlight = { refreshToken, promise };
+  try {
+    return await promise;
+  } finally {
+    if (refreshInFlight?.promise === promise) {
+      refreshInFlight = null;
+    }
+  }
+}
+
+async function commitRefreshedSession(
+  sourceSession: AuthSession,
+  refreshedSession: AuthSession,
+): Promise<boolean> {
+  if (sameSessionIdentity(currentSession, sourceSession)) {
+    await persistSession(refreshedSession);
+    return true;
+  }
+
+  // Another caller may already have committed this same single-flight result.
+  return sameSessionIdentity(currentSession, refreshedSession);
 }
 
 export async function initializeAuthSession(): Promise<AuthSession | null> {
@@ -180,19 +216,29 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
   }
 
   try {
-    const refreshed = await refreshSession(parsed.refreshToken);
-    await hydrateLegacyFinancialCacheForUser(refreshed.user.id);
-    return refreshed;
+    const refreshed = await refreshSessionSingleFlight(parsed.refreshToken);
+    if (await commitRefreshedSession(parsed, refreshed)) {
+      await hydrateLegacyFinancialCacheForUser(refreshed.user.id);
+      return refreshed;
+    }
+    return currentSession;
   } catch (error) {
     if (error instanceof InvalidCredentialsError) {
-      await clearLocalFinancialState(parsed.user.id);
-      await persistSession(null);
-      return null;
+      // Only the session that initiated this refresh may be invalidated. A
+      // delayed failure from an older session must never clear a newer login.
+      if (sameSessionIdentity(currentSession, parsed)) {
+        await clearLocalFinancialState(parsed.user.id);
+        await persistSession(null);
+      }
+      return currentSession;
     }
-    // A transient Auth outage must not destroy the owner's offline cache. The
-    // persisted identity remains the only namespace allowed to hydrate it.
-    await hydrateLegacyFinancialCacheForUser(parsed.user.id);
-    return parsed;
+    // A transient Auth outage must not destroy the owner's offline cache. Only
+    // hydrate if this persisted identity is still the active session.
+    if (sameSessionIdentity(currentSession, parsed)) {
+      await hydrateLegacyFinancialCacheForUser(parsed.user.id);
+      return parsed;
+    }
+    return currentSession;
   }
 }
 
@@ -227,23 +273,31 @@ export async function signInWithPassword(
 }
 
 export async function getValidAccessToken(): Promise<string | null> {
-  if (!currentSession) return null;
+  const sourceSession = currentSession;
+  if (!sourceSession) return null;
 
-  if (currentSession.expiresAt <= Date.now() + REFRESH_SKEW_MS) {
+  if (sourceSession.expiresAt <= Date.now() + REFRESH_SKEW_MS) {
     try {
-      const refreshed = await refreshSession(currentSession.refreshToken);
-      return refreshed.accessToken;
+      const refreshed = await refreshSessionSingleFlight(sourceSession.refreshToken);
+      if (await commitRefreshedSession(sourceSession, refreshed)) {
+        return refreshed.accessToken;
+      }
+      // The account changed while refresh was in flight. Never return a token
+      // from the stale session; use only the session that is active now.
+      return currentSession?.accessToken ?? null;
     } catch (error) {
-      if (error instanceof InvalidCredentialsError) {
-        const userId = currentSession.user.id;
+      if (
+        error instanceof InvalidCredentialsError &&
+        sameSessionIdentity(currentSession, sourceSession)
+      ) {
+        await clearLocalFinancialState(sourceSession.user.id);
         await persistSession(null);
-        await clearLocalFinancialState(userId);
       }
       return null;
     }
   }
 
-  return currentSession.accessToken;
+  return sourceSession.accessToken;
 }
 
 export function getCurrentAuthSession(): AuthSession | null {
@@ -261,10 +315,14 @@ export async function signOutAuthSession(): Promise<void> {
     } catch {
       // Local logout must still complete if the remote session is invalid/offline.
     }
-    await clearLocalFinancialState(session.user.id);
+    // Clear only if this is still the session being signed out. A newer login
+    // must not be erased by a delayed remote logout response.
+    if (sameSessionIdentity(currentSession, session)) {
+      await clearLocalFinancialState(session.user.id);
+      await persistSession(null);
+    }
   } else {
     await clearLegacyGlobalFinancialCache();
+    await persistSession(null);
   }
-
-  await persistSession(null);
 }
