@@ -1,8 +1,13 @@
 import asyncio
+from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 
-from dasmei_scraper import scrape_dasmei
+from dasmei_scraper import (
+    _requires_human_verification,
+    _target_competence,
+    scrape_dasmei,
+)
 from imap_scraper import (
     _is_allowed_message,
     _looks_encrypted_pdf,
@@ -12,8 +17,10 @@ from imap_scraper import (
 )
 from integration_contracts import IntegrationResult, InvoiceCandidate
 from scheduler import ServiceSpec, _run_service, run_scheduler_cycle
+from tim_scraper import _classify_portal_text as classify_tim_portal
 from tim_scraper import scrape_tim
-from unopar_scraper import scrape_unopar
+from unopar_scraper import _classify_portal_text as classify_unopar_portal
+from unopar_scraper import _extract_visible_invoice, scrape_unopar
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -32,6 +39,37 @@ def test_browser_adapters_are_disabled_without_explicit_opt_in(monkeypatch):
         result = asyncio.run(scraper())
         assert result["status"] == "disabled"
         assert "candidate" not in result
+
+
+def test_dasmei_competence_and_human_verification_are_deterministic():
+    assert _target_competence(datetime(2026, 1, 10)) == (2025, 12)
+    assert _target_competence(datetime(2026, 8, 10)) == (2026, 7)
+    assert _requires_human_verification("Acesso normal") is False
+    assert _requires_human_verification("Verificação de segurança obrigatória") is True
+    assert _requires_human_verification("Acesso normal", captcha_frames=1) is True
+
+
+def test_tim_portal_state_fixtures_fail_closed():
+    assert classify_tim_portal("CAPTCHA obrigatório") == "blocked"
+    assert classify_tim_portal("Serviço indisponível, tente novamente") == "unavailable"
+    assert classify_tim_portal("Suas contas estão todas pagas") == "all_paid"
+    assert classify_tim_portal("Área de contas") is None
+
+
+def test_unopar_portal_state_and_invoice_parser_fixtures():
+    assert classify_unopar_portal("Verificação de segurança") == "blocked"
+    assert classify_unopar_portal("Portal indisponível") == "unavailable"
+    assert classify_unopar_portal("Financeiro") is None
+
+    extracted = _extract_visible_invoice(
+        "Mensalidade 8\nEm aberto\nValor: R$ 1.234,56\nVencimento: 31/08/2026"
+    )
+    assert extracted == {
+        "description": "Mensalidade 8",
+        "amount": "1234.56",
+        "due_date": "2026-08-31",
+    }
+    assert _extract_visible_invoice("Mensalidade 8\nEm aberto\nVencimento: 31/08/2026") is None
 
 
 def test_imap_collector_is_disabled_without_credentials_or_network(monkeypatch):
