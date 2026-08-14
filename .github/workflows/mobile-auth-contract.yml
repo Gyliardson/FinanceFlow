@@ -102,6 +102,11 @@ jobs:
         run: |
           set -o pipefail
           node tests/idempotent-mutation-contract.cjs 2>&1 | tee idempotent-mutation-contract.log
+      - name: Run pending financial state auth isolation contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/pending-auth-isolation-contract.cjs 2>&1 | tee pending-auth-isolation-contract.log
       - name: Upload auth, cache and idempotency contract diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -111,4 +116,5 @@ jobs:
             mobile/auth-session-contract.log
             mobile/offline-cache-contract.log
             mobile/idempotent-mutation-contract.log
+            mobile/pending-auth-isolation-contract.log
           if-no-files-found: warn
