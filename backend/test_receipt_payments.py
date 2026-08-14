@@ -27,6 +27,7 @@ class Query:
         self.client = client
         self.operation = operation
         self.payload = payload
+        self.filters = []
 
     def select(self, *_args, **_kwargs):
         self.operation = "select"
@@ -37,7 +38,12 @@ class Query:
         self.payload = payload
         return self
 
-    def eq(self, *_args, **_kwargs):
+    def eq(self, column, value):
+        self.filters.append(("eq", column, value))
+        return self
+
+    def neq(self, column, value):
+        self.filters.append(("neq", column, value))
         return self
 
     def limit(self, *_args, **_kwargs):
@@ -48,6 +54,7 @@ class Query:
             return Response(self.client.select_rows)
         if self.operation == "update":
             self.client.update_payloads.append(self.payload)
+            self.client.update_filters.append(list(self.filters))
             if self.client.update_error is not None:
                 raise self.client.update_error
             return Response(self.client.update_rows)
@@ -60,6 +67,7 @@ class DataClient:
         self.update_rows = update_rows if update_rows is not None else [{"id": BILL_ID}]
         self.update_error = update_error
         self.update_payloads = []
+        self.update_filters = []
 
     def table(self, name):
         assert name == "finance_bills"
@@ -133,6 +141,9 @@ def test_persist_private_receipt_payment_uses_owner_scoped_path_and_no_public_ur
             "payment_date": "2026-08-14",
             "receipt_path": result.receipt_path,
         }
+    ]
+    assert data_client.update_filters == [
+        [("eq", "id", BILL_ID), ("neq", "status", "paid")]
     ]
     assert bucket.removals == []
 
