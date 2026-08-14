@@ -33,6 +33,8 @@ export interface PreparedPendingMutation extends PendingOperation {
   sessionGeneration: number;
 }
 
+type IntentClosedListener = (intentId: string) => void;
+
 const LOCAL_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const INTENT_ID_RE = /^fi_[A-Za-z0-9_-]{12,96}$/;
 export const IDEMPOTENT_OPERATIONS: IdempotentOperation[] = [
@@ -42,6 +44,7 @@ export const IDEMPOTENT_OPERATIONS: IdempotentOperation[] = [
   'recurring_template_create',
 ];
 const storeQueues = new Map<string, Promise<void>>();
+const intentClosedListeners = new Set<IntentClosedListener>();
 
 const normalizeValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(normalizeValue);
@@ -62,6 +65,15 @@ export const canonicalMutationPayload = (payload: Record<string, unknown>) =>
 export const createFinancialIntentId = () => {
   const randomPart = `${Math.random().toString(36).slice(2, 14)}${Math.random().toString(36).slice(2, 14)}`;
   return `fi_${Date.now().toString(36)}_${randomPart}`;
+};
+
+export const subscribeFinancialIntentClosed = (listener: IntentClosedListener) => {
+  intentClosedListeners.add(listener);
+  return () => intentClosedListeners.delete(listener);
+};
+
+const notifyIntentClosed = (intentId: string) => {
+  for (const listener of intentClosedListeners) listener(intentId);
 };
 
 const validateIntentId = (value: string) => {
@@ -269,14 +281,19 @@ export const clearPendingOperation = async (
   ownerId: string,
   operation: IdempotentOperation,
   key: string,
-) => withStoreLock(ownerId, operation, async () => {
-  const pending = await readPendingUnlocked(ownerId, operation);
-  await writePendingUnlocked(
-    ownerId,
-    operation,
-    pending.filter((item) => item.key !== key),
-  );
-});
+) => {
+  let closedIntentIds: string[] = [];
+  await withStoreLock(ownerId, operation, async () => {
+    const pending = await readPendingUnlocked(ownerId, operation);
+    closedIntentIds = pending.filter((item) => item.key === key).map((item) => item.intentId);
+    await writePendingUnlocked(
+      ownerId,
+      operation,
+      pending.filter((item) => item.key !== key),
+    );
+  });
+  closedIntentIds.forEach(notifyIntentClosed);
+};
 
 export const preparePendingMutation = async (
   snapshot: MutationSessionSnapshot,
@@ -305,7 +322,9 @@ export const preparePendingMutation = async (
 export const isDefinitiveClientRejection = (error: any) => {
   const status = Number(error?.response?.status || 0);
   if (status < 400 || status >= 500) return false;
-  return status !== 408 && status !== 425 && status !== 429;
+  // Auth/session failures do not prove that the original pending financial intent
+  // never committed; retain it so the same owner can reconcile after re-auth.
+  return ![401, 403, 408, 425, 429].includes(status);
 };
 
 export const runIdempotentMutation = async <T>(
