@@ -20,7 +20,20 @@ FinanceFlow handles financial records and payment receipts. The portfolio runtim
 
 Production starts through the Uvicorn factory `runtime:create_app`, not `main:app`. That composition root removes the legacy `X-API-KEY` middleware and wildcard CORS, installs verified Supabase Bearer authentication, preserves only explicit browser origins, and replaces security-sensitive legacy receipt/recurring endpoints with user-scoped implementations. `main.py` remains the legacy route module while the migration is incremental; direct `main:app` execution is not the supported production authorization boundary.
 
-The PR must remain draft until the mobile has a real Supabase session lifecycle and the complete application boundary, cache isolation, deployment/build evidence and remaining negative authorization checks are proven.
+## Mobile session and offline cache
+
+- The mobile app authenticates with Supabase Auth and supplies its current access token to the API client as a Bearer credential.
+- Access and refresh tokens are persisted in `expo-secure-store`, not in general-purpose AsyncStorage.
+- A structurally valid legacy AsyncStorage session may migrate once into SecureStore. After migration, the plaintext session copy is deleted.
+- SecureStore is authoritative: if secure session state exists but is malformed, startup fails closed instead of reviving an older plaintext session.
+- Refreshes are single-flight. A stale failed refresh is not allowed to clear a newer successful login.
+- Invalid/expired refresh credentials clear the affected user's session and financial cache. A transient Auth/network outage preserves the same authenticated owner's offline cache without authorizing a different identity.
+- Logout completes locally even when the remote Auth service is unavailable and removes the current owner's financial cache and local session.
+- Financial offline values are stored only under `@financeflow:user:<user-id>:bills|settings` and are read/written by screens using the authenticated `session.user.id`.
+- Historical global `@bills_cache` / `@settings_cache` values are accepted only by a one-time owner-tagged migration. Mismatched or untagged legacy values fail closed, and current code never re-creates the global keys.
+- The Expo app config explicitly resolves the SecureStore native plugin, and the mobile auth contract validates restart, migration, expiry, transient outage, token rotation, refresh concurrency, logout and account-switch isolation.
+
+Raw authentication/API error objects must not be written to client logs because request metadata can contain credentials or financial context. This remains a review requirement for screens touched by the security migration.
 
 ## Ownership migration
 
@@ -90,7 +103,8 @@ Security-sensitive operations fail closed:
 - a payment database failure after upload triggers best-effort orphan cleanup;
 - a concurrent/zero-row payment update fails closed instead of claiming success;
 - production HTTP exceptions with status 5xx are sanitized so provider/database details are not returned to clients;
-- authorization failures must not fall back to the legacy static API key.
+- authorization failures must not fall back to the legacy static API key;
+- a legacy cache/session owner mismatch must not be attributed to the currently authenticated user.
 
 ## CI evidence
 
@@ -111,6 +125,8 @@ The CI security track is expected to prove, with disposable PostgreSQL where app
 - private receipt access tests prove an unauthorized/missing bill never invokes privileged storage;
 - recurring tests prove the authenticated client is passed explicitly instead of being recovered after a background handoff;
 - internal HTTP 5xx details are sanitized while client/domain 4xx details remain usable;
+- mobile auth/cache tests prove encrypted session migration, fail-closed corrupt state, offline restart isolation, invalid refresh cleanup, refresh single-flight, stale-refresh/new-login race safety, logout and account-switch isolation;
+- current screens do not re-create legacy global financial cache keys;
 - backend tests, dependency evidence and secret scanning remain green.
 
-This document describes the intended enforced model. A PR must remain draft while any required mobile application-session wiring, cache isolation, deployment proof or negative authorization test is incomplete.
+This document describes the intended enforced model. PR #10 remains draft until the remaining raw client-error logging is removed, exact-head gates are green, and a final adversarial security review finds no unresolved blocker.
