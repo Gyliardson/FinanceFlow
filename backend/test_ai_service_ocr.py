@@ -31,8 +31,8 @@ class FakeGenAiClient:
     def __exit__(self, _exc_type, _exc, _tb):
         self.closed = True
 
-    def generate_content(self, *, model, contents):
-        self.calls.append((model, contents))
+    def generate_content(self, *, model, contents, config=None):
+        self.calls.append((model, contents, config))
         if self.error:
             raise self.error
         return type("FakeResponse", (), {"text": self.response_text})()
@@ -59,7 +59,7 @@ def test_extract_invoice_data_returns_typed_public_suggestion():
     }
 
 
-def test_gemini_adapter_uses_maintained_client_and_multimodal_part(monkeypatch):
+def test_gemini_adapter_uses_maintained_client_multimodal_part_and_schema(monkeypatch):
     clients = []
 
     def fake_client(*, api_key):
@@ -77,10 +77,18 @@ def test_gemini_adapter_uses_maintained_client_and_multimodal_part(monkeypatch):
     assert clients[0].api_key == "synthetic-key"
     assert clients[0].closed is True
     assert len(clients[0].calls) == 1
-    model, contents = clients[0].calls[0]
+    model, contents, config = clients[0].calls[0]
     assert model == "gemini-3.6-flash"
     assert contents[0] == ai_service.OCR_PROMPT
     assert len(contents) == 2
+    assert config == {
+        "response_format": {
+            "text": {
+                "mime_type": "application/json",
+                "schema": ai_service.OCR_RESPONSE_SCHEMA,
+            }
+        }
+    }
 
 
 def test_gemini_adapter_maps_provider_429_without_detail_leak(monkeypatch):
