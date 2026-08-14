@@ -7,12 +7,18 @@ FinanceFlow handles financial records and payment receipts. The portfolio runtim
 ## Identity and authorization
 
 - Supabase Auth is the identity authority for end users.
+- Protected requests use `Authorization: Bearer <access-token>`; alternate schemes and malformed bearer values fail closed.
+- The backend validates the access token with Supabase Auth before constructing a user-scoped Data API client.
+- The verified access token is attached to PostgREST so PostgreSQL RLS can evaluate `auth.uid()` for that request.
+- Request-scoped user/client context is bound only for the request lifetime and reset afterward.
 - Financial tables carry an `owner_id` referencing `auth.users(id)`.
 - PostgreSQL Row Level Security is the final data-isolation boundary.
 - Authenticated policies permit access only when `owner_id = auth.uid()`.
 - Anonymous table access is revoked.
 - The backend service-role credential is server-only and must never be exposed through `EXPO_PUBLIC_*`, client bundles, logs, fixtures or screenshots.
 - A publishable Supabase key is not an authorization decision by itself; protected requests must carry an authenticated user session before application data is accessed.
+
+The reusable bearer-validation and request-context primitives are implemented independently of the legacy middleware so they can be tested before the route migration is complete. Until `main.py` is switched from the legacy global `X-API-KEY` middleware to the verified bearer middleware and owner-aware writes, the PR must remain draft.
 
 ## Ownership migration
 
@@ -38,9 +44,13 @@ The `receipts` bucket is private. Application startup may create it or force an 
 
 Migration `005_private_receipt_paths.sql` adds `receipt_path`. The durable database value for new private receipts is the object path, not a public or expiring URL. Existing `receipt_url` values are preserved for explicit reconciliation; no migration silently deletes historical payment evidence.
 
+New receipt object keys use the canonical namespace `<owner_uuid>/<bill_uuid>/<opaque_filename>`. Server helpers reject paths outside that exact owner/bill namespace before the service-role storage client may create temporary access.
+
+Signed receipt URLs are bounded to a maximum of 15 minutes, with a default lifetime of 5 minutes. They are transient response material only and must never be persisted or logged.
+
 The completed access flow must be:
 
-1. authorize the caller against the bill owner;
+1. authorize the caller against the bill owner through the user-scoped/RLS client;
 2. upload under an owner-scoped, server-generated object path;
 3. persist only that object path;
 4. generate bounded private access on demand after authorization;
@@ -50,21 +60,28 @@ The completed access flow must be:
 
 Security-sensitive operations fail closed:
 
+- missing/invalid/expired bearer tokens are rejected without leaking provider errors;
+- invalid authentication responses never construct a Data API client;
 - missing storage service-role configuration prevents private storage initialization;
 - unexpected bucket-management failures abort startup instead of silently weakening privacy;
 - unowned historical rows prevent NOT NULL promotion;
 - RLS rejects cross-user reads/writes even if a resource identifier is guessed;
+- receipt paths outside the authenticated owner/bill namespace are rejected before signed access is created;
 - authorization failures must not fall back to the legacy static API key.
 
 ## CI evidence
 
 The CI security track is expected to prove, with disposable PostgreSQL where applicable:
 
+- bearer parsing rejects missing and malformed credentials;
+- invalid/expired auth never reaches the user-scoped data client;
+- authenticated request context is reset after every request;
 - User A cannot read or mutate User B rows;
 - forged `owner_id` inserts are rejected;
 - anonymous financial-table access is rejected;
 - historical unowned rows make migration 004 fail without deletion;
 - explicit backfill allows migration 004 to complete;
+- private receipt keys are owner/bill scoped and signed URL lifetimes are bounded;
 - backend tests, dependency evidence and secret scanning remain green.
 
-This document describes the intended enforced model. A PR must remain draft while any required application-session wiring, private receipt access path, migration proof or negative authorization test is incomplete.
+This document describes the intended enforced model. A PR must remain draft while any required application-session wiring, private receipt route migration, migration proof or negative authorization test is incomplete.
