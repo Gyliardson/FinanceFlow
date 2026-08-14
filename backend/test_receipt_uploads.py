@@ -8,6 +8,7 @@ import pytest
 
 from receipt_uploads import (
     MAX_RECEIPT_IMAGE_PIXELS,
+    MAX_RECEIPT_PDF_PAGES,
     ReceiptValidationError,
     sanitize_receipt_for_external_processing,
     validate_receipt_upload,
@@ -32,6 +33,15 @@ def _pdf_bytes(*, pages: int = 1, with_metadata: bool = False) -> bytes:
         writer.add_blank_page(width=200, height=200)
     if with_metadata:
         writer.add_metadata({"/Author": "Sensitive Author", "/Subject": "Private receipt"})
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def _encrypted_pdf_bytes() -> bytes:
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.encrypt("synthetic-test-password")
     output = BytesIO()
     writer.write(output)
     return output.getvalue()
@@ -136,6 +146,17 @@ def test_image_pixel_budget_rejects_decompression_resource_abuse_before_decode()
 
     with pytest.raises(ReceiptValidationError, match="safe processing limit"):
         validate_receipt_upload(content, "image/png")
+
+
+def test_encrypted_pdf_is_rejected_before_storage_or_provider_processing():
+    with pytest.raises(ReceiptValidationError, match="Encrypted"):
+        validate_receipt_upload(_encrypted_pdf_bytes(), "application/pdf")
+
+
+def test_pdf_page_budget_is_enforced():
+    content = _pdf_bytes(pages=MAX_RECEIPT_PDF_PAGES + 1)
+    with pytest.raises(ReceiptValidationError, match="page count"):
+        validate_receipt_upload(content, "application/pdf")
 
 
 def test_ocr_image_sanitization_removes_exif_while_storage_bytes_remain_original():
