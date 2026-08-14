@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
@@ -30,10 +30,20 @@ logger = logging.getLogger(__name__)
 
 UNOPAR_URL = "https://login.unopar.br"
 NAVIGATION_TIMEOUT_MS = 60_000
+PortalState = Literal["blocked", "unavailable"]
 
 
 def _payload(result: IntegrationResult) -> dict:
     return result.model_dump(mode="json", exclude_none=True)
+
+
+def _classify_portal_text(text: str) -> PortalState | None:
+    normalized = text.lower()
+    if "captcha" in normalized or "verificação de segurança" in normalized:
+        return "blocked"
+    if "indisponível" in normalized or "tente novamente" in normalized:
+        return "unavailable"
+    return None
 
 
 async def _first_visible(*locators):
@@ -97,9 +107,13 @@ async def scrape_unopar() -> dict:
                     timeout=NAVIGATION_TIMEOUT_MS,
                 )
 
-                body = (await page.locator("body").inner_text()).lower()
-                if "captcha" in body or "verificação de segurança" in body:
+                initial_state = _classify_portal_text(
+                    await page.locator("body").inner_text()
+                )
+                if initial_state == "blocked":
                     return _payload(blocked_result("Unopar"))
+                if initial_state == "unavailable":
+                    return _payload(unavailable_result("Unopar portal"))
 
                 identity_input = await _first_visible(
                     page.get_by_label("CPF", exact=False),
@@ -121,9 +135,13 @@ async def scrape_unopar() -> dict:
                 await password_input.press("Enter")
                 await page.wait_for_load_state("domcontentloaded")
 
-                body = (await page.locator("body").inner_text()).lower()
-                if "captcha" in body or "verificação de segurança" in body:
+                authenticated_state = _classify_portal_text(
+                    await page.locator("body").inner_text()
+                )
+                if authenticated_state == "blocked":
                     return _payload(blocked_result("Unopar"))
+                if authenticated_state == "unavailable":
+                    return _payload(unavailable_result("Unopar portal"))
 
                 finance_control = await _first_visible(
                     page.get_by_role("link", name="Financeiro", exact=False),
@@ -136,6 +154,11 @@ async def scrape_unopar() -> dict:
                 await page.wait_for_load_state("domcontentloaded")
 
                 visible_text = await page.locator("body").inner_text()
+                finance_state = _classify_portal_text(visible_text)
+                if finance_state == "blocked":
+                    return _payload(blocked_result("Unopar"))
+                if finance_state == "unavailable":
+                    return _payload(unavailable_result("Unopar portal"))
                 if "em aberto" not in visible_text.lower():
                     return _payload(
                         IntegrationResult(
