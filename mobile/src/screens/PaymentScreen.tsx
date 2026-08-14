@@ -7,6 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
 import { cancelNotificationsForBill } from '../services/NotificationService';
+import { financialDateOnly, financialDaysBetween, formatFinancialDatePtBr } from '../services/financialDate';
 
 interface Bill {
   id: string;
@@ -151,10 +152,11 @@ export default function PaymentScreen({ navigation, route }: any) {
   };
 
   const getDaysUntilDue = (dueDate: string) => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const due = new Date(dueDate + 'T00:00:00');
-    return Math.ceil((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    try {
+      return financialDaysBetween(financialDateOnly(), dueDate);
+    } catch {
+      return 0;
+    }
   };
 
   const renderBill = ({ item }: { item: Bill }) => {
@@ -162,9 +164,14 @@ export default function PaymentScreen({ navigation, route }: any) {
     const daysUntil = getDaysUntilDue(item.due_date);
     const isOverdue = daysUntil < 0;
     const isUrgent = daysUntil >= 0 && daysUntil <= 3;
-    const dueLabel = item.due_date
-      ? new Date(item.due_date + 'T00:00:00').toLocaleDateString('pt-BR')
-      : 'sem vencimento';
+    let dueLabel = 'sem vencimento';
+    if (item.due_date) {
+      try {
+        dueLabel = formatFinancialDatePtBr(item.due_date);
+      } catch {
+        dueLabel = item.due_date;
+      }
+    }
     const statusLabel = isOverdue
       ? 'vencida'
       : isUrgent

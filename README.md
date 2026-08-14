@@ -43,7 +43,9 @@ A arquitetura de produção usa **Supabase Auth** como identidade, PostgreSQL/RL
 - OCR de documentos com structured output e validação local antes de qualquer confiança nos dados extraídos.
 - Casos de OCR ilegível/baixa confiança exigem revisão manual em vez de persistência automática.
 - Sessão mobile persistida em armazenamento seguro, refresh/logout e cache financeiro isolado por usuário.
-- Identidades de operações financeiras pendentes persistidas por usuário para reutilização após timeout, reconnect ou restart.
+- Mutações financeiras pendentes persistem `Idempotency-Key` **e o payload original** em storage seguro owner-scoped, sobrevivendo a timeout, lost response, reconnect, restart e passagem da meia-noite sem reconstruir silenciosamente a intenção.
+- Preparação de mutações usa um snapshot coerente de sessão (token + owner + geração), falhando fechado se a conta mudar antes do envio.
+- Datas financeiras `YYYY-MM-DD` usam o calendário IANA `America/Sao_Paulo`; UTC slicing não é usado para semantics DATE-only.
 - Notificações locais de vencimento.
 - Expo SDK 57 / React Native 0.86 com checks de TypeScript, Expo Doctor e export web no CI.
 
@@ -81,7 +83,9 @@ Sites externos podem mudar sem aviso. Esses adapters são deliberadamente tratad
 - **React Native + Expo SDK 57**.
 - Sessão Supabase com Bearer dinâmico para a API.
 - Cache financeiro owner-scoped para modo offline.
-- Operações financeiras pendentes owner-scoped que preservam a mesma `Idempotency-Key` enquanto o resultado está indeterminado.
+- Pending financial mutations owner-scoped em `SecureStore`, preservando uma única identidade lógica (`Idempotency-Key` + payload original) enquanto o resultado estiver indeterminado.
+- Snapshot coerente de sessão para mutation preparation, impedindo combinações owner/token de contas diferentes.
+- Helper canônico de data financeira baseado em `America/Sao_Paulo`, separado de timestamps UTC reais.
 - Expo Notifications para lembretes locais.
 - EAS Update/Build para distribuição mobile quando credenciais externas estiverem configuradas.
 
@@ -91,12 +95,19 @@ Sites externos podem mudar sem aviso. Esses adapters são deliberadamente tratad
 - Service-role não é distribuída ao cliente mobile.
 - `owner_id`/RLS são boundaries de autorização no banco.
 - Dinheiro não usa binary float em cálculos autoritativos.
-- Para `POST /add-bill`, `POST /incomes`, `POST /insights/reserve` e `POST /recurring-bills`, a unidade lógica de replay é `auth.uid() + operation type + Idempotency-Key`.
+- Para `POST /add-bill`, `POST /incomes`, `POST /insights/reserve` e `POST /recurring-bills`, a identidade durável de replay no servidor é `auth.uid() + operation type + Idempotency-Key`.
 - O PostgreSQL deriva o fingerprint canônico a partir dos próprios parâmetros; o cliente não envia fingerprint confiável nem `owner_id` ao RPC.
 - Nessas quatro operações, claim da key, efeito financeiro e resultado durável pertencem à mesma transação PostgreSQL.
 - Mesma key + mesmo payload retorna o resultado já comprometido sem repetir o efeito; mesma key + payload diferente falha fechado.
-- Uma nova key representa uma nova intenção e pode repetir conscientemente os mesmos valores de negócio.
-- O mobile conserva a key de uma intenção não resolvida em timeout/network/5xx/reconnect/restart e só a encerra após sucesso confirmado ou rejeição 4xx definitiva não retryable.
+- Uma nova key representa uma nova intenção explícita e pode repetir conscientemente os mesmos valores de negócio após a intenção anterior estar resolvida.
+- Enquanto uma intenção está indeterminada, o mobile persiste a key e o **payload original** antes do transporte e os reutiliza após timeout/network/5xx/reconnect/restart/background/foreground. Campos derivados não são silenciosamente recomputados para o retry.
+- A identidade local não depende apenas de `owner + operation + canonicalPayload` reconstruído no momento do retry. Em renda, cruzar a meia-noite não transforma a mesma intenção ambígua em nova operação; a data original e a mesma key são reutilizadas.
+- O pending store serializa read/modify/write por owner + operation, evitando perda last-writer-wins entre duas intenções diferentes concorrentes.
+- Pending financial payload é estado privado: fica owner-scoped em `SecureStore`; o formato legado em AsyncStorage é migrado/removido. Outro usuário não recebe nem reutiliza payload/key de uma conta anterior.
+- A preparação da mutação captura token + owner + geração de uma única sessão. Se a sessão muda antes do envio, a operação falha fechado.
+- O calendário financeiro do produto é `America/Sao_Paulo`. Valores DATE-only (`YYYY-MM-DD`) não são derivados com `toISOString().split('T')[0]`, `toISOString().slice(0,10)` ou getters UTC.
+- `toISOString()` continua válido quando o domínio exige um timestamp/instant UTC real; a proibição é específica a financial DATE-only semantics.
+- Datas escolhidas pelo usuário (por exemplo, vencimento) são serializadas como componentes de calendário, sem round-trip por UTC.
 - O runtime atual expõe apenas **adição** à reserva; não existe endpoint de decremento/saque. Qualquer futura retirada deverá usar o mesmo protocolo antes de ser disponibilizada.
 - Instâncias recorrentes geradas possuem garantia de unicidade no banco para retries/concurrency; isso é separado da idempotência da criação do template recorrente.
 - Uploads são limitados e validados por conteúdo real, não somente pelo filename/MIME declarado.
@@ -148,7 +159,10 @@ Os workflows do repositório exercitam, conforme o escopo:
 - PostgreSQL real para recurring/generated-child uniqueness e ownership/RLS;
 - PostgreSQL 16 dedicado para replay, commit-then-response-loss equivalente, payload mismatch, isolamento entre owners e concorrência same-key das quatro mutações financeiras duráveis;
 - mobile TypeScript;
-- contrato de autenticação/cache e lifecycle de operação financeira pendente no mobile;
+- contrato de autenticação/cache, logical-intent identity e lifecycle de pending mutation no mobile;
+- regressões determinísticas de retry de renda através da meia-noite, concorrência de duas pending mutations diferentes, restart e account switch;
+- contrato de financial date-only em `America/Sao_Paulo`, incluindo UTC-next-day, meia-noite local, rollovers e guard estático contra UTC slicing em paths financeiros;
+- teste de impacto autoritativo provando que `initial_balance_date = D` inclui renda/pagamento do próprio D e que um drift para D+1 muda o saldo;
 - Expo Doctor/config/export smoke;
 - build do container backend;
 - npm audit com evidência preservada;
@@ -198,7 +212,7 @@ O backend possui Dockerfile/Render configuration; o mobile possui configuração
 - Os adapters experimentais podem deixar de funcionar quando interfaces externas mudarem.
 - Findings npm residuais de tooling/Expo permanecem visíveis quando não existe caminho compatível seguro; não são ocultados com `--force`/allowlist apenas para obter CI verde.
 - O ledger server-side de idempotência ainda não possui cleanup automático; registros precisam durar no mínimo todo o período em que uma operação mobile pendente possa ser retomada.
-- Enquanto uma operação mobile permanece indeterminada, uma nova submissão com owner/operação/payload idênticos é tratada conservadoramente como retry da intenção pendente. Após conclusão/rejeição definitiva, a mesma combinação de valores pode iniciar nova intenção com nova key.
+- Enquanto uma operação mobile permanece indeterminada, uma nova submissão logicamente equivalente é tratada conservadoramente como retry da pending intent e reutiliza o payload original. Após conclusão/rejeição definitiva, os mesmos valores podem iniciar nova intenção com nova key.
 - Não existe hoje retirada/decremento de reserva no produto; se essa mutação for adicionada, deverá adotar o mesmo boundary durável antes de ser exposta.
 - Assets e builds nativos remotos dependem de infraestrutura/credenciais externas quando aplicável.
 
@@ -227,7 +241,9 @@ The production architecture uses **Supabase Auth** for identity, PostgreSQL/RLS 
 - OCR with structured output plus local validation before extracted data is trusted.
 - Unreadable/low-confidence OCR requires manual review instead of automatic persistence.
 - Mobile secure session persistence, refresh/logout and owner-scoped offline financial cache.
-- Owner-scoped pending financial operation identities survive timeout/reconnect/restart until the outcome becomes definitive.
+- Pending financial mutations persist both the `Idempotency-Key` and original payload in owner-scoped secure storage across timeout, lost response, reconnect, restart and midnight rollover.
+- Financial mutation preparation uses one coherent authenticated-session snapshot (token + owner + generation) and fails closed on account change before transport.
+- Financial date-only values use the `America/Sao_Paulo` IANA calendar rather than UTC slicing or the device-local timezone.
 - Local due-date notifications.
 - Expo SDK 57 / React Native 0.86 with TypeScript, Expo Doctor and web-export smoke checks.
 
@@ -265,7 +281,9 @@ External sites can change without notice. Explicit failure/degradation is prefer
 - **React Native + Expo SDK 57**.
 - Supabase session lifecycle and dynamic API Bearer token.
 - Owner-scoped financial cache for offline operation.
-- Owner-scoped pending operation identities that preserve the same `Idempotency-Key` while an outcome is indeterminate.
+- Owner-scoped pending financial mutations in `SecureStore`, preserving one logical identity (`Idempotency-Key` + original payload) while the outcome is indeterminate.
+- Coherent session snapshot for financial request preparation, preventing cross-account owner/token mixtures.
+- Canonical `America/Sao_Paulo` financial date helper, explicitly separated from real UTC timestamps.
 - Expo Notifications for local reminders.
 - EAS Build/Update when external credentials/infrastructure are configured.
 
@@ -275,12 +293,19 @@ External sites can change without notice. Explicit failure/degradation is prefer
 - Service-role credentials never belong in the mobile client.
 - Database authorization is enforced through ownership/RLS.
 - Authoritative money calculations avoid binary float.
-- For `POST /add-bill`, `POST /incomes`, `POST /insights/reserve`, and `POST /recurring-bills`, replay identity is `auth.uid() + operation type + Idempotency-Key`.
+- For `POST /add-bill`, `POST /incomes`, `POST /insights/reserve`, and `POST /recurring-bills`, durable server replay identity is `auth.uid() + operation type + Idempotency-Key`.
 - PostgreSQL derives the canonical fingerprint from its mutation parameters; callers do not supply a trusted fingerprint or owner id.
 - For those four operations, key claim, financial effect, and durable replay result share one PostgreSQL transaction.
 - Same key + same logical payload replays the durable result without another effect; same key + different payload fails closed.
-- A new key represents a new intentional operation even if business values equal a prior completed operation.
-- Mobile keeps an unresolved key after network loss, 5xx, reconnect, or restart, and closes it only after confirmed success or a definitive non-retryable 4xx rejection.
+- A new key represents a new explicit operation after the prior intent has a definitive outcome, even if business values equal a previous operation.
+- While an intent is indeterminate, mobile persists its key **and complete original payload before transport** and replays both after timeout/network/5xx/reconnect/restart/background/foreground. Derived fields are not silently rebuilt for transport retry.
+- Local logical identity is not merely `owner + operation + canonicalPayload` recomputed at retry time. An income retry crossing midnight reuses the same pending key and original date.
+- Pending-store read/modify/write is serialized per owner + operation so two different concurrent intents cannot erase one another through last-writer-wins storage races.
+- Pending financial payload is private state: it is owner-scoped in `SecureStore`, and the legacy AsyncStorage representation is migrated/removed. Another account cannot inherit or reuse the previous account's key/payload.
+- Financial mutation preparation captures token + owner + session generation from one coherent snapshot. If the session changes before transport, preparation fails closed.
+- The product financial calendar is `America/Sao_Paulo`. DATE-only `YYYY-MM-DD` values must not be derived by slicing UTC timestamps (`toISOString().split('T')[0]`, `toISOString().slice(0,10)`, UTC getters, or equivalent).
+- `toISOString()` remains valid when the domain requires an actual UTC timestamp/instant; the restriction is specific to financial DATE-only semantics.
+- User-selected calendar dates are serialized from their calendar components rather than round-tripping through UTC.
 - The current product exposes reserve **addition only**; no reserve-withdrawal/decrement endpoint exists. Any future decrement must adopt the same durable protocol before exposure.
 - Generated recurring instances use a separate database uniqueness boundary under retries/concurrency.
 - Uploads are bounded and validated from actual content, not filename/MIME alone.
@@ -331,7 +356,10 @@ Repository workflows cover, as applicable:
 - disposable PostgreSQL recurring/generated-child and ownership/RLS checks;
 - dedicated PostgreSQL 16 replay, ambiguous-response equivalent, payload-mismatch, owner-isolation and same-key concurrency proof for all four durable financial mutations;
 - mobile TypeScript;
-- mobile auth/cache/pending-operation lifecycle contract;
+- mobile auth/cache/logical-intent/pending-operation lifecycle contracts;
+- deterministic regressions for income retry across midnight, two different concurrent pending operations, restart and account switch;
+- `America/Sao_Paulo` financial date-only contract covering UTC-next-day windows, local midnight, month/year rollover and an anti-regression guard against UTC slicing in financial paths;
+- backend financial-impact regression proving an initial-balance boundary shift from D to D+1 changes same-day income/payment inclusion;
 - Expo Doctor/config/web-export smoke;
 - backend container build;
 - npm audit evidence;
@@ -381,7 +409,7 @@ The backend includes Docker/Render configuration and the mobile app includes Exp
 - Experimental adapters can break when external interfaces change.
 - Residual npm findings remain visible when the upstream Expo/tooling graph has no compatible safe upgrade path; they are not hidden with forced downgrades or blanket allowlists.
 - The server idempotency ledger has no automatic cleanup yet; records must outlive the entire supported mobile pending-operation retry window.
-- While a mobile operation remains indeterminate, the same owner/operation/payload is conservatively treated as a retry of that pending intent. After definitive completion/rejection, equal business values can start a new intent with a new key.
+- While a mobile operation remains indeterminate, a logically equivalent submission is conservatively treated as a retry of that pending intent and reuses its original payload. After definitive completion/rejection, equal business values can start a new intent with a new key.
 - Reserve withdrawal/decrement is not currently a product endpoint; any future mutation of that class must use the durable protocol before exposure.
 - Remote native builds and external deployment still depend on operator credentials/infrastructure where applicable.
 

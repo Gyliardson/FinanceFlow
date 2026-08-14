@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
+import { financialDateOnly, financialDaysBetween, formatFinancialDatePtBr } from '../services/financialDate';
 
 interface BillDetail {
   id: string;
@@ -75,7 +76,19 @@ export default function BillHistoryScreen({ route, navigation }: any) {
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return '-';
-    return new Date(`${dateStr}T00:00:00`).toLocaleDateString('pt-BR');
+    try {
+      return formatFinancialDatePtBr(dateStr);
+    } catch {
+      return dateStr;
+    }
+  };
+
+  const getDaysUntilDue = (dueDate: string) => {
+    try {
+      return financialDaysBetween(financialDateOnly(), dueDate);
+    } catch {
+      return 0;
+    }
   };
 
   const getStatusConfig = (status: string, dueDate: string) => {
@@ -84,22 +97,11 @@ export default function BillHistoryScreen({ route, navigation }: any) {
       return { label: 'Pago', color: '#047857', bg: '#ecfdf5', icon: 'checkmark-circle' as const };
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const due = new Date(`${dueDate}T00:00:00`);
-
-    if (due < today || status === 'overdue') {
+    if (getDaysUntilDue(dueDate) < 0 || status === 'overdue') {
       return { label: 'Vencida', color: '#b91c1c', bg: '#fef2f2', icon: 'alert-circle' as const };
     }
 
     return { label: 'Pendente', color: '#a16207', bg: '#fffbeb', icon: 'time' as const };
-  };
-
-  const getDaysUntilDue = (dueDate: string) => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const due = new Date(`${dueDate}T00:00:00`);
-    return Math.ceil((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
   };
 
   if (loading) {

@@ -16,6 +16,13 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../services/AuthContext';
 import { getUserCacheSnapshot, trySetUserCache } from '../services/userCache';
+import {
+  financialDateOnly,
+  financialDateParts,
+  financialDaysBetween,
+  formatFinancialDatePtBr,
+  parseFinancialDateOnly,
+} from '../services/financialDate';
 import NetworkStatus from '../components/NetworkStatus';
 import api from '../services/api';
 
@@ -58,13 +65,17 @@ const formatBRL = (value: number | string | null | undefined) => {
 
 const formatDate = (value: string | null | undefined) => {
   if (!value) return 'Data não informada';
-  return new Date(`${value}T00:00:00`).toLocaleDateString('pt-BR');
+  try {
+    return formatFinancialDatePtBr(value);
+  } catch {
+    return value;
+  }
 };
 
 export default function HomeScreen({ navigation }: any) {
   const { session } = useAuth();
   const userId = session?.user.id;
-  const now = new Date();
+  const financialNow = financialDateParts();
 
   const [allBills, setAllBills] = useState<Bill[]>([]);
   const [loading, setLoading] = useState(true);
@@ -77,8 +88,8 @@ export default function HomeScreen({ navigation }: any) {
   const [initialBalance, setInitialBalance] = useState('');
   const [emergencyGoal, setEmergencyGoal] = useState('');
   const [initialDate, setInitialDate] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
-  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
+  const [selectedMonth, setSelectedMonth] = useState(financialNow.month - 1);
+  const [selectedYear, setSelectedYear] = useState(financialNow.year);
 
   const hydrateSettings = (settings: SettingsCache) => {
     setInitialBalance(settings.initial_balance?.toFixed(2).replace('.', ',') || '');
@@ -175,7 +186,7 @@ export default function HomeScreen({ navigation }: any) {
       await api.post('/settings', {
         initial_balance: balance,
         emergency_fund_goal: goal,
-        initial_balance_date: initialDate || new Date().toISOString().split('T')[0],
+        initial_balance_date: initialDate || financialDateOnly(),
       });
       setConfigModalVisible(false);
       await loadAllData();
@@ -188,16 +199,21 @@ export default function HomeScreen({ navigation }: any) {
 
   const getDaysUntilDue = (dueDate: string) => {
     if (!dueDate) return null;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const due = new Date(`${dueDate}T00:00:00`);
-    return Math.ceil((due.getTime() - today.getTime()) / 86400000);
+    try {
+      return financialDaysBetween(financialDateOnly(), dueDate);
+    } catch {
+      return null;
+    }
   };
 
   const filteredByDate = useMemo(() => allBills.filter((bill) => {
     if (bill.is_recurring || !bill.due_date) return false;
-    const due = new Date(`${bill.due_date}T00:00:00`);
-    return due.getMonth() === selectedMonth && due.getFullYear() === selectedYear;
+    try {
+      const due = parseFinancialDateOnly(bill.due_date);
+      return due.month - 1 === selectedMonth && due.year === selectedYear;
+    } catch {
+      return false;
+    }
   }), [allBills, selectedMonth, selectedYear]);
 
   const pendingBills = useMemo(
@@ -217,7 +233,9 @@ export default function HomeScreen({ navigation }: any) {
 
   const sortedBills = useMemo(() => [...displayedBills].sort((a, b) => {
     if (activeTab === 'paid') {
-      return new Date(b.payment_date || b.due_date).getTime() - new Date(a.payment_date || a.due_date).getTime();
+      const bDate = b.payment_date || b.due_date;
+      const aDate = a.payment_date || a.due_date;
+      return bDate.localeCompare(aDate);
     }
     return (getDaysUntilDue(a.due_date) ?? 999) - (getDaysUntilDue(b.due_date) ?? 999);
   }), [displayedBills, activeTab]);
@@ -245,12 +263,12 @@ export default function HomeScreen({ navigation }: any) {
   };
 
   const goToCurrentMonth = () => {
-    const current = new Date();
-    setSelectedMonth(current.getMonth());
-    setSelectedYear(current.getFullYear());
+    const current = financialDateParts();
+    setSelectedMonth(current.month - 1);
+    setSelectedYear(current.year);
   };
 
-  const isCurrentMonth = selectedMonth === now.getMonth() && selectedYear === now.getFullYear();
+  const isCurrentMonth = selectedMonth === financialNow.month - 1 && selectedYear === financialNow.year;
   const selectedPeriod = `${MONTH_NAMES[selectedMonth]} ${selectedYear}`;
 
   const renderBill = ({ item }: { item: Bill }) => {

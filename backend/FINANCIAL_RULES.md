@@ -27,14 +27,21 @@ Rounding happens at defined boundaries, not repeatedly during intermediate arith
 
 ## Financial calendar and timezone
 
-Date-only financial events must not depend on the timezone configured on the CI runner or deployment host.
+A financial **date-only** value is a business-calendar date, not a UTC timestamp truncated to ten characters.
 
-- The authoritative backend calendar uses the IANA timezone in `FINANCIAL_TIMEZONE`.
-- The portfolio default is `America/Sao_Paulo`, matching the current Brazilian/BRL product baseline.
-- Payment dates, recurring target dates, month-end balance horizons, and monthly insight cache dates use the same `financial_today()` boundary.
-- Explicit datetime values used by tests must be timezone-aware; naive datetimes are rejected rather than interpreted using the machine locale.
-- Mobile values that are semantically `YYYY-MM-DD` are treated as date-only values. They must not be created with UTC `toISOString()` or rendered by parsing `YYYY-MM-DD` through JavaScript `Date`, because either operation can shift the calendar day around timezone boundaries.
-- Changing the product/business timezone is an explicit configuration change and must be accompanied by boundary tests around local midnight and month rollover.
+- The authoritative product timezone is the IANA zone in `FINANCIAL_TIMEZONE`; the portfolio baseline is `America/Sao_Paulo`.
+- Backend payment dates, recurring targets, month-end balance horizons and monthly insight cache dates derive from `financial_today()`.
+- Mobile derives the current financial `YYYY-MM-DD` through the canonical `mobile/src/services/financialDate.ts` boundary using `Intl.DateTimeFormat` with `America/Sao_Paulo`.
+- The mobile helper must use IANA timezone rules, not a hard-coded `-03:00` offset. São Paulo currently has no DST, but historical/future offset rules remain the timezone database's concern.
+- An instant can be on the next UTC date while still belonging to the prior São Paulo financial date. `2026-08-15T01:30:00Z`, for example, is `2026-08-14 22:30` in São Paulo and therefore has financial date `2026-08-14`.
+- Financial date-only values must **not** be derived with `new Date().toISOString().split('T')[0]`, `toISOString().slice(0, 10)`, UTC getters or equivalent UTC slicing.
+- `toISOString()` remains valid for a real UTC timestamp when the domain requires an instant; the prohibition is specific to financial DATE-only derivation.
+- User-selected dates such as a bill due date are calendar values. Serialize the selected year/month/day directly instead of converting the selection through UTC merely to obtain `YYYY-MM-DD`.
+- `YYYY-MM-DD` display, month filtering, ordering and day-distance should operate as date-only calendar data rather than parsing the string as an instant whose interpretation depends on device timezone.
+- Explicit datetime values used by backend tests must be timezone-aware; naive datetimes are rejected rather than interpreted from the runner locale.
+- Changing the product/business timezone is an explicit domain change and requires mobile/backend boundary tests around local midnight, month/year rollover and relevant IANA offset rules.
+
+The `initial_balance_date` setting is financially material. `_calculate_financials` uses it as an inclusive lower bound for `finance_incomes.date` and paid-bill `payment_date`. Shifting that boundary from D to D+1 can remove same-day income/payment records from authoritative balances, so a UTC date drift is a correctness defect rather than a presentation issue.
 
 ## Authoritative balance calculation
 
@@ -187,7 +194,10 @@ For a multi-row insert, a uniqueness conflict aborts the PostgreSQL statement. N
 The FinanceFlow gates prove these invariants with:
 
 - exact-money unit tests and canonical API payload tests;
-- financial-calendar boundary tests;
+- financial-calendar boundary tests for before/exactly/after São Paulo midnight, UTC-next-day windows, month/year rollover and IANA historical offset behavior;
+- a mutation/control case proving the former `toISOString().split('T')[0]` behavior returns D+1 for the audited 22:30 São Paulo instant while the canonical helper returns D;
+- a backend financial-impact test proving `initial_balance_date = D` inclusively counts income/payment on D and that a D+1 drift changes authoritative balances;
+- a static mobile financial-domain guard against reintroducing UTC slicing for date-only values while preserving legitimate timestamp use;
 - receipt payment tests that distinguish fail-before-commit from commit-then-response-failure and verify signed access to retained evidence;
 - a disposable PostgreSQL 16 financial-idempotency contract covering database-owned fingerprinting, replay, payload mismatch, owner isolation, intentional new-key repetition and concurrent same-key requests for reserve/bill/income/recurring-template mutations;
 - backend adapter tests that model commit-before-timeout for all four durable mutation classes;
