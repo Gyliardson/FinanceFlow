@@ -1,13 +1,11 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import {
-  configureApiAccessTokenProvider,
-  configureApiAuthenticatedUserIdProvider,
-} from './api';
+import { configureApiAuthSessionSnapshotProvider } from './api';
 import {
   AuthSession,
   getCurrentAuthSession,
-  getValidAccessToken,
+  getValidAuthSessionSnapshot,
   initializeAuthSession,
+  isAuthSessionSnapshotCurrent,
   signInWithPassword,
   signOutAuthSession,
 } from './authSession';
@@ -26,21 +24,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    configureApiAccessTokenProvider(async () => {
-      const token = await getValidAccessToken();
-      const latest = getCurrentAuthSession();
-      setSession(latest);
-      return token;
-    });
-    configureApiAuthenticatedUserIdProvider(() => getCurrentAuthSession()?.user.id ?? null);
+    configureApiAuthSessionSnapshotProvider(
+      async () => {
+        const snapshot = await getValidAuthSessionSnapshot();
+        setSession(getCurrentAuthSession());
+        return snapshot;
+      },
+      isAuthSessionSnapshotCurrent,
+    );
 
     initializeAuthSession()
       .then(setSession)
       .finally(() => setLoading(false));
 
     return () => {
-      configureApiAccessTokenProvider(null);
-      configureApiAuthenticatedUserIdProvider(null);
+      configureApiAuthSessionSnapshotProvider(null, null);
     };
   }, []);
 
