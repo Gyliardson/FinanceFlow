@@ -38,6 +38,7 @@ jobs:
           build_dir="$RUNNER_TEMP/financeflow-auth-contract"
           rm -rf "$build_dir"
           mkdir -p "$build_dir/node_modules/@react-native-async-storage/async-storage"
+          mkdir -p "$build_dir/node_modules/expo-secure-store"
           cat > "$build_dir/node_modules/@react-native-async-storage/async-storage/index.js" <<'JS'
           const store = new Map();
           const api = {
@@ -52,6 +53,16 @@ jobs:
           };
           module.exports = api;
           module.exports.default = api;
+          JS
+          cat > "$build_dir/node_modules/expo-secure-store/index.js" <<'JS'
+          const store = new Map();
+          module.exports = {
+            async getItemAsync(key) { return store.has(key) ? store.get(key) : null; },
+            async setItemAsync(key, value) { store.set(key, String(value)); },
+            async deleteItemAsync(key) { store.delete(key); },
+            __reset() { store.clear(); },
+            __store: store,
+          };
           JS
           npx tsc \
             src/services/userCache.ts \
