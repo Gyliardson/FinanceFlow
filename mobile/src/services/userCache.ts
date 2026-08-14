@@ -1,11 +1,24 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const CACHE_PREFIX = '@financeflow:user:';
+const CACHE_VERSION = 1;
 const LEGACY_BILLS_KEY = '@bills_cache';
 const LEGACY_SETTINGS_KEY = '@settings_cache';
 const LEGACY_OWNER_KEY = '@financeflow:legacy-cache-owner:v1';
 
 type FinancialResource = 'bills' | 'settings';
+
+export interface UserCacheSnapshot<T> {
+  data: T;
+  cachedAt: number | null;
+  version: number;
+}
+
+interface CacheEnvelope<T> {
+  version: typeof CACHE_VERSION;
+  cachedAt: number;
+  data: T;
+}
 
 function normalizeUserId(userId: string): string {
   const normalized = userId.trim();
@@ -15,16 +28,104 @@ function normalizeUserId(userId: string): string {
   return normalized;
 }
 
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function isVersionedEnvelope(value: unknown): value is CacheEnvelope<unknown> {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<CacheEnvelope<unknown>>;
+  return Boolean(
+    candidate.version === CACHE_VERSION
+      && typeof candidate.cachedAt === 'number'
+      && Number.isFinite(candidate.cachedAt)
+      && candidate.cachedAt > 0
+      && hasOwn(candidate, 'data')
+  );
+}
+
+function looksLikeMalformedEnvelope(value: unknown): boolean {
+  return Boolean(
+    value
+      && typeof value === 'object'
+      && (hasOwn(value, 'version') || hasOwn(value, 'cachedAt'))
+      && !isVersionedEnvelope(value)
+  );
+}
+
+function isValidResourcePayload(resource: FinancialResource, value: unknown): boolean {
+  if (resource === 'bills') return Array.isArray(value);
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+async function discardUnreadableEntry(key: string): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(key);
+  } catch {
+    // A local storage cleanup failure must not make corrupt financial data usable.
+  }
+}
+
 export function userCacheKey(userId: string, resource: FinancialResource): string {
   return `${CACHE_PREFIX}${normalizeUserId(userId)}:${resource}`;
+}
+
+export async function getUserCacheSnapshot<T>(
+  userId: string,
+  resource: FinancialResource,
+): Promise<UserCacheSnapshot<T> | null> {
+  const key = userCacheKey(userId, resource);
+  let raw: string | null;
+
+  try {
+    raw = await AsyncStorage.getItem(key);
+  } catch {
+    return null;
+  }
+
+  if (!raw) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    await discardUnreadableEntry(key);
+    return null;
+  }
+
+  if (isVersionedEnvelope(parsed)) {
+    if (!isValidResourcePayload(resource, parsed.data)) {
+      await discardUnreadableEntry(key);
+      return null;
+    }
+    return {
+      data: parsed.data as T,
+      cachedAt: parsed.cachedAt,
+      version: parsed.version,
+    };
+  }
+
+  if (looksLikeMalformedEnvelope(parsed) || !isValidResourcePayload(resource, parsed)) {
+    await discardUnreadableEntry(key);
+    return null;
+  }
+
+  // Historical owner-scoped cache values were stored as raw JSON. They remain
+  // readable for a one-way compatibility period, but have unknown freshness
+  // until the next successful server response rewrites them as an envelope.
+  return {
+    data: parsed as T,
+    cachedAt: null,
+    version: 0,
+  };
 }
 
 export async function getUserCache<T>(
   userId: string,
   resource: FinancialResource,
 ): Promise<T | null> {
-  const value = await AsyncStorage.getItem(userCacheKey(userId, resource));
-  return value ? (JSON.parse(value) as T) : null;
+  const snapshot = await getUserCacheSnapshot<T>(userId, resource);
+  return snapshot?.data ?? null;
 }
 
 export async function setUserCache(
@@ -32,7 +133,28 @@ export async function setUserCache(
   resource: FinancialResource,
   value: unknown,
 ): Promise<void> {
-  await AsyncStorage.setItem(userCacheKey(userId, resource), JSON.stringify(value));
+  if (!isValidResourcePayload(resource, value)) {
+    throw new Error(`Invalid ${resource} cache payload`);
+  }
+  const envelope: CacheEnvelope<unknown> = {
+    version: CACHE_VERSION,
+    cachedAt: Date.now(),
+    data: value,
+  };
+  await AsyncStorage.setItem(userCacheKey(userId, resource), JSON.stringify(envelope));
+}
+
+export async function trySetUserCache(
+  userId: string,
+  resource: FinancialResource,
+  value: unknown,
+): Promise<boolean> {
+  try {
+    await setUserCache(userId, resource, value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function clearUserFinancialCache(userId: string): Promise<void> {
@@ -54,8 +176,8 @@ export async function clearLegacyGlobalFinancialCache(): Promise<void> {
  * One-time compatibility import for users upgrading from the historical global
  * financial cache. Values are accepted only when the legacy owner marker
  * matches the authenticated user; untagged/mismatched data fails closed. The
- * global keys are always deleted after the migration attempt and are never
- * re-created by current application code.
+ * imported values intentionally keep unknown freshness until a successful API
+ * read rewrites them with the current versioned envelope.
  */
 export async function migrateLegacyFinancialCacheToUser(userId: string): Promise<void> {
   const normalizedUserId = normalizeUserId(userId);
