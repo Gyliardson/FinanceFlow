@@ -68,6 +68,7 @@ def persist_private_receipt_payment(
     - storage object identity is owner/bill scoped and opaque;
     - only the durable private ``receipt_path`` is persisted;
     - no public URL is generated or persisted;
+    - the final write is compare-and-set on ``status != paid`` to reject double submit races;
     - if the database update fails after upload, best-effort cleanup removes the orphan.
     """
     bill_response = (
@@ -108,11 +109,12 @@ def persist_private_receipt_payment(
                 }
             )
             .eq("id", bill_id)
+            .neq("status", "paid")
             .execute()
         )
         if not getattr(update_response, "data", None):
             raise PaymentPersistenceError(
-                "Authenticated bill update affected no rows; payment was not persisted."
+                "Authenticated bill update affected no rows; payment may have been concurrently completed."
             )
     except Exception as exc:
         _delete_uploaded_receipt(bucket, receipt_path)
