@@ -2,6 +2,8 @@ from datetime import date
 
 import pytest
 
+import receipt_access
+from receipt_access import create_authorized_receipt_access
 from receipt_payments import (
     BillAlreadyPaidError,
     PaymentPersistenceError,
@@ -147,6 +149,38 @@ def test_commit_then_response_timeout_preserves_receipt_and_reconciles_success()
     assert client.bill["receipt_path"] == result.receipt_path
     assert result.receipt_path in bucket.objects
     assert bucket.removals == []
+
+
+def test_reconciled_ambiguous_commit_remains_available_through_signed_access(monkeypatch):
+    client = DataClient(mode="commit_then_timeout")
+    bucket = Bucket()
+
+    payment = persist(client, bucket)
+
+    signed_calls = []
+
+    def fake_signed_url(**kwargs):
+        signed_calls.append(kwargs)
+        return {"signedURL": "https://signed.invalid/reconciled-receipt"}
+
+    monkeypatch.setattr(receipt_access, "create_receipt_signed_url", fake_signed_url)
+    access = create_authorized_receipt_access(
+        data_client=client,
+        owner_id=OWNER_ID,
+        bill_id=BILL_ID,
+        expires_in=300,
+    )
+
+    assert access.receipt_path == payment.receipt_path
+    assert payment.receipt_path in bucket.objects
+    assert signed_calls == [
+        {
+            "owner_id": OWNER_ID,
+            "bill_id": BILL_ID,
+            "receipt_path": payment.receipt_path,
+            "expires_in": 300,
+        }
+    ]
 
 
 def test_failed_reconciliation_preserves_committed_receipt_and_later_retry_converges():
