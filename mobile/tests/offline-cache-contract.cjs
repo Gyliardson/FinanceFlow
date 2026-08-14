@@ -11,14 +11,20 @@ const asyncStorage = require(path.join(
   '@react-native-async-storage',
   'async-storage',
 ));
+const secureStore = require(path.join(compiledRoot, 'node_modules', 'expo-secure-store'));
 const cache = require(path.join(compiledRoot, 'userCache.js'));
 const mobileRoot = path.resolve(__dirname, '..');
 
 async function reset() {
   asyncStorage.__reset();
+  secureStore.__reset();
 }
 
-async function testVersionedCacheRoundTripHasFreshness() {
+function secureEntries() {
+  return [...secureStore.__store.entries()];
+}
+
+async function testVersionedCacheRoundTripHasFreshnessAndNoPlaintext() {
   await reset();
   const before = Date.now();
   await cache.setUserCache('user-a', 'bills', []);
@@ -29,9 +35,25 @@ async function testVersionedCacheRoundTripHasFreshness() {
   assert.ok(Number.isFinite(snapshot.cachedAt));
   assert.ok(snapshot.cachedAt >= before);
   assert.ok(snapshot.cachedAt <= Date.now());
+  assert.equal(await asyncStorage.getItem(cache.userCacheKey('user-a', 'bills')), null);
+  assert.ok(await secureStore.getItemAsync(cache.secureUserCacheManifestKey('user-a', 'bills')));
 }
 
-async function testLegacyRawOwnerCacheRemainsReadableWithUnknownFreshness() {
+async function testLargeCacheIsChunkedBelowSecureStoreLimit() {
+  await reset();
+  const largeDescription = 'x'.repeat(6000);
+  await cache.setUserCache('user-a', 'bills', [{ id: 'large', description: largeDescription }]);
+  assert.equal((await cache.getUserCache('user-a', 'bills'))[0].description.length, 6000);
+
+  const entries = secureEntries();
+  assert.ok(entries.length >= 5, 'large payload should be split across secure manifest/chunks');
+  for (const [key, value] of entries) {
+    assert.match(key, /^[A-Za-z0-9._-]+$/, 'every SecureStore key must satisfy Expo native contract');
+    assert.ok(value.length <= 2048, 'each SecureStore value must stay within hardened test bound');
+  }
+}
+
+async function testLegacyRawOwnerCacheMigratesToSecureStoreAndDeletesPlaintext() {
   await reset();
   const key = cache.userCacheKey('user-a', 'bills');
   await asyncStorage.setItem(key, JSON.stringify([{ id: 'legacy-a' }]));
@@ -40,9 +62,11 @@ async function testLegacyRawOwnerCacheRemainsReadableWithUnknownFreshness() {
   assert.deepEqual(snapshot.data, [{ id: 'legacy-a' }]);
   assert.equal(snapshot.version, 0);
   assert.equal(snapshot.cachedAt, null);
+  assert.equal(await asyncStorage.getItem(key), null);
+  assert.ok(await secureStore.getItemAsync(cache.secureUserCacheManifestKey('user-a', 'bills')));
 }
 
-async function testMalformedJsonFailsClosedAndIsDiscarded() {
+async function testMalformedLegacyJsonFailsClosedAndIsDiscarded() {
   await reset();
   const key = cache.userCacheKey('user-a', 'bills');
   await asyncStorage.setItem(key, '{not-json');
@@ -51,30 +75,29 @@ async function testMalformedJsonFailsClosedAndIsDiscarded() {
   assert.equal(await asyncStorage.getItem(key), null);
 }
 
-async function testMalformedEnvelopeFailsClosedAndIsDiscarded() {
+async function testMalformedSecureManifestFailsClosedAndIsDiscarded() {
   await reset();
-  const key = cache.userCacheKey('user-a', 'bills');
-  await asyncStorage.setItem(key, JSON.stringify({
-    version: 1,
-    cachedAt: 'not-a-number',
-    data: [{ id: 'must-not-be-trusted' }],
-  }));
+  const manifestKey = cache.secureUserCacheManifestKey('user-a', 'bills');
+  await secureStore.setItemAsync(manifestKey, '{not-json');
+  assert.equal(await cache.getUserCacheSnapshot('user-a', 'bills'), null);
+  assert.equal(await secureStore.getItemAsync(manifestKey), null);
+}
+
+async function testMissingSecureChunkFailsClosed() {
+  await reset();
+  await cache.setUserCache('user-a', 'bills', [{ id: 'a', description: 'x'.repeat(3000) }]);
+  const manifestKey = cache.secureUserCacheManifestKey('user-a', 'bills');
+  const manifest = JSON.parse(await secureStore.getItemAsync(manifestKey));
+  const firstChunkKey = `financeflow.cache.v2.user-a.bills.${manifest.generation}.0`;
+  await secureStore.deleteItemAsync(firstChunkKey);
 
   assert.equal(await cache.getUserCacheSnapshot('user-a', 'bills'), null);
-  assert.equal(await asyncStorage.getItem(key), null);
+  assert.equal(await secureStore.getItemAsync(manifestKey), null);
 }
 
 async function testWrongResourcePayloadShapeFailsClosed() {
   await reset();
   const billsKey = cache.userCacheKey('user-a', 'bills');
-  await asyncStorage.setItem(billsKey, JSON.stringify({
-    version: 1,
-    cachedAt: Date.now(),
-    data: { id: 'not-an-array' },
-  }));
-  assert.equal(await cache.getUserCacheSnapshot('user-a', 'bills'), null);
-  assert.equal(await asyncStorage.getItem(billsKey), null);
-
   await asyncStorage.setItem(billsKey, JSON.stringify({ id: 'legacy-object-not-array' }));
   assert.equal(await cache.getUserCacheSnapshot('user-a', 'bills'), null);
   assert.equal(await asyncStorage.getItem(billsKey), null);
@@ -90,31 +113,49 @@ async function testInvalidPayloadCannotBePersisted() {
   await assert.rejects(() => cache.setUserCache('user-a', 'bills', { id: 'not-an-array' }));
   assert.equal(await cache.trySetUserCache('user-a', 'bills', { id: 'not-an-array' }), false);
   assert.equal(await asyncStorage.getItem(cache.userCacheKey('user-a', 'bills')), null);
+  assert.equal(await secureStore.getItemAsync(cache.secureUserCacheManifestKey('user-a', 'bills')), null);
 }
 
-async function testStorageReadFailureFailsClosed() {
+async function testSecureStorageReadFailureFailsClosedWithoutPlaintextFallback() {
   await reset();
-  const originalGetItem = asyncStorage.getItem;
-  asyncStorage.getItem = async () => { throw new Error('storage read failed'); };
+  const legacyKey = cache.userCacheKey('user-a', 'bills');
+  await asyncStorage.setItem(legacyKey, JSON.stringify([{ id: 'must-not-fallback' }]));
+  const originalGetItem = secureStore.getItemAsync;
+  secureStore.getItemAsync = async () => { throw new Error('secure read failed'); };
   try {
     assert.equal(await cache.getUserCacheSnapshot('user-a', 'bills'), null);
   } finally {
-    asyncStorage.getItem = originalGetItem;
+    secureStore.getItemAsync = originalGetItem;
   }
 }
 
-async function testBestEffortWriteFailureDoesNotThrow() {
+async function testBestEffortSecureWriteFailureDoesNotCreatePlaintext() {
   await reset();
-  const originalSetItem = asyncStorage.setItem;
-  asyncStorage.setItem = async () => { throw new Error('storage full'); };
+  const originalSetItem = secureStore.setItemAsync;
+  secureStore.setItemAsync = async () => { throw new Error('secure storage full'); };
   try {
     assert.equal(await cache.trySetUserCache('user-a', 'bills', [{ id: 'fresh-server-bill' }]), false);
   } finally {
-    asyncStorage.setItem = originalSetItem;
+    secureStore.setItemAsync = originalSetItem;
   }
 
+  assert.equal(await asyncStorage.getItem(cache.userCacheKey('user-a', 'bills')), null);
   assert.equal(await cache.trySetUserCache('user-a', 'bills', [{ id: 'persisted' }]), true);
   assert.deepEqual(await cache.getUserCache('user-a', 'bills'), [{ id: 'persisted' }]);
+}
+
+async function testLegacyMigrationFailureDeletesPlaintextRatherThanKeepingSensitiveCache() {
+  await reset();
+  const legacyKey = cache.userCacheKey('user-a', 'bills');
+  await asyncStorage.setItem(legacyKey, JSON.stringify([{ id: 'legacy-sensitive' }]));
+  const originalSetItem = secureStore.setItemAsync;
+  secureStore.setItemAsync = async () => { throw new Error('secure write failed'); };
+  try {
+    assert.equal(await cache.getUserCacheSnapshot('user-a', 'bills'), null);
+  } finally {
+    secureStore.setItemAsync = originalSetItem;
+  }
+  assert.equal(await asyncStorage.getItem(legacyKey), null);
 }
 
 async function testEmptyBillListIsAuthoritativeCacheData() {
@@ -141,14 +182,17 @@ async function testDashboardKeepsNetworkReadAuthoritativeAndShowsFreshness() {
 
 async function main() {
   const tests = [
-    testVersionedCacheRoundTripHasFreshness,
-    testLegacyRawOwnerCacheRemainsReadableWithUnknownFreshness,
-    testMalformedJsonFailsClosedAndIsDiscarded,
-    testMalformedEnvelopeFailsClosedAndIsDiscarded,
+    testVersionedCacheRoundTripHasFreshnessAndNoPlaintext,
+    testLargeCacheIsChunkedBelowSecureStoreLimit,
+    testLegacyRawOwnerCacheMigratesToSecureStoreAndDeletesPlaintext,
+    testMalformedLegacyJsonFailsClosedAndIsDiscarded,
+    testMalformedSecureManifestFailsClosedAndIsDiscarded,
+    testMissingSecureChunkFailsClosed,
     testWrongResourcePayloadShapeFailsClosed,
     testInvalidPayloadCannotBePersisted,
-    testStorageReadFailureFailsClosed,
-    testBestEffortWriteFailureDoesNotThrow,
+    testSecureStorageReadFailureFailsClosedWithoutPlaintextFallback,
+    testBestEffortSecureWriteFailureDoesNotCreatePlaintext,
+    testLegacyMigrationFailureDeletesPlaintextRatherThanKeepingSensitiveCache,
     testEmptyBillListIsAuthoritativeCacheData,
     testDashboardKeepsNetworkReadAuthoritativeAndShowsFreshness,
   ];
