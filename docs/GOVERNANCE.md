@@ -30,21 +30,43 @@ A green wrapper is not sufficient if a required inner test was skipped or did no
 
 ## GitHub branch protection / rulesets
 
-During the 2026-08-14 governance audit, the repository rulesets API returned no configured repository rulesets. The available connector token could not read the `main` branch-protection endpoint, so this repository does **not** claim that branch protection is absent or present based on that failed read.
+The 2026-08-14 governance audit established two concrete repository-setting facts:
 
-The maintainer should verify the repository settings manually and, where supported by the GitHub plan/settings, configure `main` with controls equivalent to:
+- the repository rulesets API returned no configured repository rulesets;
+- the branch endpoint for `main` returned `protected: false`, with branch protection disabled and no required status checks.
+
+Therefore the intended PR-only final promotion policy is **not currently enforced by GitHub repository settings**. This is a P2 release-governance blocker for issue #30, not an end-user application-security vulnerability.
+
+The current connector exposes no branch-protection/ruleset mutation tool, so enabling this policy is a maintainer-side/manual action. Do not mark #30 complete merely because this document describes the desired state.
+
+### Recommended minimum `main` policy
+
+Where supported by the repository plan/settings, configure `main` with controls equivalent to:
 
 - require a pull request before merge;
-- require the project’s applicable status checks;
-- require the branch to be up to date when appropriate for the chosen merge policy;
 - block force pushes;
 - block branch deletion;
 - keep administrator/bypass permissions intentionally narrow;
-- do not permit a workflow or bot to merge the final portfolio integration PR automatically.
+- do not permit a workflow or bot to merge the final portfolio integration PR automatically;
+- require deliberately selected checks that are expected to run on every pull request to `main`.
 
-The same controls may be applied to `portfolio/revamp-2026` proportionally. Internal automation can merge an issue PR only after its required evidence is green, but that is a program convention rather than a substitute for GitHub-side protection.
+For stable required checks, prefer always-on PR checks rather than path-filtered workflows that may not report a status on unrelated changes. Current candidates that run on every PR to `main` are:
 
-Repository-setting controls must be described as **manual/unverified** until GitHub returns evidence that they are active.
+- `Backend tests`;
+- `PostgreSQL recurring idempotency`;
+- `PostgreSQL ownership and RLS`;
+- `Mobile typecheck`;
+- `Dependency audit evidence`;
+- `Secret scan`;
+- `PostgreSQL mutation idempotency`;
+- `Auth session, cache and mutation identity`;
+- `UX state and accessibility contract`.
+
+`Backend container`, `Expo Doctor and build smoke`, and `Immutable Actions and reproducible tooling` are valuable release gates, but their workflows are path-filtered. Do not make them globally required unless the GitHub configuration is designed so a skipped path-filtered workflow cannot leave unrelated PRs permanently blocked.
+
+After applying repository settings, verify them non-destructively through the branch/ruleset API and confirm `main` reports `protected: true`. Record the effective required checks rather than relying on documentation alone.
+
+The same controls may be applied to `portfolio/revamp-2026` proportionally. Internal automation can merge an issue PR only after its required evidence is green, but that program convention is not a substitute for GitHub-side protection.
 
 ## GitHub Actions supply-chain policy
 
@@ -100,12 +122,12 @@ A work-branch/PR validation must not publish an EAS production update merely to 
 
 ## Residual/manual governance items
 
-The following are intentionally not presented as automated facts:
+The following still require maintainer/platform-level verification or configuration:
 
-- effective `main` branch protection settings;
-- organization/account-level Actions restrictions;
-- allowed-actions policy at the account/organization level;
-- required-review count and bypass actors;
+- enabling `main` branch protection/ruleset and confirming `protected: true`;
+- selecting the effective required checks and PR-review policy;
+- administrator/bypass actors;
+- organization/account-level Actions restrictions and allowed-actions policy;
 - secret/environment protection rules in GitHub/Expo.
 
-These require maintainer or platform-level verification when the current connector cannot read them.
+Issue #30 must remain open until the `main` policy is actually enforced and re-read successfully. Supply-chain pinning alone is not its complete Definition of Done.
