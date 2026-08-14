@@ -3,7 +3,8 @@ import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
   ActivityIndicator, RefreshControl, Animated, Modal, TextInput, Alert, ScrollView
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from '../services/AuthContext';
+import { getUserCache, setUserCache } from '../services/userCache';
 import NetworkStatus from '../components/NetworkStatus';
 import api from '../services/api';
 import { Ionicons } from '@expo/vector-icons';
@@ -28,6 +29,8 @@ const MONTH_NAMES = [
 ];
 
 export default function HomeScreen({ navigation }: any) {
+  const { session } = useAuth();
+  const userId = session?.user.id;
   const [allBills, setAllBills] = useState<Bill[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -38,13 +41,13 @@ export default function HomeScreen({ navigation }: any) {
     try {
       const response = await api.get('/bills');
       setAllBills(response.data.data || []);
-      await AsyncStorage.setItem('@bills_cache', JSON.stringify(response.data.data || []));
+      if (userId) await setUserCache(userId, 'bills', response.data.data || []);
       setIsOffline(false);
     } catch (error) {
       console.error("Erro ao buscar boletos:", error);
       setIsOffline(true);
-      const cached = await AsyncStorage.getItem('@bills_cache');
-      if (cached) setAllBills(JSON.parse(cached));
+      const cached = userId ? await getUserCache<Bill[]>(userId, 'bills') : null;
+      if (cached) setAllBills(cached);
     }
   };
 
@@ -56,7 +59,7 @@ export default function HomeScreen({ navigation }: any) {
         setInitialBalance(s.initial_balance?.toFixed(2).replace('.', ',') || '');
         setEmergencyGoal(s.emergency_fund_goal?.toFixed(2).replace('.', ',') || '');
         setInitialDate(s.initial_balance_date || '');
-        await AsyncStorage.setItem('@settings_cache', JSON.stringify(s));
+        if (userId) await setUserCache(userId, 'settings', s);
       } else {
         setConfigModalVisible(true);
       }
@@ -64,9 +67,9 @@ export default function HomeScreen({ navigation }: any) {
     } catch (e) {
       console.error(e);
       setIsOffline(true);
-      const cached = await AsyncStorage.getItem('@settings_cache');
+      const cached = userId ? await getUserCache<any>(userId, 'settings') : null;
       if (cached) {
-        const s = JSON.parse(cached);
+        const s = cached;
         setInitialBalance(s.initial_balance?.toFixed(2).replace('.', ',') || '');
         setEmergencyGoal(s.emergency_fund_goal?.toFixed(2).replace('.', ',') || '');
         setInitialDate(s.initial_balance_date || '');
@@ -79,7 +82,7 @@ export default function HomeScreen({ navigation }: any) {
     await Promise.all([fetchBills(), fetchSettings()]);
     setLoading(false);
     setRefreshing(false);
-  }, []);
+  }, [userId]);
 
   // Config State
   const [configModalVisible, setConfigModalVisible] = useState(false);
