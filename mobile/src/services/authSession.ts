@@ -3,7 +3,6 @@ import * as SecureStore from 'expo-secure-store';
 import {
   clearLegacyGlobalFinancialCache,
   clearUserFinancialCache,
-  hydrateLegacyFinancialCacheForUser,
   migrateLegacyFinancialCacheToUser,
 } from './userCache';
 
@@ -230,17 +229,18 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
     await clearLegacySessionStorage();
   }
 
+  // Import legacy global financial values only once into the authenticated
+  // owner's namespace, then guarantee the global compatibility keys are gone.
   await migrateLegacyFinancialCacheToUser(parsed.user.id);
+  await clearLegacyGlobalFinancialCache();
 
   if (parsed.expiresAt > Date.now() + REFRESH_SKEW_MS) {
-    await hydrateLegacyFinancialCacheForUser(parsed.user.id);
     return parsed;
   }
 
   try {
     const refreshed = await refreshSessionSingleFlight(parsed.refreshToken);
     if (await commitRefreshedSession(parsed, refreshed)) {
-      await hydrateLegacyFinancialCacheForUser(refreshed.user.id);
       return refreshed;
     }
     return currentSession;
@@ -253,7 +253,6 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
       return currentSession;
     }
     if (sameSessionIdentity(currentSession, parsed)) {
-      await hydrateLegacyFinancialCacheForUser(parsed.user.id);
       return parsed;
     }
     return currentSession;
@@ -283,7 +282,6 @@ export async function signInWithPassword(
   const session = normalizeTokenResponse(payload);
   await clearLegacyGlobalFinancialCache();
   await persistSession(session);
-  await hydrateLegacyFinancialCacheForUser(session.user.id);
   return session;
 }
 
