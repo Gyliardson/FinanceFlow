@@ -1,0 +1,47 @@
+name: Mobile Expo health
+
+on:
+  pull_request:
+    branches:
+      - portfolio/revamp-2026
+      - main
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile-expo-health.yml'
+  push:
+    branches:
+      - portfolio/revamp-2026
+      - 'work/**'
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile-expo-health.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  expo-health:
+    name: Expo Doctor and build smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Clean install
+        run: npm ci
+      - name: TypeScript
+        run: npx tsc --noEmit
+      - name: Expo Doctor
+        run: npx expo-doctor
+      - name: Validate public Expo config
+        run: npx expo config --type public > /tmp/expo-public-config.txt
+      - name: Web export smoke
+        run: npx expo export --platform web --output-dir dist-ci
