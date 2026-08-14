@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
+import { useFinancialMutation } from '../services/useFinancialMutation';
 
 interface InsightData {
   current_balance: number;
@@ -45,6 +46,7 @@ export default function InsightsScreen({ navigation }: any) {
   const [newGoal, setNewGoal] = useState('');
   const [submittingReserve, setSubmittingReserve] = useState(false);
   const [submittingGoal, setSubmittingGoal] = useState(false);
+  const reserveMutation = useFinancialMutation('/insights/reserve');
 
   const fetchInsights = async () => {
     setLoadError(false);
@@ -95,6 +97,13 @@ export default function InsightsScreen({ navigation }: any) {
     setNewGoal(numericValue ? (Number(numericValue) / 100).toFixed(2).replace('.', ',') : '');
   };
 
+  const closeReserveModal = () => {
+    if (submittingReserve) return;
+    reserveMutation.startNewIntent();
+    setModalVisible(false);
+    setReserveAmount('');
+  };
+
   const handleSaveReserve = async () => {
     if (submittingReserve || !reserveAmount) return;
     const amountVal = Number(reserveAmount.replace(',', '.'));
@@ -105,13 +114,13 @@ export default function InsightsScreen({ navigation }: any) {
 
     setSubmittingReserve(true);
     try {
-      await api.post('/insights/reserve', { amount: amountVal });
+      await reserveMutation.mutate({ amount: amountVal });
       setModalVisible(false);
       setReserveAmount('');
       Alert.alert('Reserva atualizada', 'O valor foi adicionado à sua reserva de emergência.');
       await fetchInsights();
     } catch {
-      Alert.alert('Não foi possível salvar', 'Verifique sua conexão e tente novamente.');
+      Alert.alert('Não foi possível salvar', 'O resultado não foi confirmado. Tentar novamente neste modal reutiliza a mesma intenção original; fechar e abrir novamente inicia uma nova intenção explícita.');
     } finally {
       setSubmittingReserve(false);
     }
@@ -185,16 +194,9 @@ export default function InsightsScreen({ navigation }: any) {
 
   return (
     <View style={styles.container}>
-      <ScrollView
-        style={styles.scrollContainer}
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
+      <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         <View style={styles.headerCard} accessible accessibilityLabel={`Saldo atual ${formatBRL(data.current_balance)}. Sobra estimada ${formatBRL(data.estimated_surplus)}.`}>
-          <View style={styles.rowBetween}>
-            <Text style={styles.headerLabel}>Saldo atual</Text>
-            <Ionicons name="wallet-outline" size={20} color="#e0e7ff" />
-          </View>
+          <View style={styles.rowBetween}><Text style={styles.headerLabel}>Saldo atual</Text><Ionicons name="wallet-outline" size={20} color="#e0e7ff" /></View>
           <Text style={styles.balanceText} adjustsFontSizeToFit numberOfLines={1}>{formatBRL(data.current_balance)}</Text>
           <View style={styles.divider} />
           <Text style={styles.headerLabel}>Sobra estimada após compromissos</Text>
@@ -204,101 +206,36 @@ export default function InsightsScreen({ navigation }: any) {
         <View style={styles.section}>
           <View style={styles.rowBetween}>
             <Text style={styles.sectionTitle} accessibilityRole="header">Reserva de emergência</Text>
-            <TouchableOpacity
-              style={styles.addReserveBtn}
-              onPress={() => setModalVisible(true)}
-              accessibilityRole="button"
-              accessibilityLabel="Adicionar valor à reserva de emergência"
-            >
-              <Ionicons name="add" size={16} color="#fff" />
-              <Text style={styles.addReserveBtnText}>Guardar</Text>
-            </TouchableOpacity>
+            <TouchableOpacity style={styles.addReserveBtn} onPress={() => setModalVisible(true)} accessibilityRole="button" accessibilityLabel="Adicionar valor à reserva de emergência"><Ionicons name="add" size={16} color="#fff" /><Text style={styles.addReserveBtnText}>Guardar</Text></TouchableOpacity>
           </View>
-
           <View style={styles.goalRow}>
-            <View style={styles.goalCopy}>
-              <Text style={styles.goalText}>Meta: {formatBRL(safeGoal)}</Text>
-              <Text style={styles.savedText}>Guardado: {formatBRL(safeFund)}</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={() => {
-                setNewGoal(safeGoal.toFixed(2).replace('.', ','));
-                setGoalModalVisible(true);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Editar meta da reserva de emergência"
-            >
-              <Ionicons name="create-outline" size={20} color="#6366f1" />
-            </TouchableOpacity>
+            <View style={styles.goalCopy}><Text style={styles.goalText}>Meta: {formatBRL(safeGoal)}</Text><Text style={styles.savedText}>Guardado: {formatBRL(safeFund)}</Text></View>
+            <TouchableOpacity style={styles.iconButton} onPress={() => { setNewGoal(safeGoal.toFixed(2).replace('.', ',')); setGoalModalVisible(true); }} accessibilityRole="button" accessibilityLabel="Editar meta da reserva de emergência"><Ionicons name="create-outline" size={20} color="#6366f1" /></TouchableOpacity>
           </View>
-
-          <View
-            style={styles.progressBarBg}
-            accessible
-            accessibilityRole="progressbar"
-            accessibilityValue={{ min: 0, max: 100, now: Math.round(progressPercent) }}
-            accessibilityLabel="Progresso da reserva de emergência"
-          >
-            <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
-          </View>
+          <View style={styles.progressBarBg} accessible accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: Math.round(progressPercent) }} accessibilityLabel="Progresso da reserva de emergência"><View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} /></View>
           <Text style={styles.progressText}>{progressPercent.toFixed(1)}% da meta concluída</Text>
         </View>
 
         <View style={styles.section}>
-          <View style={styles.rowBetween}>
-            <Text style={styles.sectionTitle} accessibilityRole="header">Análise do consultor IA</Text>
-            <Ionicons name="hardware-chip-outline" size={20} color="#4f46e5" />
-          </View>
-          <View style={styles.insightBox}>
-            <Text style={styles.insightText}>{data.insight || 'Nenhuma análise recente está disponível.'}</Text>
-          </View>
-          <TouchableOpacity
-            style={[styles.refreshBtn, refreshingAI && styles.buttonDisabled]}
-            onPress={handleRefreshAI}
-            disabled={refreshingAI}
-            accessibilityRole="button"
-            accessibilityLabel="Gerar nova análise financeira com inteligência artificial"
-            accessibilityState={{ disabled: refreshingAI, busy: refreshingAI }}
-          >
-            {refreshingAI ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <>
-                <Ionicons name="refresh" size={16} color="#fff" />
-                <Text style={styles.refreshBtnText}>Atualizar análise</Text>
-              </>
-            )}
+          <View style={styles.rowBetween}><Text style={styles.sectionTitle} accessibilityRole="header">Análise do consultor IA</Text><Ionicons name="hardware-chip-outline" size={20} color="#4f46e5" /></View>
+          <View style={styles.insightBox}><Text style={styles.insightText}>{data.insight || 'Nenhuma análise recente está disponível.'}</Text></View>
+          <TouchableOpacity style={[styles.refreshBtn, refreshingAI && styles.buttonDisabled]} onPress={handleRefreshAI} disabled={refreshingAI} accessibilityRole="button" accessibilityLabel="Gerar nova análise financeira com inteligência artificial" accessibilityState={{ disabled: refreshingAI, busy: refreshingAI }}>
+            {refreshingAI ? <ActivityIndicator size="small" color="#fff" /> : <><Ionicons name="refresh" size={16} color="#fff" /><Text style={styles.refreshBtnText}>Atualizar análise</Text></>}
           </TouchableOpacity>
           <Text style={styles.hintText}>Atualize apenas quando houver mudanças relevantes nas finanças. A análise pode depender de um provedor externo.</Text>
         </View>
       </ScrollView>
 
-      <Modal visible={modalVisible} animationType="slide" transparent onRequestClose={() => !submittingReserve && setModalVisible(false)}>
+      <Modal visible={modalVisible} animationType="slide" transparent onRequestClose={closeReserveModal}>
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalContainer} accessibilityViewIsModal>
             <Text style={styles.modalTitle} accessibilityRole="header">Guardar dinheiro</Text>
             <Text style={styles.modalSub}>Adicione um valor à reserva de emergência.</Text>
             <Text style={styles.modalLabel}>Valor a guardar</Text>
-            <View style={styles.inputWrapper}>
-              <Text style={styles.currencyPrefix}>R$</Text>
-              <TextInput
-                style={styles.modalInputAmount}
-                keyboardType="numeric"
-                placeholder="0,00"
-                value={reserveAmount}
-                onChangeText={handleAmountChange}
-                accessibilityLabel="Valor a guardar na reserva de emergência"
-                returnKeyType="done"
-              />
-            </View>
+            <View style={styles.inputWrapper}><Text style={styles.currencyPrefix}>R$</Text><TextInput style={styles.modalInputAmount} keyboardType="numeric" placeholder="0,00" value={reserveAmount} onChangeText={handleAmountChange} accessibilityLabel="Valor a guardar na reserva de emergência" returnKeyType="done" /></View>
             <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => { setModalVisible(false); setReserveAmount(''); }} disabled={submittingReserve} accessibilityRole="button" accessibilityState={{ disabled: submittingReserve }}>
-                <Text style={styles.cancelBtnText}>Cancelar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.saveBtn, submittingReserve && styles.buttonDisabled]} onPress={handleSaveReserve} disabled={submittingReserve} accessibilityRole="button" accessibilityState={{ disabled: submittingReserve, busy: submittingReserve }}>
-                {submittingReserve ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.saveBtnText}>Confirmar</Text>}
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.cancelBtn} onPress={closeReserveModal} disabled={submittingReserve} accessibilityRole="button" accessibilityState={{ disabled: submittingReserve }}><Text style={styles.cancelBtnText}>Cancelar</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.saveBtn, submittingReserve && styles.buttonDisabled]} onPress={handleSaveReserve} disabled={submittingReserve} accessibilityRole="button" accessibilityState={{ disabled: submittingReserve, busy: submittingReserve }}>{submittingReserve ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.saveBtnText}>Confirmar</Text>}</TouchableOpacity>
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -310,25 +247,10 @@ export default function InsightsScreen({ navigation }: any) {
             <Text style={styles.modalTitle} accessibilityRole="header">Editar meta</Text>
             <Text style={styles.modalSub}>Ajuste a meta total da reserva de emergência.</Text>
             <Text style={styles.modalLabel}>Nova meta total</Text>
-            <View style={styles.inputWrapper}>
-              <Text style={styles.currencyPrefix}>R$</Text>
-              <TextInput
-                style={styles.modalInputAmount}
-                keyboardType="numeric"
-                placeholder="0,00"
-                value={newGoal}
-                onChangeText={handleGoalAmountChange}
-                accessibilityLabel="Nova meta total da reserva de emergência"
-                returnKeyType="done"
-              />
-            </View>
+            <View style={styles.inputWrapper}><Text style={styles.currencyPrefix}>R$</Text><TextInput style={styles.modalInputAmount} keyboardType="numeric" placeholder="0,00" value={newGoal} onChangeText={handleGoalAmountChange} accessibilityLabel="Nova meta total da reserva de emergência" returnKeyType="done" /></View>
             <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setGoalModalVisible(false)} disabled={submittingGoal} accessibilityRole="button" accessibilityState={{ disabled: submittingGoal }}>
-                <Text style={styles.cancelBtnText}>Cancelar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.saveBtn, submittingGoal && styles.buttonDisabled]} onPress={handleSaveGoal} disabled={submittingGoal} accessibilityRole="button" accessibilityState={{ disabled: submittingGoal, busy: submittingGoal }}>
-                {submittingGoal ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.saveBtnText}>Salvar meta</Text>}
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setGoalModalVisible(false)} disabled={submittingGoal} accessibilityRole="button" accessibilityState={{ disabled: submittingGoal }}><Text style={styles.cancelBtnText}>Cancelar</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.saveBtn, submittingGoal && styles.buttonDisabled]} onPress={handleSaveGoal} disabled={submittingGoal} accessibilityRole="button" accessibilityState={{ disabled: submittingGoal, busy: submittingGoal }}>{submittingGoal ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.saveBtnText}>Salvar meta</Text>}</TouchableOpacity>
             </View>
           </View>
         </KeyboardAvoidingView>
