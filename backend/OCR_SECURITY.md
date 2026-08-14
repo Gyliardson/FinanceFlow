@@ -12,6 +12,8 @@ The production `/upload-receipt` route is installed by `runtime:create_app`. It 
 
 `OcrProvider` is intentionally small. Production uses the Gemini adapter; tests use deterministic fakes. Critical CI must not require a Gemini key, network call or stochastic response.
 
+The production adapter uses Google's maintained `google-genai` SDK and the stable `gemini-3.6-flash` model. The provider boundary exists so model/SDK lifecycle changes can be handled without changing the domain parser or CI contract. Model changes must be checked against Google's current model/deprecation documentation rather than inferred from old code comments.
+
 Raw provider text is untrusted. `parse_ocr_output` accepts only a JSON object with these fields:
 
 - `amount`: exact decimal or `null`; normalized to FinanceFlow's two-decimal money semantics and bounded to the supported financial range;
