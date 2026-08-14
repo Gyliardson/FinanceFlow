@@ -1,204 +1,210 @@
-import asyncio
-import sys
+"""Experimental Unopar student-portal browser adapter.
+
+This adapter deliberately avoids stealth plugins, fingerprint spoofing, randomized
+"human" input, and anti-bot/human-verification bypass. It is disabled by default and
+returns only validated, non-persisted invoice candidates.
+"""
+
+from __future__ import annotations
+
 import logging
 import os
 import re
-import random
-from datetime import datetime
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
+from typing import Literal
+
 from dotenv import load_dotenv
+from pydantic import ValidationError
+
+from integration_contracts import (
+    IntegrationResult,
+    InvoiceCandidate,
+    blocked_result,
+    disabled_result,
+    error_result,
+    experimental_integrations_enabled,
+    unavailable_result,
+)
 
 load_dotenv()
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-async def scrape_unopar() -> dict:
-    """
-    Automacao para acessar o Portal do Aluno da Unopar.
-    Realiza login com CPF e Senha, acessa o Financeiro,
-    clica em Pagar na mensalidade aberta e extrai o codigo PIX Copia e Cola,
-    o valor com desconto de pontualidade e a data de pontualidade.
-    """
-    load_dotenv(override=True)
-    ra = os.getenv("UNOPAR_RA")
-    password = os.getenv("UNOPAR_PASSWORD")
-    
-    if not ra or not password:
-        return {"status": "error", "message": "Variáveis UNOPAR_RA ou UNOPAR_PASSWORD não encontradas no arquivo .env local do servidor."}
+UNOPAR_URL = "https://login.unopar.br"
+NAVIGATION_TIMEOUT_MS = 60_000
+PortalState = Literal["blocked", "unavailable"]
 
-    logger.info("Iniciando rotina Playwright para portal Unopar.")
-    os.makedirs("tmp", exist_ok=True)
-    
-    display = None
-    if sys.platform.startswith("linux"):
+
+def _payload(result: IntegrationResult) -> dict:
+    return result.model_dump(mode="json", exclude_none=True)
+
+
+def _classify_portal_text(text: str) -> PortalState | None:
+    normalized = text.lower()
+    if "captcha" in normalized or "verificação de segurança" in normalized:
+        return "blocked"
+    if "indisponível" in normalized or "tente novamente" in normalized:
+        return "unavailable"
+    return None
+
+
+async def _first_visible(*locators):
+    for locator in locators:
         try:
-            from pyvirtualdisplay import Display
-            logger.info("Sistema Linux detectado. Iniciando Display Virtual (Xvfb) para suportar headless=False...")
-            display = Display(visible=0, size=(1280, 720))
-            display.start()
-        except ImportError:
-            logger.warning("pyvirtualdisplay nao esta instalado. Tentando rodar sem Xvfb interno.")
-        except Exception as e:
-            logger.error(f"Erro ao iniciar display virtual: {e}")
+            if await locator.first.is_visible(timeout=2_500):
+                return locator.first
+        except Exception:
+            continue
+    return None
+
+
+def _extract_visible_invoice(text: str) -> dict | None:
+    description_match = re.search(r"(Mensalidade\s+\d+)", text, re.IGNORECASE)
+    amount_match = re.search(r"Valor:\s*R\$\s*([\d.,]+)", text, re.IGNORECASE)
+    due_match = re.search(
+        r"(?:pontualidade|desconto|vencimento)\s*(?:até)?:?\s*(\d{2}/\d{2}/\d{4})",
+        text,
+        re.IGNORECASE,
+    )
+    if not amount_match or not due_match:
+        return None
+
+    day, month, year = due_match.group(1).split("/")
+    return {
+        "description": (description_match.group(1) if description_match else "Mensalidade Unopar"),
+        "amount": amount_match.group(1).replace(".", "").replace(",", "."),
+        "due_date": f"{year}-{month}-{day}",
+    }
+
+
+async def scrape_unopar() -> dict:
+    if not experimental_integrations_enabled():
+        return _payload(disabled_result("Unopar"))
+
+    load_dotenv(override=True)
+    student_id = os.getenv("UNOPAR_RA", "").strip()
+    password = os.getenv("UNOPAR_PASSWORD", "")
+    if not student_id or not password:
+        return _payload(
+            IntegrationResult(
+                status="error",
+                message="Unopar requires UNOPAR_RA and UNOPAR_PASSWORD server configuration.",
+            )
+        )
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=False,
-                args=[
-                    '--window-position=-32000,-32000',
-                    '--window-size=1280,720',
-                ]
-            )
-            
-            context = await browser.new_context(
-                viewport={'width': 1280, 'height': 720},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
-            await context.grant_permissions(["clipboard-read", "clipboard-write"])
-            
-            page = await context.new_page()
-            # Aplica Stealth para evitar detecção
-            await Stealth().apply_stealth_async(page)
-            
-            try:
-                # === Stage 1: Acesso ao Portal ===
-                logger.info("Acessando login.unopar.br...")
-                await page.goto("https://login.unopar.br", wait_until="networkidle", timeout=60000)
-                
-                # === Stage 2: Inserir CPF ===
-                logger.info("Preenchendo CPF...")
-                await page.wait_for_selector('input', timeout=20000)
-                input_cpf = page.locator('input').first
-                await input_cpf.click()
-                await page.wait_for_timeout(random.uniform(500, 1000))
-                await input_cpf.type(str(ra), delay=random.randint(80, 150))
-                await page.wait_for_timeout(1000)
-                await page.keyboard.press("Enter")
-                
-                # === Stage 3: Inserir Senha ===
-                logger.info("Aguardando campo de senha...")
-                await page.wait_for_timeout(3000)
-                input_senha = page.locator('input[type="password"]').first
-                await input_senha.wait_for(state="visible", timeout=15000)
-                await input_senha.click()
-                await page.wait_for_timeout(random.uniform(500, 1000))
-                await input_senha.type(str(password), delay=random.randint(80, 150))
-                await page.wait_for_timeout(1000)
-                await page.keyboard.press("Enter")
-                
-                # === Stage 4: Aguardar Login e Fechar Popup ===
-                logger.info("Aguardando painel carregar...")
-                await page.wait_for_load_state("networkidle", timeout=45000)
-                await page.wait_for_timeout(5000)
-                
-                await page.screenshot(path="tmp/unopar_01_painel.png")
-                
-                # O portal exibe um popup de oferta (ex: Santander Top Espana).
-                # Pressionar Escape fecha o modal de forma confiavel.
-                logger.info("Fechando popup de oferta (Escape)...")
-                await page.keyboard.press("Escape")
-                await page.wait_for_timeout(2000)
-                
-                # === Stage 5: Clicar em Financeiro (menu lateral) ===
-                logger.info("Clicando em 'Financeiro' no menu lateral...")
-                financeiro = page.locator('text="Financeiro"').first
-                await financeiro.click(force=True)
-                await page.wait_for_timeout(8000)
-                
-                await page.screenshot(path="tmp/unopar_02_financeiro.png")
-                
-                # === Stage 6: Extrair dados da mensalidade do card (antes de clicar Pagar) ===
-                logger.info("Extraindo dados da mensalidade do card...")
-                body_text = await page.inner_text("body")
-                
-                # Extrair descricao (ex: "Mensalidade 04")
-                desc_match = re.search(r"(Mensalidade\s+\d+)", body_text)
-                description = desc_match.group(1) if desc_match else "Mensalidade Unopar"
-                
-                # Extrair valor (ex: "R$184,64")
-                valor_match = re.search(r"Valor:\s*R\$\s*([\d.,]+)", body_text)
-                amount_str = valor_match.group(1) if valor_match else "0"
-                amount = float(amount_str.replace(".", "").replace(",", "."))
-                
-                # Extrair data de pontualidade (ex: "08/04/2026")
-                pont_match = re.search(r"(?:pontualidade|desconto)\s*(?:até)?:?\s*(\d{2}/\d{2}/\d{4})", body_text, re.IGNORECASE)
-                if pont_match:
-                    d, m, y = pont_match.group(1).split("/")
-                    due_date = f"{y}-{m}-{d}"
-                else:
-                    due_date = datetime.now().strftime("%Y-%m-%d")
-                    m = datetime.now().strftime("%m")
-                    y = datetime.now().strftime("%Y")
-                    
-                logger.info(f"Card: {description} | R${amount} | Pontualidade: {due_date}")
-                
-                if "mensalidade encontrada" not in body_text.lower() and "em aberto" not in body_text.lower():
-                    return {
-                        "status": "success",
-                        "description": f"{description} - {m}/{y}",
-                        "amount": 0.0,
-                        "due_date": due_date,
-                        "barcode": "N/A",
-                        "message": "Nenhuma mensalidade em aberto encontrada no portal."
-                    }
-                
-                # === Stage 7: Clicar em Pagar ===
-                logger.info("Clicando no botão 'Pagar'...")
-                btn_pagar = page.locator('text="Pagar"').last
-                await btn_pagar.click()
-                await page.wait_for_timeout(5000)
-                
-                await page.screenshot(path="tmp/unopar_03_pagar.png")
-                
-                # === Stage 8: Clicar em "Pix Copia e Cola" para copiar o codigo ===
-                logger.info("Clicando em 'Pix Copia e Cola'...")
-                pix_code = "Nao encontrado"
-                
-                try:
-                    pix_btn = page.locator('text="Pix Copia e Cola"').first
-                    await pix_btn.click(timeout=10000)
-                    await page.wait_for_timeout(3000)
-                    
-                    # O portal copia automaticamente o codigo PIX para a area de transferencia
-                    pix_code = await page.evaluate("navigator.clipboard.readText()")
-                    logger.info(f"PIX copiado do clipboard! Tamanho: {len(pix_code)} chars")
-                    
-                except Exception as pix_err:
-                    logger.warning(f"Falha ao extrair PIX Copia e Cola: {str(pix_err)}")
-                    
-                logger.info(f"PIX extraido! Tamanho: {len(pix_code)} chars")
-                
-                return {
-                    "status": "success",
-                    "description": f"{description} - {m}/{y}",
-                    "amount": amount,
-                    "due_date": due_date,
-                    "barcode": pix_code,
-                    "message": "Mensalidade Unopar extraida com sucesso via Portal do Aluno."
-                }
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return _payload(unavailable_result("Unopar browser adapter"))
 
-            except Exception as nav_err:
-                logger.warning(f"Processo falhou na navegação: {str(nav_err)}")
-                
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                page = await (await browser.new_context()).new_page()
+                page.set_default_timeout(NAVIGATION_TIMEOUT_MS)
+                await page.goto(
+                    UNOPAR_URL,
+                    wait_until="domcontentloaded",
+                    timeout=NAVIGATION_TIMEOUT_MS,
+                )
+
+                initial_state = _classify_portal_text(
+                    await page.locator("body").inner_text()
+                )
+                if initial_state == "blocked":
+                    return _payload(blocked_result("Unopar"))
+                if initial_state == "unavailable":
+                    return _payload(unavailable_result("Unopar portal"))
+
+                identity_input = await _first_visible(
+                    page.get_by_label("CPF", exact=False),
+                    page.get_by_label("RA", exact=False),
+                    page.locator('input[type="text"]'),
+                )
+                if identity_input is None:
+                    return _payload(unavailable_result("Unopar login interface"))
+                await identity_input.fill(student_id)
+                await identity_input.press("Enter")
+
+                password_input = await _first_visible(
+                    page.get_by_label("Senha", exact=False),
+                    page.locator('input[type="password"]'),
+                )
+                if password_input is None:
+                    return _payload(unavailable_result("Unopar login interface"))
+                await password_input.fill(password)
+                await password_input.press("Enter")
+                await page.wait_for_load_state("domcontentloaded")
+
+                authenticated_state = _classify_portal_text(
+                    await page.locator("body").inner_text()
+                )
+                if authenticated_state == "blocked":
+                    return _payload(blocked_result("Unopar"))
+                if authenticated_state == "unavailable":
+                    return _payload(unavailable_result("Unopar portal"))
+
+                finance_control = await _first_visible(
+                    page.get_by_role("link", name="Financeiro", exact=False),
+                    page.get_by_role("button", name="Financeiro", exact=False),
+                    page.get_by_text("Financeiro", exact=True),
+                )
+                if finance_control is None:
+                    return _payload(unavailable_result("Unopar financial interface"))
+                await finance_control.click()
+                await page.wait_for_load_state("domcontentloaded")
+
+                visible_text = await page.locator("body").inner_text()
+                finance_state = _classify_portal_text(visible_text)
+                if finance_state == "blocked":
+                    return _payload(blocked_result("Unopar"))
+                if finance_state == "unavailable":
+                    return _payload(unavailable_result("Unopar portal"))
+                if "em aberto" not in visible_text.lower():
+                    return _payload(
+                        IntegrationResult(
+                            status="info",
+                            message="Unopar reports no open tuition invoice.",
+                        )
+                    )
+
+                extracted = _extract_visible_invoice(visible_text)
+                if extracted is None:
+                    return _payload(unavailable_result("Unopar invoice interface"))
+
+                # PIX/barcode is optional. Clipboard access is not granted globally;
+                # use visible text only when the portal exposes it semantically.
+                pix_match = re.search(
+                    r"(?:pix|copia e cola|linha digit[aá]vel)\s*:?[\s\n]+([^\n]{10,255})",
+                    visible_text,
+                    re.IGNORECASE,
+                )
+                barcode = pix_match.group(1).strip() if pix_match else None
+
                 try:
-                    if not page.is_closed():
-                        await page.screenshot(path="tmp/unopar_error_critico.png")
-                except:
-                    pass
-                    
-                return {"status": "error", "message": f"Erro ao navegar no PDA Unopar: {str(nav_err)}"}
-                
+                    candidate = InvoiceCandidate(
+                        description=extracted["description"],
+                        amount=extracted["amount"],
+                        due_date=extracted["due_date"],
+                        barcode=barcode,
+                    )
+                except (ValidationError, ValueError, TypeError):
+                    return _payload(error_result("Unopar invoice validation"))
             finally:
                 await browser.close()
-    
-    finally:
-        if display:
-            display.stop()
+
+        return _payload(
+            IntegrationResult(
+                status="success",
+                message="Unopar produced one validated invoice candidate.",
+                candidate=candidate,
+            )
+        )
+    except Exception as exc:
+        logger.warning("Unopar adapter failed safely: %s", type(exc).__name__)
+        return _payload(error_result("Unopar"))
+
 
 if __name__ == "__main__":
-    resultado = asyncio.run(scrape_unopar())
-    print("\n[Modulo de Scraping Unopar]:")
-    print(resultado)
+    import asyncio
+
+    print(asyncio.run(scrape_unopar()))

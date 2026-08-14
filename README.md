@@ -16,480 +16,332 @@
 
 [![FinanceFlow Deploy](https://github.com/Gyliardson/FinanceFlow/actions/workflows/deploy-frontend.yml/badge.svg)](https://github.com/Gyliardson/FinanceFlow/actions/workflows/deploy-frontend.yml)
 
----
-
-**[Português (BR)](#português) | [English](#english)**
+**[Português](#português) | [English](#english)**
 
 ---
 
 # Português
 
-## Sobre o Projeto
+## Visão geral
 
-O **FinanceFlow** é um sistema completo de gestão de contas a pagar, desenvolvido como aplicativo Android nativo com backend em nuvem. Ele permite ao usuário cadastrar contas avulsas e recorrentes, registrar receitas, acompanhar pagamentos com upload de comprovantes, receber notificações inteligentes e consultar insights financeiros gerados por Inteligência Artificial (Google Gemini).
+O **FinanceFlow** é um aplicativo mobile de gestão financeira pessoal com backend FastAPI. O projeto cobre contas avulsas e recorrentes, receitas, pagamentos, comprovantes privados, notificações, operação offline com isolamento por usuário e recursos de IA para OCR/insights.
 
-O sistema também inclui módulos educacionais de Web Scraping (inativos em produção) que demonstram como automatizar a captura de boletos em diferentes arquiteturas web.
+A arquitetura de produção usa **Supabase Auth** como identidade, PostgreSQL/RLS para isolamento por usuário e Storage privado para comprovantes. Valores financeiros autoritativos usam semântica decimal exata no backend e no banco.
+
+## Estado das capacidades
+
+### Produção
+
+- API FastAPI com autenticação Bearer baseada em sessão Supabase.
+- RLS/ownership por usuário para tabelas financeiras.
+- Contas avulsas e recorrentes com proteção de idempotência no PostgreSQL.
+- Receitas, saldo, reserva e projeções usando regras de dinheiro decimal exato.
+- Pagamento com ou sem comprovante.
+- Comprovantes em bucket **privado**, identificados por object path opaco e acessados por URL assinada temporária após autorização.
+- OCR de documentos com structured output e validação local antes de qualquer confiança nos dados extraídos.
+- Casos de OCR ilegível/baixa confiança exigem revisão manual em vez de persistência automática.
+- Sessão mobile persistida em armazenamento seguro, refresh/logout e cache financeiro isolado por usuário.
+- Notificações locais de vencimento.
+- Expo SDK 57 / React Native 0.86 com checks de TypeScript, Expo Doctor e export web no CI.
+
+### Experimental e desabilitado por padrão
+
+O repositório contém adapters de **DASMEI, TIM, Unopar e IMAP/PDF** para estudo de integrações com interfaces externas mutáveis. Eles **não fazem parte do runtime de produção** e exigem opt-in explícito por configuração.
+
+Esses módulos seguem uma política fail-closed:
+
+- não tentam contornar CAPTCHA, human verification, antifraude, paywall ou controles de acesso;
+- não usam stealth plugins, fingerprints falsificados, coordenadas aleatórias ou “humanização” para esconder automação;
+- interfaces que exigem verificação humana retornam estado bloqueado/indisponível;
+- resultados financeiros só podem ser promovidos após validação estruturada de valor/data/código;
+- não existe fallback de valor, data ou barcode inventado;
+- screenshots/documentos autenticados não são persistidos por padrão;
+- erros externos são sanitizados;
+- IMAP usa critérios de remetente/assunto, leitura não destrutiva e `source_id` determinístico;
+- o scheduler experimental apenas coleta candidatos e **não persiste registros financeiros** por conta própria.
+
+Sites externos podem mudar sem aviso. Esses adapters são deliberadamente tratados como experimentais e podem retornar `blocked`, `unavailable` ou `error` em vez de tentar aumentar agressivamente a automação.
 
 ## Arquitetura
 
-O sistema é dividido em duas frentes que se comunicam via API REST:
+### Backend
 
-**Backend (Python / FastAPI)**
-- API REST completa com endpoints para faturas, pagamentos, receitas, configurações e insights.
-- Integração com Google Gemini para OCR de comprovantes e geração de análises financeiras.
-- Supabase como banco de dados (PostgreSQL) e Storage para comprovantes.
-- Deploy automatizado via Docker no Render.
+- **FastAPI** — API e validação de domínio.
+- **Supabase Auth** — identidade end-user.
+- **PostgreSQL / Supabase** — persistência financeira e RLS.
+- **Supabase Storage** — comprovantes privados.
+- **Google GenAI** — provider de OCR/insights; testes críticos usam providers determinísticos.
+- **Docker** — imagem de produção validada em CI.
 
-**Mobile (React Native / Expo)**
-- Aplicativo Android nativo com 7 telas dedicadas.
-- Sistema de notificações push locais com mensagens progressivas antes do vencimento.
-- Modo offline com cache local e indicador de status de rede.
-- Atualizações OTA (Over-the-Air) via Expo EAS Update com GitHub Actions.
+### Mobile
 
-## Funcionalidades
+- **React Native + Expo SDK 57**.
+- Sessão Supabase com Bearer dinâmico para a API.
+- Cache financeiro owner-scoped para modo offline.
+- Expo Notifications para lembretes locais.
+- EAS Update/Build para distribuição mobile quando credenciais externas estiverem configuradas.
 
-### Gestão de Contas
-- **Contas Avulsas:** Cadastro manual ou via OCR de faturas únicas.
-- **Contas Recorrentes:** Templates mensais com geração automática de instâncias. O sistema calcula o próximo vencimento e evita criar faturas vencidas no momento do cadastro.
-- **Histórico Detalhado:** Tela de detalhes com relacionamento automático entre faturas (por template ou descrição similar).
+## Regras de segurança e correção
 
-### Pagamentos
-- **Pagamento com Comprovante:** Upload de imagem/PDF para o Supabase Storage com URL pública vinculada à fatura.
-- **Pagamento Rápido:** Opção de marcar como pago sem anexar comprovante.
-- **Validação via IA:** Motor de OCR (Google Gemini) que extrai valor, data e código de barras de documentos, com validação heurística cruzada (score de confiança).
+- Usuário A não deve ler ou alterar recursos do Usuário B.
+- Service-role não é distribuída ao cliente mobile.
+- `owner_id`/RLS são boundaries de autorização no banco.
+- Dinheiro não usa binary float em cálculos autoritativos.
+- Instâncias recorrentes possuem garantia de unicidade no banco para retries/concurrency.
+- Uploads são limitados e validados por conteúdo real, não somente pelo filename/MIME declarado.
+- Comprovantes não possuem URL pública permanente.
+- OCR é sugestão: structured output é revalidado localmente antes de uso.
+- CI não depende de Gemini real nem de portais externos reais.
 
-### Financeiro
-- **Controle de Receitas:** Cadastro de entradas (Salário, Extra, Ajuste Manual) com histórico completo.
-- **Saldo Dinâmico:** Cálculo automático do saldo atual considerando receitas, pagamentos e reserva de emergência.
-- **Sobra Estimada:** Projeção mensal que subtrai as contas pendentes do saldo disponível.
+## Desenvolvimento
 
-### Inteligência Artificial
-- **Insights Financeiros:** Análise mensal gerada pelo Google Gemini com recomendações personalizadas sobre reserva de emergência e investimentos (CDB).
-- **Cache Inteligente:** Insights são gerados uma vez por mês e armazenados no banco para evitar consumo desnecessário de API.
-- **Atualização Manual:** Botão para forçar nova análise quando houver mudanças significativas.
+### Requisitos
 
-### Reserva de Emergência
-- **Meta Configurável:** O usuário define um objetivo financeiro para a reserva.
-- **Alocação Incremental:** Possibilidade de guardar valores parciais a qualquer momento.
-- **Barra de Progresso:** Visualização do percentual atingido em relação à meta.
+- Python 3.10+.
+- Node.js **22.13+** para a baseline mobile atual.
+- PostgreSQL/Supabase para desenvolvimento integrado.
+- Expo CLI/EAS CLI apenas para fluxos mobile que os utilizem.
 
-### Notificações
-- **Lembretes Antecipados:** Notificações automáticas T-3, T-2 e T-1 dias antes do vencimento (9h).
-- **Alertas no Dia:** Três notificações progressivas no dia do vencimento (9h, 14h, 20h) com tom crescente de urgência.
-- **Cancelamento Automático:** Ao registrar um pagamento, as notificações pendentes daquela fatura são canceladas.
-
-### Resiliência
-- **Modo Offline:** Cache local com AsyncStorage que exibe os últimos dados carregados quando não há conexão.
-- **Indicador de Rede:** Banner visual informando o usuário quando está operando em modo offline, com botão para tentar reconectar.
-- **Validação Rigorosa:** Limites de caracteres e valores enforced tanto no frontend quanto no backend (Pydantic).
-
-### Módulos de Scraping (Educacionais)
-
-O repositório inclui **4 exemplos práticos** de scrapers/coletores para demonstrar como automatizar a captura de faturas em diferentes cenários. **Estes módulos foram desenvolvidos com fins educacionais e de portfólio.** Quem clonar o projeto é encorajado a modificar ou criar novos scrapers conforme suas necessidades.
-
-> [!WARNING]
-> **Aviso sobre Hospedagem e Playwright:** Os scrapers baseados em navegador (TIM, DASMEI, Unopar) utilizam Playwright com `pyvirtualdisplay` para burlar bloqueios antibot. Isso exige infraestrutura com no mínimo 1GB a 2GB de RAM. Hospedagens na camada gratuita (como Render com 512MB) sofrerão Out of Memory. Esses módulos estão inativos no deploy de produção, mas são totalmente funcionais em ambientes com recursos adequados.
-
-1. **DASMEI (Site Governamental):** Scraper que acessa o portal do Simples Nacional usando apenas CNPJ público, com navegação headless via Playwright.
-2. **TIM Móvel (Portal Canvas/Flutter):** Automação completa para o Meu TIM usando `playwright-stealth`. Lida com logins, contorna banners e valida faturas via OCR da tela, superando os desafios do CanvasKit que oculta elementos do DOM.
-3. **Unopar (Portal do Aluno):** Bot com navegação condicional para a área financeira. Busca boletos com desconto de pontualidade e copia automaticamente a chave "Pix Copia e Cola".
-4. **IMAP / Email (Faturas PDF):** Módulo que acessa o provedor de e-mail via protocolo IMAP. Monitora mensagens com faturas em PDF, descriptografa PDFs protegidos por senha e extrai dados via OCR Gemini.
-
-## Como Rodar
-
-### Pré-requisitos
-
-- [Python 3.10+](https://www.python.org/)
-- [Node.js 20+](https://nodejs.org/)
-- [Expo CLI](https://expo.dev/)
-- Conta no [Supabase](https://supabase.com/)
-- Chave de API do [Google Gemini](https://ai.google.dev/)
-
-### Configuração do Ambiente
-
-**1. Clone o repositório:**
-
-```bash
-git clone https://github.com/Gyliardson/FinanceFlow.git
-cd FinanceFlow
-```
-
-**2. Banco de Dados (Supabase):**
-
-Crie um projeto no Supabase e execute o script `backend/supabase_schema.sql` no SQL Editor para criar as tabelas e permissões.
-
-**3. Backend:**
+### Backend
 
 ```bash
 cd backend
 python -m venv venv
-
-# Windows:
-venv\Scripts\activate
-# Linux / macOS:
-# source venv/bin/activate
-
+# Linux/macOS: source venv/bin/activate
+# Windows: venv\Scripts\activate
 pip install -r requirements.txt
+uvicorn runtime:create_app --factory --reload
 ```
 
-Crie o arquivo `.env` na pasta `backend/` baseado no `.env.example`:
+Use `backend/.env.example` como referência. Segredos e service-role devem permanecer somente no servidor.
 
-```env
-SUPABASE_URL="sua-url-aqui"
-SUPABASE_KEY="sua-chave-aqui"
-SUPABASE_SERVICE_ROLE_KEY="sua-service-role-key"
-GEMINI_API_KEY="sua-chave-gemini-aqui"
-```
-
-**4. Mobile:**
+### Mobile
 
 ```bash
 cd mobile
-npm install
-```
-
-Crie o arquivo `.env` na pasta `mobile/` baseado no `.env.example`:
-
-```env
-EXPO_PUBLIC_API_URL="http://192.168.1.X:8000"
-```
-
-### Executando o Projeto
-
-**Backend:**
-
-```bash
-cd backend
-venv\Scripts\activate
-uvicorn main:app --reload
-```
-
-**Mobile:**
-
-```bash
-cd mobile
+npm ci
 npx expo start
 ```
 
-## Guia de Deploy (v1.00)
+Use `mobile/.env.example`. O cliente precisa apenas de variáveis públicas adequadas ao app, como URL da API, URL do projeto Supabase e publishable/anon key. Nunca coloque service-role no bundle.
 
-Este projeto está configurado para deploy automatizado via GitHub.
+## Testes e quality gates
 
-### 1. Backend (Render)
+Os workflows do repositório exercitam, conforme o escopo:
 
-O backend utiliza **Docker** para garantir consistência.
+- backend pytest e compilação Python;
+- `pip check` e `pip-audit`;
+- PostgreSQL real para recurring/idempotency e ownership/RLS;
+- mobile TypeScript;
+- contrato de autenticação/cache mobile;
+- Expo Doctor/config/export smoke;
+- build do container backend;
+- npm audit com evidência preservada;
+- Gitleaks/secret scan.
 
-1. Crie um **Web Service** no [Dashboard do Render](https://dashboard.render.com).
-2. Conecte este repositório do GitHub.
-3. Configure o **Root Directory** para `backend`.
-4. O Render detectará o `Dockerfile` automaticamente.
-5. Adicione as **Environment Variables** no painel:
-   - `ENVIRONMENT`: `production`
-   - `PORT`: `8000`
-   - `SUPABASE_URL`: (Seu URL do Supabase)
-   - `SUPABASE_KEY`: (Sua Service Role Key)
-   - `GOOGLE_API_KEY`: (Sua chave do Gemini)
+Para desenvolvimento local do backend:
 
-> [!TIP]
-> Este repositório inclui um arquivo `render.yaml` para deploy via Infrastructure-as-Code. O Render pode provisionar o serviço automaticamente a partir deste arquivo.
+```bash
+cd backend
+pytest -q
+```
 
-### 2. Frontend (Expo EAS)
+Para verificação mobile:
 
-O frontend utiliza **EAS Build/Update** com GitHub Actions para atualizações OTA.
+```bash
+cd mobile
+npm ci
+npx tsc --noEmit
+npx expo-doctor
+```
 
-1. Instale o EAS CLI: `npm install -g eas-cli`
-2. Rode `eas login` e `eas build:configure` na pasta `mobile`.
-3. Obtenha seu **EXPO_TOKEN** no painel da Expo.
-4. No GitHub: Vá em **Settings > Secrets and variables > Actions** e adicione:
-   - `EXPO_TOKEN`: (Seu token da Expo)
-5. Ao dar `push` na branch `main` (com mudanças em `mobile/`), o GitHub Actions disparará um **EAS Update** automaticamente para todos os APKs instalados.
+## Integrações experimentais
 
-> [!TIP]
-> Para gerar o APK inicial, rode: `eas build --platform android --profile production`
+A flag `ENABLE_EXPERIMENTAL_INTEGRATIONS` deve permanecer desativada por padrão. Ativá-la não torna os adapters parte do produto suportado nem autoriza qualquer evasão de controle externo.
+
+- **DASMEI:** Playwright normal; interrompe quando houver human verification ou interface incompatível.
+- **TIM:** usa seletores semânticos quando disponíveis; interfaces Canvas sem boundary confiável são tratadas como indisponíveis, não operadas por coordenadas adivinhadas.
+- **Unopar:** coleta somente quando uma navegação ordinária e validável for possível.
+- **IMAP/PDF:** allowlist explícita, `BODY.PEEK`, PDF com MIME/assinatura/tamanho validados e retorno de candidatos sem persistência automática.
+- **Scheduler:** collection-only e desabilitado no runtime de produção.
+
+Não use credenciais reais, documentos financeiros reais ou screenshots autenticados como fixtures de CI.
+
+## Deploy
+
+O backend possui Dockerfile/Render configuration; o mobile possui configuração Expo/EAS. Provisionamento externo, credenciais e builds remotos devem ser configurados pelo operador. O CI valida o que pode ser reproduzido sem depender de credenciais de produção.
+
+## Limitações atuais
+
+- Portais externos não são garantidos nem gates de CI.
+- Os adapters experimentais podem deixar de funcionar quando interfaces externas mudarem.
+- Findings npm residuais de tooling/Expo permanecem visíveis quando não existe caminho compatível seguro; não são ocultados com `--force`/allowlist apenas para obter CI verde.
+- Assets e builds nativos remotos dependem de infraestrutura/credenciais externas quando aplicável.
 
 ---
 
 # English
 
-## About the Project
+## Overview
 
-**FinanceFlow** is a full-stack bill management system, built as a native Android application with a cloud-hosted backend. It allows the user to register one-time and recurring bills, track income, manage payments with receipt uploads, receive smart push notifications, and consult AI-powered financial insights generated by Google Gemini.
+**FinanceFlow** is a mobile personal-finance application backed by FastAPI. It covers one-time and recurring bills, income, payments, private receipts, local notifications, per-user offline state, and AI-assisted OCR/financial insights.
 
-The system also includes educational Web Scraping modules (inactive in production) that demonstrate how to automate invoice capture across different web architectures.
+The production architecture uses **Supabase Auth** for identity, PostgreSQL/RLS for user isolation, and private Storage for receipt documents. Authoritative money logic uses exact decimal semantics.
+
+## Capability status
+
+### Production
+
+- FastAPI API protected by Supabase-session Bearer authentication.
+- Per-user ownership/RLS for financial tables.
+- One-time and recurring bills with PostgreSQL idempotency guarantees.
+- Income, balances, reserves and projections using exact decimal-money rules.
+- Receipt and receipt-less payment flows.
+- Receipts stored in a **private** bucket and exposed only through short-lived authorized signed access.
+- OCR with structured output plus local validation before extracted data is trusted.
+- Unreadable/low-confidence OCR requires manual review instead of automatic persistence.
+- Mobile secure session persistence, refresh/logout and owner-scoped offline financial cache.
+- Local due-date notifications.
+- Expo SDK 57 / React Native 0.86 with TypeScript, Expo Doctor and web-export smoke checks.
+
+### Experimental and disabled by default
+
+DASMEI, TIM, Unopar and IMAP/PDF adapters remain portfolio/educational integrations for mutable third-party interfaces. They are **not part of the production runtime** and require explicit opt-in.
+
+Their fail-closed policy is intentional:
+
+- no CAPTCHA, human-verification, anti-fraud, paywall or access-control evasion;
+- no stealth plugins, forged fingerprints or randomized “human” interaction used to conceal automation;
+- human-verification states return blocked/unavailable outcomes;
+- financial candidates require structured amount/date/barcode validation;
+- no fabricated money/date/barcode fallback is accepted as success;
+- authenticated screenshots/documents are not persisted by default;
+- external errors are sanitized;
+- IMAP collection is narrowed and non-destructive, with deterministic source IDs;
+- the experimental scheduler collects candidates only and does not persist financial records.
+
+External sites can change without notice. Explicit failure/degradation is preferred over increasingly aggressive browser automation.
 
 ## Architecture
 
-The system is split into two main components that communicate via REST API:
+### Backend
 
-**Backend (Python / FastAPI)**
-- Full REST API with endpoints for bills, payments, incomes, settings, and insights.
-- Google Gemini integration for receipt OCR and financial analysis generation.
-- Supabase as the database (PostgreSQL) and Storage for receipt files.
-- Automated deployment via Docker on Render.
+- **FastAPI** — API/domain validation.
+- **Supabase Auth** — end-user identity.
+- **PostgreSQL / Supabase** — financial persistence and RLS.
+- **Supabase Storage** — private receipts.
+- **Google GenAI** — OCR/insight provider; critical tests use deterministic providers.
+- **Docker** — production image validated by CI.
 
-**Mobile (React Native / Expo)**
-- Native Android application with 7 dedicated screens.
-- Local push notification system with progressive messages before due dates.
-- Offline mode with local cache and network status indicator.
-- OTA (Over-the-Air) updates via Expo EAS Update with GitHub Actions.
+### Mobile
 
-## Features
+- **React Native + Expo SDK 57**.
+- Supabase session lifecycle and dynamic API Bearer token.
+- Owner-scoped financial cache for offline operation.
+- Expo Notifications for local reminders.
+- EAS Build/Update when external credentials/infrastructure are configured.
 
-### Bill Management
-- **One-time Bills:** Manual registration or OCR-assisted creation of individual invoices.
-- **Recurring Bills:** Monthly templates with automatic instance generation. The system calculates the next due date and avoids creating overdue bills at registration time.
-- **Detailed History:** Detail screen with automatic bill relationship tracking (by template or similar description).
+## Security and correctness invariants
 
-### Payments
-- **Payment with Receipt:** Image/PDF upload to Supabase Storage with a public URL linked to the bill.
-- **Quick Payment:** Option to mark as paid without attaching a receipt.
-- **AI Validation:** OCR engine (Google Gemini) that extracts amount, date, and barcode from documents, with cross-referencing heuristic validation (confidence score).
+- User A must never read or mutate User B resources.
+- Service-role credentials never belong in the mobile client.
+- Database authorization is enforced through ownership/RLS.
+- Authoritative money calculations avoid binary float.
+- Recurring instances are protected by a database uniqueness boundary under retries/concurrency.
+- Uploads are bounded and validated from actual content, not filename/MIME alone.
+- Receipts do not have permanent public URLs.
+- OCR output is untrusted until locally schema-validated.
+- CI does not depend on live Gemini calls or real third-party portals.
 
-### Financial
-- **Income Tracking:** Register entries (Salary, Extra, Manual Adjustment) with full history.
-- **Dynamic Balance:** Automatic balance calculation considering income, payments, and emergency fund reserves.
-- **Estimated Surplus:** Monthly projection subtracting pending bills from available balance.
+## Development
 
-### Artificial Intelligence
-- **Financial Insights:** Monthly AI-generated analysis by Google Gemini with personalized recommendations on emergency reserves and investments (CDB).
-- **Smart Caching:** Insights are generated once per month and stored in the database to avoid unnecessary API consumption.
-- **Manual Refresh:** Button to force a new analysis when significant changes occur.
+### Requirements
 
-### Emergency Fund
-- **Configurable Goal:** The user defines a financial target for the reserve.
-- **Incremental Allocation:** Ability to save partial amounts at any time.
-- **Progress Bar:** Visualization of the percentage achieved relative to the goal.
+- Python 3.10+.
+- Node.js **22.13+** for the current mobile baseline.
+- PostgreSQL/Supabase for integrated development.
 
-### Notifications
-- **Early Reminders:** Automatic notifications T-3, T-2, and T-1 days before the due date (9 AM).
-- **Due-Day Alerts:** Three progressive notifications on the due date (9 AM, 2 PM, 8 PM) with increasing urgency.
-- **Automatic Cancellation:** When a payment is registered, all pending notifications for that bill are cancelled.
-
-### Resilience
-- **Offline Mode:** Local cache with AsyncStorage that displays the last loaded data when there is no connection.
-- **Network Indicator:** Visual banner informing the user when operating in offline mode, with a retry button to reconnect.
-- **Strict Validation:** Character and value limits enforced on both frontend and backend (Pydantic).
-
-### Scraping Modules (Educational)
-
-The repository includes **4 practical examples** of scrapers/collectors to demonstrate how to automate invoice capture in different scenarios. **These modules were developed for educational and portfolio purposes.** Anyone cloning the project is encouraged to modify or create new scrapers according to their needs.
-
-> [!WARNING]
-> **Hosting and Playwright Notice:** Browser-based scrapers (TIM, DASMEI, Unopar) use Playwright with `pyvirtualdisplay` to bypass antibot protections. This requires infrastructure with at least 1GB to 2GB of RAM. Free-tier hosting (such as Render with 512MB) will suffer Out of Memory errors. These modules are inactive in production deploy but fully functional in environments with adequate resources.
-
-1. **DASMEI (Government Portal):** Scraper that accesses the Simples Nacional portal using only a public CNPJ, with headless navigation via Playwright.
-2. **TIM Mobile (Canvas/Flutter Portal):** Full automation for Meu TIM using `playwright-stealth`. Handles logins, bypasses banners, and validates invoices via screen OCR, overcoming CanvasKit challenges that hide DOM elements.
-3. **Unopar (Student Portal):** Bot with conditional navigation to the financial area. Searches for early-payment discount boletos and automatically copies the "Pix Copy and Paste" key.
-4. **IMAP / Email (PDF Invoices):** Module that accesses the email provider via IMAP protocol. Monitors messages containing PDF invoices, decrypts password-protected PDFs, and extracts data via Gemini OCR.
-
-## How to Run
-
-### Prerequisites
-
-- [Python 3.10+](https://www.python.org/)
-- [Node.js 20+](https://nodejs.org/)
-- [Expo CLI](https://expo.dev/)
-- [Supabase](https://supabase.com/) Account
-- [Google Gemini](https://ai.google.dev/) API Key
-
-### Environment Setup
-
-**1. Clone the repository:**
-
-```bash
-git clone https://github.com/Gyliardson/FinanceFlow.git
-cd FinanceFlow
-```
-
-**2. Database (Supabase):**
-
-Create a project on Supabase, then run the script `backend/supabase_schema.sql` in the SQL Editor to create all tables and permissions.
-
-**3. Backend:**
+### Backend
 
 ```bash
 cd backend
 python -m venv venv
-
-# Windows:
-venv\Scripts\activate
-# Linux / macOS:
-# source venv/bin/activate
-
+# Linux/macOS: source venv/bin/activate
+# Windows: venv\Scripts\activate
 pip install -r requirements.txt
+uvicorn runtime:create_app --factory --reload
 ```
 
-Create the `.env` file in `backend/` based on `.env.example`:
+Use `backend/.env.example`. Secrets and service-role credentials remain server-side only.
 
-```env
-SUPABASE_URL="your-supabase-url"
-SUPABASE_KEY="your-supabase-key"
-SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
-GEMINI_API_KEY="your-gemini-api-key"
-```
-
-**4. Mobile:**
+### Mobile
 
 ```bash
 cd mobile
-npm install
-```
-
-Create the `.env` file in `mobile/` based on `.env.example`:
-
-```env
-EXPO_PUBLIC_API_URL="http://192.168.1.X:8000"
-```
-
-### Running the Project
-
-**Backend:**
-
-```bash
-cd backend
-venv\Scripts\activate
-uvicorn main:app --reload
-```
-
-**Mobile:**
-
-```bash
-cd mobile
+npm ci
 npx expo start
 ```
 
-## Deploy Guide (v1.00)
+Use `mobile/.env.example`. Only public client configuration belongs in the app bundle; never ship a service-role key.
 
-This project is configured for automated deployment via GitHub.
+## Tests and quality gates
 
-### 1. Backend (Render)
+Repository workflows cover, as applicable:
 
-The backend uses **Docker** for consistent deployments.
+- backend pytest/Python compilation;
+- `pip check` and `pip-audit`;
+- disposable PostgreSQL recurring/idempotency and ownership/RLS checks;
+- mobile TypeScript;
+- mobile auth/cache contract;
+- Expo Doctor/config/web-export smoke;
+- backend container build;
+- npm audit evidence;
+- Gitleaks secret scanning.
 
-1. Create a **Web Service** on the [Render Dashboard](https://dashboard.render.com).
-2. Connect this GitHub repository.
-3. Set the **Root Directory** to `backend`.
-4. Render will auto-detect the `Dockerfile`.
-5. Add the **Environment Variables**:
-   - `ENVIRONMENT`: `production`
-   - `PORT`: `8000`
-   - `SUPABASE_URL`: (Your Supabase URL)
-   - `SUPABASE_KEY`: (Your Service Role Key)
-   - `GOOGLE_API_KEY`: (Your Gemini API Key)
+Backend locally:
 
-> [!TIP]
-> This repository includes a `render.yaml` file for Infrastructure-as-Code deployment. Render can auto-provision the service directly from this file.
-
-### 2. Frontend (Expo EAS)
-
-The frontend uses **EAS Build/Update** with GitHub Actions for OTA updates.
-
-1. Install EAS CLI: `npm install -g eas-cli`
-2. Run `eas login` and `eas build:configure` inside the `mobile` folder.
-3. Get your **EXPO_TOKEN** from the Expo dashboard.
-4. On GitHub: Go to **Settings > Secrets and variables > Actions** and add:
-   - `EXPO_TOKEN`: (Your Expo token)
-5. On every `push` to the `main` branch (with changes in `mobile/`), GitHub Actions will trigger an **EAS Update** to all installed APKs.
-
-> [!TIP]
-> To generate the initial APK, run: `eas build --platform android --profile production`
-
----
-
-## Project Structure | Estrutura do Projeto
-
-```
-FinanceFlow/
-|-- backend/
-|   |-- main.py                 # FastAPI application (all routes)
-|   |-- ai_service.py           # Google Gemini integration (OCR + Insights)
-|   |-- database.py             # Supabase client configuration
-|   |-- scheduler.py            # Automated scraping scheduler (inactive)
-|   |-- supabase_schema.sql     # Database schema (PostgreSQL)
-|   |-- Dockerfile              # Production container
-|   |-- requirements.txt        # Python dependencies
-|   |-- .env.example            # Environment variables template
-|   |-- *_scraper.py            # Educational scraping modules (4 modules)
-|   +-- migrations/             # Database migration scripts
-|
-|-- mobile/
-|   +-- src/
-|       |-- screens/
-|       |   |-- HomeScreen.tsx          # Main dashboard with tabs and filters
-|       |   |-- DetailScreen.tsx        # New bill creation with OCR
-|       |   |-- RecurringBillScreen.tsx  # Recurring bill template creation
-|       |   |-- PaymentScreen.tsx       # Payment with receipt upload
-|       |   |-- BillHistoryScreen.tsx   # Bill details and payment history
-|       |   |-- IncomeScreen.tsx        # Income management
-|       |   +-- InsightsScreen.tsx      # AI insights and emergency fund
-|       |-- components/
-|       |   +-- NetworkStatus.tsx       # Offline mode indicator
-|       |-- services/
-|       |   |-- api.ts                  # Axios HTTP client
-|       |   +-- NotificationService.ts  # Push notification scheduling
-|       +-- navigation/
-|           +-- AppNavigator.tsx        # Stack navigation setup
-|
-|-- .github/workflows/
-|   +-- deploy-frontend.yml    # GitHub Actions (EAS Update)
-|
-|-- assets/                    # Banner and branding assets
-|-- render.yaml                # Render IaC deployment config
-|-- LICENSE                    # FinanceFlow Public License v1.00
-+-- README.md
+```bash
+cd backend
+pytest -q
 ```
 
-## API Endpoints
+Mobile locally:
 
-| Method | Route | Description | Descrição |
-|--------|-------|-------------|-----------|
-| `GET` | `/health` | Health check | Verificação de saúde |
-| `GET` | `/bills` | List all bills | Listar todas as faturas |
-| `GET` | `/bills/pending` | List pending bills | Listar faturas pendentes |
-| `POST` | `/add-bill` | Create a new bill | Cadastrar nova fatura |
-| `GET` | `/bills/{id}/detail` | Bill detail + history | Detalhes e histórico |
-| `POST` | `/bills/{id}/pay` | Pay with receipt | Pagar com comprovante |
-| `POST` | `/bills/{id}/pay-no-receipt` | Pay without receipt | Pagar sem comprovante |
-| `GET` | `/recurring-bills` | List recurring templates | Listar templates recorrentes |
-| `POST` | `/recurring-bills` | Create recurring template | Criar template recorrente |
-| `POST` | `/recurring-bills/generate` | Generate monthly instances | Gerar instâncias mensais |
-| `GET` | `/incomes` | List all incomes | Listar receitas |
-| `POST` | `/incomes` | Register new income | Registrar nova receita |
-| `GET` | `/settings` | Get user settings | Obter configurações |
-| `POST` | `/settings` | Update user settings | Atualizar configurações |
-| `GET` | `/insights` | Get AI financial insight | Obter insight (IA) |
-| `POST` | `/insights/refresh` | Force new AI analysis | Forçar nova análise (IA) |
-| `POST` | `/insights/reserve` | Add to emergency fund | Adicionar à reserva |
-| `POST` | `/upload-receipt` | OCR document processing | Processar documento (OCR) |
-| `POST` | `/validate-bill` | Heuristic bill validation | Validação heurística |
+```bash
+cd mobile
+npm ci
+npx tsc --noEmit
+npx expo-doctor
+```
 
----
+## Experimental integrations
 
-## Segurança | Security
+`ENABLE_EXPERIMENTAL_INTEGRATIONS` is disabled by default. Enabling it does not make the adapters production-supported and never authorizes bypassing external controls.
 
-Este repositório utiliza uma camada de **Segurança Estática (API Key)**. Todas as requisições entre o aplicativo e o servidor são validadas através de um header `X-API-KEY`. Esta chave é injetada automaticamente durante o build de produção via **EAS Secrets** e **GitHub Secrets**, garantindo que as credenciais nunca fiquem expostas no código público.
+- **DASMEI:** ordinary Playwright behavior; stops on human verification or incompatible UI.
+- **TIM:** semantic selectors where available; unsupported Canvas-only states fail closed instead of using guessed screen coordinates.
+- **Unopar:** collection only when ordinary, verifiable navigation is possible.
+- **IMAP/PDF:** explicit allowlist, `BODY.PEEK`, validated PDF MIME/signature/size, and candidate collection without automatic persistence.
+- **Scheduler:** collection-only and not started by the production runtime.
 
-Este repositório está configurado para **não versionar** informações sensíveis. Arquivos como `.env` e diretórios de build/dependências (`node_modules`, `venv`) estão protegidos pelo `.gitignore`. Sempre utilize os arquivos `.env.example` como referência para configurar seu ambiente local.
+Never use real financial documents, authenticated screenshots or production credentials as CI fixtures.
 
-This repository uses a **Static Security Layer (API Key)**. All requests between the app and the server are validated via an `X-API-KEY` header. This key is automatically injected during production builds via **EAS Secrets** and **GitHub Secrets**, ensuring credentials are never exposed in public code.
+## Deployment
 
-This repository is configured to **never version-control** sensitive data. Files such as `.env` and build/dependency directories (`node_modules`, `venv`) are protected by `.gitignore`. Always use the `.env.example` files as a reference to configure your local environment.
+The backend includes Docker/Render configuration and the mobile app includes Expo/EAS configuration. External credentials and remote native builds are operator-managed. CI validates what can be reproduced without production credentials.
 
-## Licença | License
+## Current limitations
 
-Este projeto é licenciado sob a **FinanceFlow Public License - v1.00**.
+- Third-party portals are not availability guarantees or CI gates.
+- Experimental adapters can break when external interfaces change.
+- Residual npm findings remain visible when the upstream Expo/tooling graph has no compatible safe upgrade path; they are not hidden with forced downgrades or blanket allowlists.
+- Remote native builds and external deployment still depend on operator credentials/infrastructure where applicable.
 
-This project is licensed under the **FinanceFlow Public License - v1.00**.
+## License
 
-- **Uso Pessoal / Personal Use:** Totalmente livre para estudo e uso próprio. Atribuição é apreciada, mas opcional. / Entirely free for study and personal use. Attribution is appreciated but optional.
-- **Uso Comercial / Commercial Use:** Permitido, desde que a **atribuição de créditos ao autor seja mantida** de forma visível. / Allowed, provided that **credit attribution to the author is maintained** visibly.
-- **Isenção / Disclaimer:** O software é fornecido "como está". O autor não se responsabiliza por perdas ou danos. / The software is provided "as is". The author is not liable for losses or damages.
-
-Para os termos completos em Português, Inglês ou Espanhol, acesse o arquivo [LICENSE](./LICENSE.md).
-
-For the full terms in Portuguese, English, or Spanish, see the [LICENSE](./LICENSE.md) file.
+See [LICENSE.md](./LICENSE.md).
 
 ---
 
-Desenvolvido por / Developed by **Gyliardson Keitison**
+Developed by **Gyliardson Keitison**  
 [GitHub](https://github.com/Gyliardson) | [LinkedIn](https://www.linkedin.com/in/gyliardson-keitison)
