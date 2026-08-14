@@ -136,16 +136,22 @@ function parseManifest(raw: string): SecureCacheManifest | null {
       parsed.version !== 1
       || typeof parsed.generation !== 'string'
       || !/^[A-Za-z0-9._-]+$/.test(parsed.generation)
+      || typeof parsed.chunks !== 'number'
       || !Number.isInteger(parsed.chunks)
-      || !parsed.chunks
       || parsed.chunks < 1
       || parsed.chunks > 4096
+      || typeof parsed.totalLength !== 'number'
       || !Number.isInteger(parsed.totalLength)
       || parsed.totalLength < 1
     ) {
       return null;
     }
-    return parsed as SecureCacheManifest;
+    return {
+      version: 1,
+      generation: parsed.generation,
+      chunks: parsed.chunks,
+      totalLength: parsed.totalLength,
+    };
   } catch {
     return null;
   }
