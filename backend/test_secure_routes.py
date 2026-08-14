@@ -94,7 +94,7 @@ def test_private_payment_route_uses_bounded_read_and_returns_no_receipt_url(monk
     ],
 )
 def test_private_payment_route_maps_failures_without_provider_leak(
-    monkeypatch, error, status_code, public_detail
+    monkeypatch, caplog, error, status_code, public_detail
 ):
     _install_authenticated_context(monkeypatch)
     monkeypatch.setattr(
@@ -109,6 +109,9 @@ def test_private_payment_route_maps_failures_without_provider_leak(
     assert captured.value.status_code == status_code
     assert captured.value.detail == public_detail
     assert "secret detail" not in str(captured.value.detail)
+    assert BILL_ID not in caplog.text
+    assert OWNER_ID not in caplog.text
+    assert "secret detail" not in caplog.text
 
 
 def test_private_payment_route_fails_closed_without_user_context(monkeypatch):
@@ -168,7 +171,7 @@ def test_private_receipt_access_returns_only_temporary_url_metadata(monkeypatch)
     ],
 )
 def test_private_receipt_access_maps_failures_without_internal_detail(
-    monkeypatch, error, status_code, detail
+    monkeypatch, caplog, error, status_code, detail
 ):
     _install_authenticated_context(monkeypatch)
     monkeypatch.setattr(
@@ -183,3 +186,7 @@ def test_private_receipt_access_maps_failures_without_internal_detail(
     assert captured.value.status_code == status_code
     assert captured.value.detail == detail
     assert "detail" not in captured.value.detail.lower()
+    assert BILL_ID not in caplog.text
+    assert OWNER_ID not in caplog.text
+    assert "provider detail" not in caplog.text
+    assert "path detail" not in caplog.text
