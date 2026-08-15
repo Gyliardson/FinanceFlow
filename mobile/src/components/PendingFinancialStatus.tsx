@@ -44,6 +44,7 @@ export default function PendingFinancialStatus() {
   const ownerRef = useRef<string | null>(ownerId);
   const requestSequence = useRef(0);
   const [pending, setPending] = useState<PendingOperationWithType[]>([]);
+  const [reconciliationUnavailable, setReconciliationUnavailable] = useState(false);
 
   ownerRef.current = ownerId;
 
@@ -52,6 +53,7 @@ export default function PendingFinancialStatus() {
     const requestId = ++requestSequence.current;
     if (!requestedOwner) {
       setPending([]);
+      setReconciliationUnavailable(false);
       return;
     }
 
@@ -62,15 +64,18 @@ export default function PendingFinancialStatus() {
         && ownerRef.current === requestedOwner
       ) {
         setPending(records);
+        setReconciliationUnavailable(false);
       }
     } catch {
-      // Pending-state visibility must never disclose storage errors or block the
-      // authenticated navigator. Reconciliation remains the authoritative path.
+      // Never disclose storage details, durable payloads or replay identifiers.
+      // An unreadable ambiguity is nevertheless not equivalent to an empty set:
+      // show a privacy-safe blocking state so the safety behavior is explainable.
       if (
         requestSequence.current === requestId
         && ownerRef.current === requestedOwner
       ) {
         setPending([]);
+        setReconciliationUnavailable(true);
       }
     }
   }, []);
@@ -90,7 +95,29 @@ export default function PendingFinancialStatus() {
     return () => subscription.remove();
   }, [refresh]);
 
-  if (!ownerId || pending.length === 0) return null;
+  if (!ownerId) return null;
+
+  if (reconciliationUnavailable) {
+    return (
+      <View
+        style={[styles.banner, styles.blockedBanner]}
+        accessible
+        accessibilityLiveRegion="assertive"
+        accessibilityRole="alert"
+        accessibilityLabel="Reconciliação financeira indisponível. O estado seguro de operações anteriores não pôde ser lido. Por segurança, novas operações financeiras podem ficar bloqueadas até que esse estado volte a ser legível."
+      >
+        <Ionicons accessibilityElementsHidden name="warning-outline" size={20} color="#991b1b" />
+        <View style={styles.copy}>
+          <Text style={[styles.title, styles.blockedTitle]}>Reconciliação financeira indisponível</Text>
+          <Text style={[styles.text, styles.blockedText]}>
+            O estado seguro de operações anteriores não pôde ser lido. Por segurança, novas operações financeiras podem ficar bloqueadas até que esse estado volte a ser legível.
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (pending.length === 0) return null;
 
   const summary = operationSummary(pending);
   const count = pending.length;
@@ -128,7 +155,10 @@ const styles = StyleSheet.create({
     borderTopColor: '#fde68a',
     backgroundColor: '#fffbeb',
   },
+  blockedBanner: { borderTopColor: '#fecaca', backgroundColor: '#fef2f2' },
   copy: { flex: 1 },
   title: { color: '#78350f', fontSize: 13, lineHeight: 18, fontWeight: '800' },
+  blockedTitle: { color: '#7f1d1d' },
   text: { marginTop: 2, color: '#92400e', fontSize: 12, lineHeight: 17 },
+  blockedText: { color: '#991b1b' },
 });
