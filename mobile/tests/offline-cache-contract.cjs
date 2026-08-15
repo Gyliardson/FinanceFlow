@@ -24,6 +24,35 @@ function secureEntries() {
   return [...secureStore.__store.entries()];
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function flushMicrotasks() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function resourceEntries(owner, resource) {
+  const prefix = `financeflow.cache.v2.${owner}.${resource}.`;
+  return secureEntries().filter(([key]) => key.startsWith(prefix));
+}
+
+function assertOnlyCurrentGeneration(owner, resource) {
+  const manifestKey = cache.secureUserCacheManifestKey(owner, resource);
+  const manifestRaw = secureStore.__store.get(manifestKey);
+  assert.ok(manifestRaw, `${resource} manifest must exist`);
+  const manifest = JSON.parse(manifestRaw);
+  const expected = new Set([manifestKey]);
+  for (let index = 0; index < manifest.chunks; index += 1) {
+    expected.add(`financeflow.cache.v2.${owner}.${resource}.${manifest.generation}.${index}`);
+  }
+  const actual = new Set(resourceEntries(owner, resource).map(([key]) => key));
+  assert.deepEqual(actual, expected, 'no superseded generation may remain orphaned');
+}
+
 async function testVersionedCacheRoundTripHasFreshnessAndNoPlaintext() {
   await reset();
   const before = Date.now();
@@ -166,6 +195,123 @@ async function testEmptyBillListIsAuthoritativeCacheData() {
   assert.deepEqual(snapshot.data, []);
 }
 
+async function testConcurrentWritersSerializeAndLeaveNoOrphanGeneration() {
+  await reset();
+  const manifestKey = cache.secureUserCacheManifestKey('user-a', 'bills');
+  const entered = deferred();
+  const release = deferred();
+  const originalGetItem = secureStore.getItemAsync;
+  let manifestReads = 0;
+  secureStore.getItemAsync = async (key) => {
+    if (key === manifestKey) {
+      manifestReads += 1;
+      if (manifestReads === 1) {
+        entered.resolve();
+        await release.promise;
+      }
+    }
+    return originalGetItem(key);
+  };
+
+  try {
+    const first = cache.setUserCache('user-a', 'bills', [{ id: 'first', body: 'x'.repeat(3500) }]);
+    await entered.promise;
+    const second = cache.setUserCache('user-a', 'bills', [{ id: 'second', body: 'y'.repeat(3500) }]);
+    await flushMicrotasks();
+    assert.equal(manifestReads, 1, 'second writer must not enter the same owner/resource protocol concurrently');
+    release.resolve();
+    await Promise.all([first, second]);
+  } finally {
+    secureStore.getItemAsync = originalGetItem;
+    release.resolve();
+  }
+
+  assert.deepEqual((await cache.getUserCache('user-a', 'bills'))[0].id, 'second');
+  assertOnlyCurrentGeneration('user-a', 'bills');
+}
+
+async function testLogoutClearWaitsForInFlightWriterAndRemovesPublishedGeneration() {
+  await reset();
+  const manifestKey = cache.secureUserCacheManifestKey('user-a', 'bills');
+  const entered = deferred();
+  const release = deferred();
+  const originalGetItem = secureStore.getItemAsync;
+  let firstManifestRead = true;
+  secureStore.getItemAsync = async (key) => {
+    if (key === manifestKey && firstManifestRead) {
+      firstManifestRead = false;
+      entered.resolve();
+      await release.promise;
+    }
+    return originalGetItem(key);
+  };
+
+  try {
+    const write = cache.setUserCache('user-a', 'bills', [{ id: 'late', body: 'x'.repeat(3500) }]);
+    await entered.promise;
+    const clear = cache.clearUserFinancialCache('user-a');
+    await flushMicrotasks();
+    release.resolve();
+    await Promise.all([write, clear]);
+  } finally {
+    secureStore.getItemAsync = originalGetItem;
+    release.resolve();
+  }
+
+  assert.equal(resourceEntries('user-a', 'bills').length, 0, 'logout must remove the in-flight writer generation');
+  assert.equal(resourceEntries('user-a', 'settings').length, 0);
+}
+
+async function testReaderAndWriterCannotInterleaveDestructiveManifestCleanup() {
+  await reset();
+  await cache.setUserCache('user-a', 'bills', [{ id: 'old', body: 'x'.repeat(3500) }]);
+  const manifestKey = cache.secureUserCacheManifestKey('user-a', 'bills');
+  const manifest = JSON.parse(await secureStore.getItemAsync(manifestKey));
+  const firstChunkKey = `financeflow.cache.v2.user-a.bills.${manifest.generation}.0`;
+  const entered = deferred();
+  const release = deferred();
+  const originalGetItem = secureStore.getItemAsync;
+  const originalSetItem = secureStore.setItemAsync;
+  let blocked = false;
+  let writesWhileReaderBlocked = 0;
+
+  secureStore.getItemAsync = async (key) => {
+    if (key === firstChunkKey && !blocked) {
+      blocked = true;
+      entered.resolve();
+      await release.promise;
+    }
+    return originalGetItem(key);
+  };
+  secureStore.setItemAsync = async (key, value) => {
+    if (blocked && !secureStore.__readerReleased) writesWhileReaderBlocked += 1;
+    return originalSetItem(key, value);
+  };
+  secureStore.__readerReleased = false;
+
+  try {
+    const read = cache.getUserCacheSnapshot('user-a', 'bills');
+    await entered.promise;
+    const write = cache.setUserCache('user-a', 'bills', [{ id: 'new', body: 'y'.repeat(3500) }]);
+    await flushMicrotasks();
+    assert.equal(writesWhileReaderBlocked, 0, 'writer must wait until the reader protocol finishes');
+    secureStore.__readerReleased = true;
+    release.resolve();
+    const oldSnapshot = await read;
+    await write;
+    assert.equal(oldSnapshot.data[0].id, 'old');
+  } finally {
+    secureStore.__readerReleased = true;
+    secureStore.getItemAsync = originalGetItem;
+    secureStore.setItemAsync = originalSetItem;
+    delete secureStore.__readerReleased;
+    release.resolve();
+  }
+
+  assert.equal((await cache.getUserCache('user-a', 'bills'))[0].id, 'new');
+  assertOnlyCurrentGeneration('user-a', 'bills');
+}
+
 async function testDashboardKeepsNetworkReadAuthoritativeAndShowsFreshness() {
   const home = fs.readFileSync(path.join(mobileRoot, 'src/screens/HomeScreen.tsx'), 'utf8');
   const networkStatus = fs.readFileSync(path.join(mobileRoot, 'src/components/NetworkStatus.tsx'), 'utf8');
@@ -198,6 +344,9 @@ async function main() {
     testBestEffortSecureWriteFailureDoesNotCreatePlaintext,
     testLegacyMigrationFailureDeletesPlaintextRatherThanKeepingSensitiveCache,
     testEmptyBillListIsAuthoritativeCacheData,
+    testConcurrentWritersSerializeAndLeaveNoOrphanGeneration,
+    testLogoutClearWaitsForInFlightWriterAndRemovesPublishedGeneration,
+    testReaderAndWriterCannotInterleaveDestructiveManifestCleanup,
     testDashboardKeepsNetworkReadAuthoritativeAndShowsFreshness,
   ];
 

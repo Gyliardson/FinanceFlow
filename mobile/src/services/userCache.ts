@@ -30,6 +30,8 @@ interface SecureCacheManifest {
   totalLength: number;
 }
 
+const cacheResourceTails = new Map<string, Promise<void>>();
+
 function normalizeUserId(userId: string): string {
   const normalized = userId.trim();
   if (!normalized) {
@@ -44,6 +46,35 @@ function secureOwnerToken(userId: string): string {
     throw new Error('Authenticated user id cannot be represented as a SecureStore key');
   }
   return normalized;
+}
+
+function cacheProtocolKey(userId: string, resource: FinancialResource): string {
+  return `${secureOwnerToken(userId)}:${resource}`;
+}
+
+async function withCacheResourceLock<T>(
+  userId: string,
+  resource: FinancialResource,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const key = cacheProtocolKey(userId, resource);
+  const previous = cacheResourceTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => undefined).then(() => gate);
+  cacheResourceTails.set(key, tail);
+
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (cacheResourceTails.get(key) === tail) {
+      cacheResourceTails.delete(key);
+    }
+  }
 }
 
 function hasOwn(value: object, key: string): boolean {
@@ -174,7 +205,7 @@ async function cleanupGeneration(
   }
 }
 
-async function readSecureCacheRaw(
+async function readSecureCacheRawUnlocked(
   userId: string,
   resource: FinancialResource,
 ): Promise<{ state: 'missing' | 'corrupt' | 'ok'; raw?: string }> {
@@ -214,7 +245,7 @@ async function readSecureCacheRaw(
   return { state: 'ok', raw };
 }
 
-async function writeSecureCacheRaw(
+async function writeSecureCacheRawUnlocked(
   userId: string,
   resource: FinancialResource,
   raw: string,
@@ -265,7 +296,7 @@ async function discardLegacyOwnerCache(userId: string, resource: FinancialResour
   }
 }
 
-async function migrateLegacyOwnerCache<T>(
+async function migrateLegacyOwnerCacheUnlocked<T>(
   userId: string,
   resource: FinancialResource,
 ): Promise<UserCacheSnapshot<T> | null> {
@@ -285,7 +316,7 @@ async function migrateLegacyOwnerCache<T>(
   }
 
   try {
-    await writeSecureCacheRaw(userId, resource, raw);
+    await writeSecureCacheRawUnlocked(userId, resource, raw);
   } finally {
     // Plaintext financial cache must not remain durable after the secure-cache upgrade.
     await discardLegacyOwnerCache(userId, resource);
@@ -293,31 +324,49 @@ async function migrateLegacyOwnerCache<T>(
   return snapshot;
 }
 
+async function clearSecureUserCacheUnlocked(
+  userId: string,
+  resource: FinancialResource,
+): Promise<void> {
+  const manifestKey = secureUserCacheManifestKey(userId, resource);
+  let manifest: SecureCacheManifest | null = null;
+  try {
+    const raw = await SecureStore.getItemAsync(manifestKey);
+    manifest = raw ? parseManifest(raw) : null;
+  } catch {
+    // Continue with manifest deletion; unreadable cache is not usable.
+  }
+  await cleanupGeneration(userId, resource, manifest);
+  await SecureStore.deleteItemAsync(manifestKey).catch(() => undefined);
+}
+
 export async function getUserCacheSnapshot<T>(
   userId: string,
   resource: FinancialResource,
 ): Promise<UserCacheSnapshot<T> | null> {
-  let secureResult: { state: 'missing' | 'corrupt' | 'ok'; raw?: string };
-  try {
-    secureResult = await readSecureCacheRaw(userId, resource);
-  } catch {
-    return null;
-  }
+  return withCacheResourceLock(userId, resource, async () => {
+    let secureResult: { state: 'missing' | 'corrupt' | 'ok'; raw?: string };
+    try {
+      secureResult = await readSecureCacheRawUnlocked(userId, resource);
+    } catch {
+      return null;
+    }
 
-  if (secureResult.state === 'ok' && secureResult.raw) {
-    const snapshot = parseCacheSnapshot<T>(resource, secureResult.raw);
-    if (snapshot) return snapshot;
-    await clearSecureUserCache(userId, resource);
-    return null;
-  }
-  if (secureResult.state === 'corrupt') return null;
+    if (secureResult.state === 'ok' && secureResult.raw) {
+      const snapshot = parseCacheSnapshot<T>(resource, secureResult.raw);
+      if (snapshot) return snapshot;
+      await clearSecureUserCacheUnlocked(userId, resource);
+      return null;
+    }
+    if (secureResult.state === 'corrupt') return null;
 
-  try {
-    return await migrateLegacyOwnerCache<T>(userId, resource);
-  } catch {
-    // Migration failed to secure the value; the plaintext copy is still removed.
-    return null;
-  }
+    try {
+      return await migrateLegacyOwnerCacheUnlocked<T>(userId, resource);
+    } catch {
+      // Migration failed to secure the value; the plaintext copy is still removed.
+      return null;
+    }
+  });
 }
 
 export async function getUserCache<T>(
@@ -336,13 +385,15 @@ export async function setUserCache(
   if (!isValidResourcePayload(resource, value)) {
     throw new Error(`Invalid ${resource} cache payload`);
   }
-  const envelope: CacheEnvelope<unknown> = {
-    version: CACHE_VERSION,
-    cachedAt: Date.now(),
-    data: value,
-  };
-  await writeSecureCacheRaw(userId, resource, JSON.stringify(envelope));
-  await discardLegacyOwnerCache(userId, resource);
+  await withCacheResourceLock(userId, resource, async () => {
+    const envelope: CacheEnvelope<unknown> = {
+      version: CACHE_VERSION,
+      cachedAt: Date.now(),
+      data: value,
+    };
+    await writeSecureCacheRawUnlocked(userId, resource, JSON.stringify(envelope));
+    await discardLegacyOwnerCache(userId, resource);
+  });
 }
 
 export async function trySetUserCache(
@@ -358,22 +409,11 @@ export async function trySetUserCache(
   }
 }
 
-async function clearSecureUserCache(userId: string, resource: FinancialResource): Promise<void> {
-  const manifestKey = secureUserCacheManifestKey(userId, resource);
-  let manifest: SecureCacheManifest | null = null;
-  try {
-    const raw = await SecureStore.getItemAsync(manifestKey);
-    manifest = raw ? parseManifest(raw) : null;
-  } catch {
-    // Continue with manifest deletion; unreadable cache is not usable.
-  }
-  await cleanupGeneration(userId, resource, manifest);
-  await SecureStore.deleteItemAsync(manifestKey).catch(() => undefined);
-}
-
 export async function clearUserFinancialCache(userId: string): Promise<void> {
-  await clearSecureUserCache(userId, 'bills');
-  await clearSecureUserCache(userId, 'settings');
+  await Promise.all([
+    withCacheResourceLock(userId, 'bills', () => clearSecureUserCacheUnlocked(userId, 'bills')),
+    withCacheResourceLock(userId, 'settings', () => clearSecureUserCacheUnlocked(userId, 'settings')),
+  ]);
   await AsyncStorage.multiRemove([
     userCacheKey(userId, 'bills'),
     userCacheKey(userId, 'settings'),
@@ -413,7 +453,8 @@ export async function migrateLegacyFinancialCacheToUser(userId: string): Promise
           : null;
       if (!resource) continue;
       if (!parseCacheSnapshot(resource, value)) continue;
-      await writeSecureCacheRaw(normalizedUserId, resource, value);
+      await withCacheResourceLock(normalizedUserId, resource, () =>
+        writeSecureCacheRawUnlocked(normalizedUserId, resource, value));
     }
   } finally {
     await clearLegacyGlobalFinancialCache();

@@ -11,6 +11,7 @@ Financial cache entries are:
 - namespaced by authenticated user ID;
 - encrypted at rest through Expo SecureStore;
 - split into bounded SecureStore chunks with a small manifest so a large bill list is not written as one oversized secure-storage value;
+- serialized per authenticated owner/resource across read, write, migration and destructive cleanup operations so concurrent requests cannot orphan chunk generations or republish data after logout cleanup;
 - versioned;
 - timestamped with the time of the last successful local persistence;
 - treated as read-only fallback data;
@@ -31,10 +32,13 @@ In particular:
 
 - HTTP **401** from the protected FinanceFlow API means the bearer snapshot used by that request was rejected. The app does not read financial cache for that failed request and invalidates that exact session snapshot locally.
 - 401 invalidation is bound to user ID, token and session generation, and serialized with session persistence. A delayed rejection from an older request therefore cannot clear a newer login, including a newer session for the same user.
+- A successful authenticated response is also bound to the exact request session snapshot before callers can consume/cache its data. A response that arrives after logout, account replacement or a newer same-owner session is classified as `FINANCEFLOW_STALE_AUTH_SESSION`, rejected, and is not eligible for offline-cache substitution.
 - HTTP **403** is treated separately as an authorization denial. It does not qualify for offline fallback and does not automatically invalidate an otherwise valid authentication session.
 - Network errors and 5xx/transient service responses do **not** invalidate credentials; same-owner read-only cache remains available when present.
 
 Local cache persistence is best-effort: failure to write SecureStore after a successful API read must not convert fresh server data into an offline/error response. It also must not fall back to writing sensitive financial payloads to plaintext AsyncStorage.
+
+The chunked SecureStore protocol is coordinated per `(owner, resource)` inside the application process. This ordering is part of the privacy teardown contract, not merely a performance optimization: a logout cleanup waits for an already-started cache transaction and then removes the published generation, while a transaction queued before cleanup cannot later publish chunks behind that cleanup. Destructive corruption handling is ordered by the same protocol, preventing a stale reader from deleting a newer writer's manifest.
 
 ## Authentication and ownership
 
@@ -77,12 +81,14 @@ Without those guarantees, silently queueing financial writes could create duplic
 
 ## Validation
 
-The mobile auth/cache contract covers session restart, expiry, refresh concurrency, logout, account switching and owner isolation. It also executes the API-rejection contract against production auth/cache helpers, including:
+The mobile auth/cache contract covers session restart, expiry, refresh concurrency, logout, account switching and owner isolation. It also executes the API-rejection and successful-response freshness contracts against production auth/cache helpers, including:
 
 - network and 5xx/transient failures remaining eligible for offline fallback;
 - 401/403/non-transient 4xx being ineligible for stale cache substitution;
 - current rejected snapshots clearing only their owner and local session;
-- stale 401 snapshots being unable to clear a newer same-owner login.
+- stale 401 snapshots being unable to clear a newer same-owner login;
+- successful responses from logged-out, replaced-owner or replaced same-owner sessions being rejected before callers can consume/cache them;
+- stale-session response failures being ineligible for offline fallback.
 
 The offline cache contract additionally covers:
 
@@ -95,6 +101,9 @@ The offline cache contract additionally covers:
 - secure-storage read failure with no plaintext fallback;
 - best-effort secure-storage write failure without plaintext persistence;
 - failed legacy-to-secure migration deleting the plaintext financial cache rather than preserving it indefinitely;
+- concurrent same-resource writers being serialized with no superseded generation left orphaned;
+- logout cleanup being ordered after in-flight cache writes so no owner generation survives teardown;
+- reader/writer interleavings being serialized so destructive stale-reader cleanup cannot delete a newly published manifest;
 - authoritative empty bill lists;
 - dashboard wiring that keeps successful network reads authoritative and refuses cache fallback before lookup on authoritative HTTP rejection;
 - settings-save regression coverage that forbids false rollback claims after ambiguous failures;
