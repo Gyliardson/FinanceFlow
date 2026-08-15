@@ -33,7 +33,7 @@ jobs:
         run: npm ci
       - name: Resolve Expo native config
         run: npx expo config --type public > "$RUNNER_TEMP/expo-public-config.json"
-      - name: Compile production auth/cache/idempotency/date modules for Node harness
+      - name: Compile production auth/cache/idempotency/date/upload modules for Node harness
         shell: bash
         run: |
           set -euo pipefail
@@ -98,6 +98,7 @@ jobs:
             src/services/apiFailure.ts \
             src/services/idempotentMutation.ts \
             src/services/financialDate.ts \
+            src/services/ocrUploadFile.ts \
             --ignoreConfig \
             --ignoreDeprecations 6.0 \
             --outDir "$build_dir" \
@@ -139,7 +140,12 @@ jobs:
         run: |
           set -o pipefail
           node tests/financial-date-contract.cjs 2>&1 | tee financial-date-contract.log
-      - name: Upload auth, cache, idempotency and date contract diagnostics
+      - name: Run OCR upload MIME contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/ocr-upload-file-contract.cjs 2>&1 | tee ocr-upload-file-contract.log
+      - name: Upload auth, cache, idempotency, date and upload contract diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -151,4 +157,5 @@ jobs:
             mobile/idempotent-mutation-contract.log
             mobile/pending-auth-isolation-contract.log
             mobile/financial-date-contract.log
+            mobile/ocr-upload-file-contract.log
           if-no-files-found: warn
