@@ -29,9 +29,11 @@ assert.match(
 assert.match(payment, /refreshGeneration\.current \+= 1;/);
 
 // Lifecycle refresh must never replace the immutable target of an active payment.
+// Loading remains a read-state concern, not a false "payment in progress" state.
 assert.match(payment, /if \(paymentAttemptLock\.current\) return;\s*const generation/s);
 assert.match(payment, /const attemptBill = selectedBill;\s*const attemptReceipt = receipt;/s);
-assert.match(payment, /const attemptBusy = paymentAttemptActive \|\| uploading \|\| loading;/);
+assert.match(payment, /const attemptBusy = paymentAttemptActive \|\| uploading;/);
+assert.doesNotMatch(payment, /const attemptBusy = [^;]*loading/);
 
 // Routed identity is rechecked against the refreshed authoritative pending set;
 // generic entry preserves a still-payable explicit selection but never invents one.
