@@ -48,8 +48,8 @@ requireMatch(payment, /'image\/jpeg': 'jpg'/, 'Payment upload must support canon
 requireMatch(payment, /'image\/png': 'png'/, 'Payment upload must support canonical PNG metadata');
 requireMatch(payment, /'image\/webp': 'webp'/, 'Payment upload must support canonical WebP metadata');
 requireMatch(payment, /normalizeReceiptMime\(asset\.mimeType\)/, 'Picker MIME metadata must be preferred when available');
-requireMatch(payment, /type: receipt\.mimeType/, 'Multipart receipt MIME must come from the selected asset contract');
-requireMatch(payment, /name: `comprovante_\$\{selectedBill\.id\}\.\$\{extension\}`/, 'Receipt filename extension must match its multipart MIME');
+requireMatch(payment, /type: attemptReceipt\.mimeType/, 'Multipart receipt MIME must come from the immutable payment-attempt receipt contract');
+requireMatch(payment, /name: `comprovante_\$\{attemptBill\.id\}\.\$\{extension\}`/, 'Receipt filename extension and target must match the immutable payment attempt');
 assert.doesNotMatch(payment, /type:\s*'image\/jpeg'/, 'Arbitrary payment receipts must not be hardcoded as JPEG');
 
 // Receipt-backed payment can commit before a timeout/response loss. The client
@@ -58,7 +58,7 @@ requireMatch(payment, /const isAmbiguousReceiptPaymentFailure =/, 'Payment UX mu
 requireMatch(payment, /status === 408 \|\| status === 409 \|\| status === 425 \|\| status === 429 \|\| status >= 500/, 'Timeout-like and server-side receipt outcomes must remain ambiguous until reconciled');
 requireMatch(payment, /api\.get\(`\/bills\/\$\{billId\}\/detail`\)/, 'Ambiguous receipt payments must reconcile through the owner-scoped bill detail route');
 requireMatch(payment, /if \(reconciliation === 'paid'\)/, 'Authoritative paid state must converge the ambiguous receipt flow to success');
-requireMatch(payment, /cancelNotificationsForBill\(selectedBill\.id\)/, 'Reconciled paid state must cancel stale bill reminders');
+requireMatch(payment, /cancelNotificationsForBill\(attemptBill\.id\)/, 'Reconciled paid state must cancel reminders for the immutable payment-attempt bill');
 requireMatch(payment, /Alert\.alert\('Resultado não confirmado', message\)/, 'Unresolved receipt outcomes must remain explicitly unconfirmed');
 requireMatch(payment, /confirme o estado da fatura antes de enviar outro comprovante/, 'Ambiguous receipt UX must require reconciliation before another upload');
 assert.doesNotMatch(payment, /O envio demorou demais\. Verifique sua conexão e tente novamente com uma imagem menor\./, 'Receipt timeout must never regress to blind retry guidance');
@@ -66,7 +66,7 @@ assert.doesNotMatch(payment, /O envio demorou demais\. Verifique sua conexão e 
 // Receipt-less payment has the same response-loss ambiguity even though it does
 // not have a receipt-storage lifecycle. Network/retryable outcomes must use the
 // owner-scoped reconciliation path instead of claiming that the payment failed.
-requireMatch(payment, /api\.post\(`\/bills\/\$\{selectedBill\.id\}\/pay-no-receipt`\)/, 'Receipt-less payment must retain the secure server route');
+requireMatch(payment, /api\.post\(`\/bills\/\$\{attemptBill\.id\}\/pay-no-receipt`\)/, 'Receipt-less payment must retain the secure route bound to the immutable attempt target');
 assert.ok(
   (payment.match(/if \(isAmbiguousReceiptPaymentFailure\(error\)\)/g) || []).length >= 2,
   'Both receipt-backed and receipt-less payment catches must classify ambiguous outcomes',
