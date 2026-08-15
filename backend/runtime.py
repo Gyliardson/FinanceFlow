@@ -35,6 +35,7 @@ from secure_routes import (
     pay_bill_with_private_receipt,
     pay_bill_without_receipt,
 )
+from settings_routes import update_emergency_fund_goal
 
 
 PUBLIC_PATHS = {"/", "/health", "/healthz", "/docs", "/openapi.json", "/redoc"}
@@ -105,6 +106,12 @@ def _install_core_routes(app: FastAPI) -> None:
     app.add_api_route("/incomes", add_income_idempotent, methods=["POST"], tags=["Incomes"])
     app.add_api_route("/settings", get_settings, methods=["GET"], tags=["Settings"])
     app.add_api_route("/settings", update_settings, methods=["POST"], tags=["Settings"])
+    app.add_api_route(
+        "/settings/emergency-fund-goal",
+        update_emergency_fund_goal,
+        methods=["PATCH"],
+        tags=["Settings"],
+    )
 
     app.add_api_route("/insights", get_insights, methods=["GET"], tags=["Insights"])
     app.add_api_route("/insights/refresh", refresh_insights, methods=["POST"], tags=["Insights"])
