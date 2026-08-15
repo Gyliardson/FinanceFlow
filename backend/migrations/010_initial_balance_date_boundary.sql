@@ -3,6 +3,29 @@
 -- The settings RPC is callable directly by the authenticated Data API role, so
 -- the invariant cannot live only in FastAPI/mobile. Use the same private
 -- financial calendar introduced for payment/recurrence semantics.
+--
+-- Existing invalid rows are not guessed, deleted or silently rewritten. The
+-- migration fails closed so an operator must explicitly reconcile them first.
+
+DO $$
+DECLARE
+    v_today DATE := financeflow_private.financial_today();
+BEGIN
+    IF v_today IS NULL THEN
+        RAISE EXCEPTION 'financial_date_unavailable' USING ERRCODE = 'P0001';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM public.finance_user_settings
+        WHERE initial_balance_date IS NULL
+           OR initial_balance_date > v_today
+    ) THEN
+        RAISE EXCEPTION 'future_initial_balance_date_reconciliation_required'
+            USING ERRCODE = 'P0001';
+    END IF;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION public.finance_replace_settings(
     p_initial_balance TEXT,
