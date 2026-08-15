@@ -52,6 +52,17 @@ requireMatch(payment, /type: receipt\.mimeType/, 'Multipart receipt MIME must co
 requireMatch(payment, /name: `comprovante_\$\{selectedBill\.id\}\.\$\{extension\}`/, 'Receipt filename extension must match its multipart MIME');
 assert.doesNotMatch(payment, /type:\s*'image\/jpeg'/, 'Arbitrary payment receipts must not be hardcoded as JPEG');
 
+// Receipt-backed payment can commit before a timeout/response loss. The client
+// must reconcile owner-scoped authoritative state before suggesting another upload.
+requireMatch(payment, /const isAmbiguousReceiptPaymentFailure =/, 'Payment UX must classify ambiguous receipt outcomes explicitly');
+requireMatch(payment, /status === 408 \|\| status === 409 \|\| status === 425 \|\| status === 429 \|\| status >= 500/, 'Timeout-like and server-side receipt outcomes must remain ambiguous until reconciled');
+requireMatch(payment, /api\.get\(`\/bills\/\$\{billId\}\/detail`\)/, 'Ambiguous receipt payments must reconcile through the owner-scoped bill detail route');
+requireMatch(payment, /if \(reconciliation === 'paid'\)/, 'Authoritative paid state must converge the ambiguous receipt flow to success');
+requireMatch(payment, /cancelNotificationsForBill\(selectedBill\.id\)/, 'Reconciled paid state must cancel stale bill reminders');
+requireMatch(payment, /Alert\.alert\('Resultado não confirmado', message\)/, 'Unresolved receipt outcomes must remain explicitly unconfirmed');
+requireMatch(payment, /confirme o estado da fatura antes de enviar outro comprovante/, 'Ambiguous receipt UX must require reconciliation before another upload');
+assert.doesNotMatch(payment, /O envio demorou demais\. Verifique sua conexão e tente novamente com uma imagem menor\./, 'Receipt timeout must never regress to blind retry guidance');
+
 // Creation/OCR is a high-risk input path. Keep provider details out of UX/logs,
 // retain upload guardrails, and require explicit review/accessibility cues.
 requireMatch(detail, /MAX_CLIENT_UPLOAD_BYTES = 10 \* 1024 \* 1024/, 'Client upload path must retain its 10 MiB early guard');
