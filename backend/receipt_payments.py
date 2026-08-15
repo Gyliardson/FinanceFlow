@@ -228,6 +228,11 @@ def persist_private_receipt_payment(
             file_options={"content-type": validated.mime_type},
         )
     except Exception as exc:
+        # The payment RPC has not started, so this exact generated object path
+        # cannot be referenced by durable financial state. A Storage exception
+        # may still mean commit-then-response-loss; deleting the known path is
+        # therefore safe and prevents an otherwise unreachable private orphan.
+        _delete_uploaded_receipt(bucket, receipt_path)
         raise ReceiptStorageError("Could not persist the private receipt.") from exc
 
     try:

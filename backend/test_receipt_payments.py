@@ -106,14 +106,23 @@ class DataClient:
 
 
 class Bucket:
-    def __init__(self, *, upload_error=None, remove_error=None):
+    def __init__(
+        self,
+        *,
+        upload_error=None,
+        upload_commits_before_error=False,
+        remove_error=None,
+    ):
         self.upload_error = upload_error
+        self.upload_commits_before_error = upload_commits_before_error
         self.remove_error = remove_error
         self.uploads = []
         self.removals = []
 
     def upload(self, **kwargs):
         if self.upload_error is not None:
+            if self.upload_commits_before_error:
+                self.uploads.append(kwargs)
             raise self.upload_error
         self.uploads.append(kwargs)
         return {"path": kwargs["path"]}
@@ -266,7 +275,7 @@ def test_mime_spoofing_fails_before_storage_and_rpc():
     assert data_client.rpc_calls == []
 
 
-def test_storage_failure_does_not_call_payment_rpc():
+def test_storage_failure_attempts_exact_orphan_cleanup_without_payment_rpc():
     data_client = DataClient()
     bucket = Bucket(upload_error=RuntimeError("provider detail must stay internal"))
 
@@ -274,7 +283,42 @@ def test_storage_failure_does_not_call_payment_rpc():
         _persist(data_client, bucket)
 
     assert data_client.rpc_calls == []
-    assert bucket.removals == []
+    assert len(bucket.removals) == 1
+    cleanup_path = bucket.removals[0][0]
+    assert cleanup_path.startswith(f"{OWNER_ID}/{BILL_ID}/")
+    assert cleanup_path.endswith(".jpg")
+
+
+def test_storage_response_loss_after_commit_removes_exact_unreferenced_object():
+    data_client = DataClient()
+    bucket = Bucket(
+        upload_error=TimeoutError("storage response lost after commit"),
+        upload_commits_before_error=True,
+    )
+
+    with pytest.raises(ReceiptStorageError, match="Could not persist the private receipt"):
+        _persist(data_client, bucket)
+
+    assert data_client.rpc_calls == []
+    uploaded_path = bucket.uploads[0]["path"]
+    assert bucket.removals == [[uploaded_path]]
+
+
+def test_storage_response_loss_cleanup_failure_does_not_mask_sanitized_error():
+    data_client = DataClient()
+    bucket = Bucket(
+        upload_error=TimeoutError("sensitive upload provider detail"),
+        upload_commits_before_error=True,
+        remove_error=RuntimeError("sensitive cleanup provider detail"),
+    )
+
+    with pytest.raises(ReceiptStorageError) as captured:
+        _persist(data_client, bucket)
+
+    assert str(captured.value) == "Could not persist the private receipt."
+    assert data_client.rpc_calls == []
+    uploaded_path = bucket.uploads[0]["path"]
+    assert bucket.removals == [[uploaded_path]]
 
 
 def test_rpc_failure_pending_reread_removes_unreferenced_upload_and_is_unconfirmed():
