@@ -14,6 +14,7 @@ import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
@@ -32,8 +33,9 @@ from receipt_uploads import sanitize_receipt_for_external_processing, validate_r
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+PGMEI_HOST = "www8.receita.fazenda.gov.br"
 PGMEI_URL = (
-    "http://www8.receita.fazenda.gov.br/SimplesNacional/"
+    "https://www8.receita.fazenda.gov.br/SimplesNacional/"
     "Aplicacoes/ATSPO/pgmei.app/Identificacao"
 )
 NAVIGATION_TIMEOUT_MS = 45_000
@@ -59,6 +61,15 @@ def _requires_human_verification(body_text: str, *, captcha_frames: int = 0) -> 
         or "impedido" in normalized
         or "verificação de segurança" in normalized
     )
+
+
+def _is_trusted_pgmei_url(url: str) -> bool:
+    """Require the sensitive CNPJ form to remain on the expected HTTPS origin."""
+    try:
+        parsed = urlparse(url)
+    except (TypeError, ValueError):
+        return False
+    return parsed.scheme.lower() == "https" and (parsed.hostname or "").lower() == PGMEI_HOST
 
 
 def _prepare_pdf_for_external_ocr(pdf_bytes: bytes) -> bytes | None:
@@ -117,6 +128,11 @@ async def scrape_dasmei() -> dict:
                         wait_until="domcontentloaded",
                         timeout=NAVIGATION_TIMEOUT_MS,
                     )
+                    # CNPJ is sensitive configuration. Never submit it after a downgrade
+                    # or cross-origin redirect, even if the portal UI still resembles PGMEI.
+                    if not _is_trusted_pgmei_url(page.url):
+                        return _result_payload(unavailable_result("DASMEI secure origin"))
+
                     cnpj_input = page.locator("#cnpj")
                     await cnpj_input.fill(cnpj_clean)
                     await cnpj_input.press("Enter")
