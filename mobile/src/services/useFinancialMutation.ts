@@ -44,6 +44,7 @@ const acknowledgeAdditionalIntent = (
 export function useFinancialMutation<T = any>(url: string) {
   const intentIdRef = useRef<string | null>(null);
   const mutationInFlightRef = useRef(false);
+  const mutationInFlightPromiseRef = useRef<Promise<T> | null>(null);
   const [hasActiveIntent, setHasActiveIntent] = useState(false);
 
   const clearLocalIntent = useCallback((intentId?: string) => {
@@ -57,19 +58,19 @@ export function useFinancialMutation<T = any>(url: string) {
     clearLocalIntent(closedIntentId);
   }), [clearLocalIntent]);
 
-  const mutate = useCallback(async (
+  const mutate = useCallback((
     payload: Record<string, unknown>,
     config: AxiosRequestConfig = {},
-  ) => {
-    // React component state is presentation state, not a financial mutex. Claim
-    // this hook synchronously before any awaited preflight so two rapid submits
-    // cannot both observe an empty intent and manufacture distinct operations.
-    if (mutationInFlightRef.current) {
-      throw new Error('A financial mutation is already in progress for this form.');
+  ): Promise<T> => {
+    // React component state is presentation state, not a financial mutex. A
+    // concurrent activation shares the already-running operation instead of
+    // manufacturing another intent or surfacing a false transport failure.
+    if (mutationInFlightRef.current && mutationInFlightPromiseRef.current) {
+      return mutationInFlightPromiseRef.current;
     }
     mutationInFlightRef.current = true;
 
-    try {
+    const run = (async (): Promise<T> => {
       // Retry-in-place never prompts and never manufactures a new identity.
       // Only a fresh form intent is gated when another durable operation of the
       // same kind still has an unknown outcome for the current authenticated owner.
@@ -92,19 +93,24 @@ export function useFinancialMutation<T = any>(url: string) {
       try {
         const response = await postFinancialMutation<T>(url, payload, intentId, config);
         clearLocalIntent(intentId);
-        return response;
+        return response.data;
       } catch (error) {
         if (isDefinitiveClientRejection(error)) {
           clearLocalIntent(intentId);
         }
         throw error;
       }
-    } finally {
-      // Release after every terminal transport/preflight outcome. Ambiguous
-      // failures intentionally retain intentIdRef so a later deliberate retry
-      // reuses the exact same durable identity and original payload.
-      mutationInFlightRef.current = false;
-    }
+    })();
+
+    mutationInFlightPromiseRef.current = run;
+    void run.finally(() => {
+      if (mutationInFlightPromiseRef.current === run) {
+        mutationInFlightPromiseRef.current = null;
+        mutationInFlightRef.current = false;
+      }
+    }).catch(() => undefined);
+
+    return run;
   }, [clearLocalIntent, url]);
 
   const startNewIntent = useCallback(() => {
