@@ -15,11 +15,20 @@ COPY requirements.txt .
 # Instala as dependências Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia o restante dos arquivos do backend para o diretório de trabalho
-COPY . .
+# Cria uma identidade fixa e sem privilégios para o runtime. A porta 8000 não
+# exige root e o processo não precisa escrever em diretórios do sistema.
+RUN groupadd --gid 10001 financeflow \
+    && useradd --uid 10001 --gid financeflow --create-home --shell /usr/sbin/nologin financeflow
+
+# Copia o restante dos arquivos do backend para o diretório de trabalho e mantém
+# o código legível/pertencente ao usuário que executará o servidor.
+COPY --chown=financeflow:financeflow . .
 
 # Expõe a porta que o Render vai usar (será sobrescrita pela env PORT no runtime)
 EXPOSE 8000
+
+# Reduz o blast radius de qualquer comprometimento do processo da aplicação.
+USER financeflow
 
 # Production composition root removes the legacy shared API-key middleware and
 # installs verified Supabase Bearer auth + explicit CORS before the app starts.
