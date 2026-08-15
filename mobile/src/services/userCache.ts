@@ -59,7 +59,7 @@ async function withCacheResourceLock<T>(
 ): Promise<T> {
   const key = cacheProtocolKey(userId, resource);
   const previous = cacheResourceTails.get(key) ?? Promise.resolve();
-  let release: (() => void) | null = null;
+  let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
@@ -70,7 +70,7 @@ async function withCacheResourceLock<T>(
   try {
     return await operation();
   } finally {
-    release?.();
+    release();
     if (cacheResourceTails.get(key) === tail) {
       cacheResourceTails.delete(key);
     }
