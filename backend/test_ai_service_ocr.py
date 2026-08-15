@@ -122,14 +122,22 @@ def test_financial_insights_use_maintained_client_without_real_provider(monkeypa
             "current_balance": 100,
             "estimated_surplus": 25,
             "emergency_fund_goal": 500,
-        }
+            "emergency_fund_balance": 123,
+            "raw_bills": [{"description": "must-not-leak"}],
+        },
+        explicit_user_action=True,
     )
 
     assert result == {"status": "success", "insight": "Recomendação sintética segura."}
     assert clients[0].closed is True
-    model, _contents, config = clients[0].calls[0]
+    model, contents, config = clients[0].calls[0]
     assert model == "gemini-3.6-flash"
     assert config is None
+    assert "100.00" in contents
+    assert "25.00" in contents
+    assert "500.00" in contents
+    assert "123" not in contents
+    assert "must-not-leak" not in contents
 
 
 @pytest.mark.parametrize(
