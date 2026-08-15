@@ -16,6 +16,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import api from '../services/api';
+import { buildOcrUploadFile, OcrUploadKind } from '../services/ocrUploadFile';
 import { useFinancialMutation } from '../services/useFinancialMutation';
 
 const MAX_CLIENT_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -78,7 +79,7 @@ export default function DetailScreen({ navigation }: any) {
         copyToCacheDirectory: true,
       });
       const asset = !result.canceled ? result.assets?.[0] : null;
-      if (asset && validateClientFile(asset)) await uploadForOCR(asset);
+      if (asset && validateClientFile(asset)) await uploadForOCR(asset, 'pdf');
     } catch {
       Alert.alert('Não foi possível abrir o documento', 'Tente novamente ou preencha os dados manualmente.');
     }
@@ -93,22 +94,27 @@ export default function DetailScreen({ navigation }: any) {
       }
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
       const asset = !result.canceled ? result.assets?.[0] : null;
-      if (asset && validateClientFile(asset)) await uploadForOCR(asset);
+      if (asset && validateClientFile(asset)) await uploadForOCR(asset, 'image');
     } catch {
       Alert.alert('Não foi possível abrir a galeria', 'Tente novamente ou preencha os dados manualmente.');
     }
   };
 
-  const uploadForOCR = async (fileAsset: any) => {
+  const uploadForOCR = async (fileAsset: any, kind: OcrUploadKind) => {
     if (loadingOCR || intentLocked) return;
+    const uploadFile = buildOcrUploadFile(fileAsset, kind);
+    if (!uploadFile) {
+      Alert.alert(
+        'Formato não identificado',
+        'Selecione uma imagem JPEG, PNG ou WebP com formato reconhecível, ou use um documento PDF.',
+      );
+      return;
+    }
+
     setLoadingOCR(true);
     try {
       const formData = new FormData();
-      formData.append('file', {
-        uri: fileAsset.uri,
-        name: fileAsset.name || fileAsset.fileName || 'documento.jpg',
-        type: fileAsset.mimeType || 'image/jpeg',
-      } as any);
+      formData.append('file', uploadFile as any);
       const response = await api.post('/upload-receipt', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 30000,
