@@ -5,6 +5,8 @@ an already-persisted insight. External AI generation is reserved for the explici
 refresh mutation.
 """
 
+import asyncio
+
 from fastapi import HTTPException
 
 from ai_service import generate_financial_insights
@@ -56,7 +58,11 @@ async def refresh_insights():
         fin_data = _calculate_financials(supabase, settings)
 
         try:
-            insight_result = generate_financial_insights(
+            # Gemini generation is synchronous at this adapter boundary. Keep the
+            # bounded provider request off the event-loop thread so explicit AI
+            # refresh cannot stall unrelated async API work in this Uvicorn process.
+            insight_result = await asyncio.to_thread(
+                generate_financial_insights,
                 fin_data,
                 explicit_user_action=True,
             )
