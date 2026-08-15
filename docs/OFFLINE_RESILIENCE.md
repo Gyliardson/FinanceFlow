@@ -49,6 +49,8 @@ While offline, actions that create or mutate financial state — including bills
 
 Financial settings updates are convergent replacement writes rather than additive creates, so the mobile client does not create a pending replay intent for them. A transport/server error still cannot prove rollback: the server may have committed the settings before the response was lost. The UI therefore reports an **unconfirmed outcome** and instructs the user to reload/reconcile authoritative settings before deciding whether another save is needed.
 
+A goal-only edit uses the authenticated `PATCH /settings/emergency-fund-goal` boundary. It updates only `emergency_fund_goal` server-side instead of performing a client-side GET followed by a full settings replacement; this prevents a stale goal editor snapshot from overwriting a newer initial balance or balance date.
+
 A safe offline mutation queue would require a separately designed server protocol covering at least:
 
 - idempotency keys;
@@ -77,4 +79,5 @@ The mobile auth/cache contract covers session restart, expiry, refresh concurren
 - authoritative empty bill lists;
 - dashboard wiring that keeps successful network reads authoritative;
 - settings-save regression coverage that forbids false rollback claims after ambiguous failures;
+- goal-only settings regression coverage that forbids stale full-row read/modify/write;
 - explicit read-only offline UX.

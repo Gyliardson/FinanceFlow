@@ -138,13 +138,15 @@ export default function InsightsScreen({ navigation }: any) {
     }
     setSubmittingGoal(true);
     try {
-      const setResp = await api.get('/settings');
-      await api.post('/settings', { ...setResp.data.data, emergency_fund_goal: goalVal });
+      await api.patch('/settings/emergency-fund-goal', { emergency_fund_goal: goalVal });
       setGoalModalVisible(false);
       Alert.alert('Meta atualizada', 'A meta da reserva de emergência foi salva.');
       await fetchInsights();
     } catch {
-      Alert.alert('Não foi possível salvar', 'Verifique sua conexão e tente novamente.');
+      Alert.alert(
+        'Resultado não confirmado',
+        'Não foi possível confirmar se a meta foi salva. Recarregue os dados para reconciliar o estado antes de tentar novamente.',
+      );
     } finally {
       setSubmittingGoal(false);
     }

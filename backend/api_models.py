@@ -92,5 +92,9 @@ class SettingsUpdateRequest(BaseModel):
     emergency_fund_goal: CanonicalMoney = Field(..., ge=Decimal("0.00"), le=MAX_MONEY)
 
 
+class EmergencyFundGoalUpdateRequest(BaseModel):
+    emergency_fund_goal: CanonicalMoney = Field(..., ge=Decimal("0.00"), le=MAX_MONEY)
+
+
 class ReserveAddRequest(BaseModel):
     amount: CanonicalMoney = Field(..., gt=Decimal("0.00"), le=MAX_MONEY)
