@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
   ActivityIndicator, Alert, Image
@@ -75,19 +75,34 @@ export default function PaymentScreen({ navigation, route }: any) {
   const [routedBillUnavailable, setRoutedBillUnavailable] = useState(false);
   const [receipt, setReceipt] = useState<ReceiptSelection | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [paymentAttemptActive, setPaymentAttemptActive] = useState(false);
+  const paymentAttemptLock = useRef(false);
 
   const routedBillId = route?.params?.billId || null;
   const sharedImageUri = route?.params?.sharedImageUri || null;
   const sharedImageMimeType = normalizeReceiptMime(route?.params?.sharedImageMimeType)
     || inferReceiptMimeFromPath(route?.params?.sharedImageFileName)
     || inferReceiptMimeFromPath(sharedImageUri);
+  const attemptBusy = paymentAttemptActive || uploading;
+
+  const beginPaymentAttempt = () => {
+    if (paymentAttemptLock.current) return false;
+    paymentAttemptLock.current = true;
+    setPaymentAttemptActive(true);
+    return true;
+  };
+
+  const endPaymentAttempt = () => {
+    paymentAttemptLock.current = false;
+    setPaymentAttemptActive(false);
+  };
 
   useEffect(() => {
     void fetchPendingBills();
   }, [routedBillId]);
 
   useEffect(() => {
-    if (sharedImageUri && sharedImageMimeType) {
+    if (!paymentAttemptLock.current && sharedImageUri && sharedImageMimeType) {
       setReceipt({ uri: sharedImageUri, mimeType: sharedImageMimeType });
     }
   }, [sharedImageUri, sharedImageMimeType]);
@@ -126,6 +141,7 @@ export default function PaymentScreen({ navigation, route }: any) {
   };
 
   const selectReceiptAsset = (asset: ImagePicker.ImagePickerAsset) => {
+    if (paymentAttemptLock.current) return;
     const selection = receiptSelectionFromAsset(asset);
     if (!selection) {
       Alert.alert(
@@ -138,6 +154,7 @@ export default function PaymentScreen({ navigation, route }: any) {
   };
 
   const handlePickReceipt = async () => {
+    if (paymentAttemptLock.current) return;
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
       return Alert.alert('Permissão necessária', 'Autorize o acesso à galeria para enviar comprovantes.');
@@ -154,6 +171,7 @@ export default function PaymentScreen({ navigation, route }: any) {
   };
 
   const handleTakePhoto = async () => {
+    if (paymentAttemptLock.current) return;
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) {
       return Alert.alert('Permissão necessária', 'Autorize o acesso à câmera.');
@@ -173,32 +191,36 @@ export default function PaymentScreen({ navigation, route }: any) {
       Alert.alert('Selecione uma conta', 'Toque em uma das faturas pendentes abaixo para selecioná-la.');
       return;
     }
+    if (!beginPaymentAttempt()) return;
 
-    if (!receipt) {
+    const attemptBill = selectedBill;
+    const attemptReceipt = receipt;
+
+    if (!attemptReceipt) {
       Alert.alert(
         'Sem comprovante',
         'Deseja registrar o pagamento sem anexar um comprovante?',
         [
-          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Cancelar', style: 'cancel', onPress: endPaymentAttempt },
           {
             text: 'Sim, registrar',
             onPress: async () => {
               setUploading(true);
               try {
-                await api.post(`/bills/${selectedBill.id}/pay-no-receipt`);
-                cancelNotificationsForBill(selectedBill.id).catch(() => undefined);
-                Alert.alert('Pagamento registrado', `“${selectedBill.description}” foi registrada como paga.`, [
+                await api.post(`/bills/${attemptBill.id}/pay-no-receipt`);
+                cancelNotificationsForBill(attemptBill.id).catch(() => undefined);
+                Alert.alert('Pagamento registrado', `“${attemptBill.description}” foi registrada como paga.`, [
                   { text: 'OK', onPress: () => navigation.goBack() }
                 ]);
               } catch (error: any) {
                 const detail = error?.response?.data?.detail;
                 if (isAmbiguousReceiptPaymentFailure(error)) {
-                  const reconciliation = await reconcileReceiptPayment(selectedBill.id);
+                  const reconciliation = await reconcileReceiptPayment(attemptBill.id);
                   if (reconciliation === 'paid') {
-                    cancelNotificationsForBill(selectedBill.id).catch(() => undefined);
+                    cancelNotificationsForBill(attemptBill.id).catch(() => undefined);
                     Alert.alert(
                       'Pagamento confirmado',
-                      `“${selectedBill.description}” já consta como paga após reconciliar o estado da fatura.`,
+                      `“${attemptBill.description}” já consta como paga após reconciliar o estado da fatura.`,
                       [{ text: 'OK', onPress: () => navigation.goBack() }],
                     );
                     return;
@@ -214,45 +236,47 @@ export default function PaymentScreen({ navigation, route }: any) {
                 Alert.alert('Erro no pagamento', detail || 'Não foi possível registrar o pagamento. Revise os dados e tente novamente.');
               } finally {
                 setUploading(false);
+                endPaymentAttempt();
               }
             }
           }
-        ]
+        ],
+        { cancelable: true, onDismiss: endPaymentAttempt },
       );
       return;
     }
 
     setUploading(true);
     try {
-      const extension = RECEIPT_EXTENSION_BY_MIME[receipt.mimeType];
+      const extension = RECEIPT_EXTENSION_BY_MIME[attemptReceipt.mimeType];
       const formData = new FormData();
       formData.append('file', {
-        uri: receipt.uri,
-        name: `comprovante_${selectedBill.id}.${extension}`,
-        type: receipt.mimeType,
+        uri: attemptReceipt.uri,
+        name: `comprovante_${attemptBill.id}.${extension}`,
+        type: attemptReceipt.mimeType,
       } as any);
 
-      await api.post(`/bills/${selectedBill.id}/pay`, formData, {
+      await api.post(`/bills/${attemptBill.id}/pay`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 120000,
       });
 
-      cancelNotificationsForBill(selectedBill.id).catch(() => undefined);
+      cancelNotificationsForBill(attemptBill.id).catch(() => undefined);
 
       Alert.alert(
         'Pagamento registrado',
-        `“${selectedBill.description}” foi paga e o comprovante foi salvo no histórico.`,
+        `“${attemptBill.description}” foi paga e o comprovante foi salvo no histórico.`,
         [{ text: 'OK', onPress: () => navigation.goBack() }]
       );
     } catch (error: any) {
       const detail = error?.response?.data?.detail;
       if (isAmbiguousReceiptPaymentFailure(error)) {
-        const reconciliation = await reconcileReceiptPayment(selectedBill.id);
+        const reconciliation = await reconcileReceiptPayment(attemptBill.id);
         if (reconciliation === 'paid') {
-          cancelNotificationsForBill(selectedBill.id).catch(() => undefined);
+          cancelNotificationsForBill(attemptBill.id).catch(() => undefined);
           Alert.alert(
             'Pagamento confirmado',
-            `“${selectedBill.description}” já consta como paga após reconciliar o estado da fatura.`,
+            `“${attemptBill.description}” já consta como paga após reconciliar o estado da fatura.`,
             [{ text: 'OK', onPress: () => navigation.goBack() }],
           );
           return;
@@ -268,6 +292,7 @@ export default function PaymentScreen({ navigation, route }: any) {
       Alert.alert('Erro no pagamento', detail || 'Não foi possível processar o pagamento. Revise os dados e tente novamente.');
     } finally {
       setUploading(false);
+      endPaymentAttempt();
     }
   };
 
@@ -303,11 +328,13 @@ export default function PaymentScreen({ navigation, route }: any) {
         accessibilityRole="radio"
         accessibilityLabel={`${item.description}, ${formatMoney(item.amount)}, ${statusLabel}`}
         accessibilityHint="Seleciona esta fatura para registrar o pagamento"
-        accessibilityState={{ selected: isSelected }}
+        accessibilityState={{ selected: isSelected, disabled: attemptBusy }}
+        disabled={attemptBusy}
         style={[
           styles.billCard,
           isSelected && styles.billCardSelected,
           isOverdue && styles.billCardOverdue,
+          attemptBusy && styles.controlDisabled,
         ]}
         onPress={() => {
           setSelectedBill(item);
@@ -373,7 +400,9 @@ export default function PaymentScreen({ navigation, route }: any) {
           <TouchableOpacity
             accessibilityRole="button"
             accessibilityLabel="Tentar carregar faturas novamente"
-            style={styles.retryButton}
+            accessibilityState={{ disabled: attemptBusy }}
+            disabled={attemptBusy}
+            style={[styles.retryButton, attemptBusy && styles.controlDisabled]}
             onPress={fetchPendingBills}
           >
             <Text style={styles.retryButtonText}>Tentar novamente</Text>
@@ -421,9 +450,13 @@ export default function PaymentScreen({ navigation, route }: any) {
               accessibilityRole="button"
               accessibilityLabel="Remover comprovante selecionado"
               accessibilityHint="Remove esta imagem antes de registrar o pagamento"
+              accessibilityState={{ disabled: attemptBusy }}
+              disabled={attemptBusy}
               hitSlop={8}
-              style={styles.removeReceipt}
-              onPress={() => setReceipt(null)}
+              style={[styles.removeReceipt, attemptBusy && styles.controlDisabled]}
+              onPress={() => {
+                if (!paymentAttemptLock.current) setReceipt(null);
+              }}
             >
               <Ionicons accessibilityElementsHidden name="close-circle" size={30} color="#b91c1c" />
             </TouchableOpacity>
@@ -433,7 +466,9 @@ export default function PaymentScreen({ navigation, route }: any) {
             <TouchableOpacity
               accessibilityRole="button"
               accessibilityLabel="Selecionar comprovante da galeria"
-              style={styles.receiptBtn}
+              accessibilityState={{ disabled: attemptBusy }}
+              disabled={attemptBusy}
+              style={[styles.receiptBtn, attemptBusy && styles.controlDisabled]}
               onPress={handlePickReceipt}
             >
               <Ionicons accessibilityElementsHidden name="images" size={24} color="#2563eb" />
@@ -442,7 +477,9 @@ export default function PaymentScreen({ navigation, route }: any) {
             <TouchableOpacity
               accessibilityRole="button"
               accessibilityLabel="Fotografar comprovante"
-              style={[styles.receiptBtn, styles.cameraBtn]}
+              accessibilityState={{ disabled: attemptBusy }}
+              disabled={attemptBusy}
+              style={[styles.receiptBtn, styles.cameraBtn, attemptBusy && styles.controlDisabled]}
               onPress={handleTakePhoto}
             >
               <Ionicons accessibilityElementsHidden name="camera" size={24} color="#c2410c" />
@@ -469,16 +506,16 @@ export default function PaymentScreen({ navigation, route }: any) {
 
       <TouchableOpacity
         accessibilityRole="button"
-        accessibilityLabel={uploading
-          ? 'Registrando pagamento'
+        accessibilityLabel={attemptBusy
+          ? 'Pagamento em andamento'
           : selectedBill
             ? `Confirmar pagamento de ${selectedBill.description}`
             : 'Confirmar pagamento'}
         accessibilityHint={selectedBill ? 'Registra a fatura selecionada como paga' : 'Selecione uma fatura primeiro'}
-        accessibilityState={{ disabled: !selectedBill || uploading, busy: uploading }}
-        style={[styles.confirmButton, (!selectedBill || uploading) && styles.confirmButtonDisabled]}
+        accessibilityState={{ disabled: !selectedBill || attemptBusy, busy: attemptBusy }}
+        style={[styles.confirmButton, (!selectedBill || attemptBusy) && styles.confirmButtonDisabled]}
         onPress={handleConfirmPayment}
-        disabled={!selectedBill || uploading}
+        disabled={!selectedBill || attemptBusy}
       >
         {uploading ? (
           <ActivityIndicator accessibilityLabel="Registrando pagamento" color="#fff" />
@@ -653,6 +690,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   selectedIcon: { marginLeft: 10 },
+  controlDisabled: { opacity: 0.55 },
   statePanel: {
     alignItems: 'center',
     justifyContent: 'center',
