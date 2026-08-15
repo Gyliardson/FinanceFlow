@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, FlatList,
+  AppState, View, Text, StyleSheet, TouchableOpacity, FlatList,
   ActivityIndicator, Alert, Image
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
@@ -77,6 +77,7 @@ export default function PaymentScreen({ navigation, route }: any) {
   const [uploading, setUploading] = useState(false);
   const [paymentAttemptActive, setPaymentAttemptActive] = useState(false);
   const paymentAttemptLock = useRef(false);
+  const refreshGeneration = useRef(0);
 
   const routedBillId = route?.params?.billId || null;
   const sharedImageUri = route?.params?.sharedImageUri || null;
@@ -97,38 +98,59 @@ export default function PaymentScreen({ navigation, route }: any) {
     setPaymentAttemptActive(false);
   };
 
+  const fetchPendingBills = async () => {
+    if (paymentAttemptLock.current) return;
+    const generation = ++refreshGeneration.current;
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const response = await api.get('/bills/pending');
+      const bills = (response.data.data || []) as Bill[];
+      if (generation !== refreshGeneration.current || paymentAttemptLock.current) return;
+
+      setPendingBills(bills);
+      if (routedBillId) {
+        const routedBill = bills.find((bill) => bill.id === routedBillId);
+        setSelectedBill(routedBill || null);
+        setRoutedBillUnavailable(Boolean(routedBillId && !routedBill));
+      } else {
+        setSelectedBill((current) => current
+          ? bills.find((bill) => bill.id === current.id) || null
+          : null);
+        setRoutedBillUnavailable(false);
+      }
+    } catch {
+      if (generation !== refreshGeneration.current || paymentAttemptLock.current) return;
+      setLoadError(true);
+    } finally {
+      if (generation === refreshGeneration.current) setLoading(false);
+    }
+  };
+
   useEffect(() => {
     void fetchPendingBills();
-  }, [routedBillId]);
+
+    const unsubscribeFocus = navigation.addListener('focus', () => {
+      if (!paymentAttemptLock.current) void fetchPendingBills();
+    });
+    const appStateSubscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && !paymentAttemptLock.current) {
+        void fetchPendingBills();
+      }
+    });
+
+    return () => {
+      refreshGeneration.current += 1;
+      unsubscribeFocus();
+      appStateSubscription.remove();
+    };
+  }, [navigation, routedBillId]);
 
   useEffect(() => {
     if (!paymentAttemptLock.current && sharedImageUri && sharedImageMimeType) {
       setReceipt({ uri: sharedImageUri, mimeType: sharedImageMimeType });
     }
   }, [sharedImageUri, sharedImageMimeType]);
-
-  const fetchPendingBills = async () => {
-    setLoading(true);
-    setLoadError(false);
-    try {
-      const response = await api.get('/bills/pending');
-      const bills = (response.data.data || []) as Bill[];
-      setPendingBills(bills);
-
-      if (routedBillId) {
-        const routedBill = bills.find((bill) => bill.id === routedBillId);
-        setSelectedBill(routedBill || null);
-        setRoutedBillUnavailable(Boolean(routedBillId && !routedBill));
-      } else {
-        setSelectedBill(null);
-        setRoutedBillUnavailable(false);
-      }
-    } catch {
-      setLoadError(true);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const reconcileReceiptPayment = async (billId: string): Promise<PaymentReconciliation> => {
     try {
