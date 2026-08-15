@@ -91,7 +91,7 @@ jobs:
           );
           SQL
 
-      - name: Apply ownership, idempotency and data-plane migrations
+      - name: Apply ownership, idempotency and base data-plane migrations
         shell: bash
         run: |
           set -euo pipefail
@@ -103,6 +103,32 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f backend/migrations/007_authenticated_data_plane.sql
           psql -v ON_ERROR_STOP=1 -f backend/migrations/008_payment_recurring_data_plane.sql
           psql -v ON_ERROR_STOP=1 -f backend/migrations/009_revoke_authenticated_table_dml.sql
+
+      - name: Initial-balance migration fails closed on historical future baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO auth.users(id) VALUES ('33333333-3333-3333-3333-333333333333');
+          INSERT INTO finance_user_settings(owner_id,initial_balance,initial_balance_date,emergency_fund_goal)
+          VALUES (
+            '33333333-3333-3333-3333-333333333333',
+            '999.00',
+            (timezone('America/Sao_Paulo',now())::date + 1),
+            '100.00'
+          );
+          SQL
+
+          if psql -v ON_ERROR_STOP=1 -f backend/migrations/010_initial_balance_date_boundary.sql; then
+            echo "Migration 010 unexpectedly accepted an existing future initial_balance_date" >&2
+            exit 1
+          fi
+
+          test "$(psql -Atc "SELECT count(*) FROM finance_user_settings WHERE owner_id='33333333-3333-3333-3333-333333333333';")" = '1'
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          DELETE FROM finance_user_settings WHERE owner_id='33333333-3333-3333-3333-333333333333';
+          DELETE FROM auth.users WHERE id='33333333-3333-3333-3333-333333333333';
+          SQL
           psql -v ON_ERROR_STOP=1 -f backend/migrations/010_initial_balance_date_boundary.sql
 
       - name: Seed two owners outside authenticated role
