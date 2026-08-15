@@ -84,7 +84,7 @@ export default function PaymentScreen({ navigation, route }: any) {
   const sharedImageMimeType = normalizeReceiptMime(route?.params?.sharedImageMimeType)
     || inferReceiptMimeFromPath(route?.params?.sharedImageFileName)
     || inferReceiptMimeFromPath(sharedImageUri);
-  const attemptBusy = paymentAttemptActive || uploading || loading;
+  const attemptBusy = paymentAttemptActive || uploading;
 
   const beginPaymentAttempt = () => {
     if (paymentAttemptLock.current) return false;
@@ -459,6 +459,7 @@ export default function PaymentScreen({ navigation, route }: any) {
           Escolha a fatura que você pagou e anexe o comprovante, se desejar.
         </Text>
       </View>
+
       <View style={styles.receiptSection}>
         {receipt ? (
           <View style={styles.receiptPreview}>
