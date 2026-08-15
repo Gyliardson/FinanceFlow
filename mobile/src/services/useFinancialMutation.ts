@@ -18,24 +18,24 @@ const ROUTE_OPERATION: Record<string, IdempotentOperation> = {
   '/recurring-bills': 'recurring_template_create',
 };
 
-const OPERATION_LABEL: Record<IdempotentOperation, string> = {
-  bill_create: 'fatura',
-  income_create: 'renda',
-  reserve_add: 'reserva',
-  recurring_template_create: 'conta recorrente',
+const OPERATION_LABEL: Record<IdempotentOperation, [string, string]> = {
+  bill_create: ['fatura', 'faturas'],
+  income_create: ['renda', 'rendas'],
+  reserve_add: ['adição à reserva', 'adições à reserva'],
+  recurring_template_create: ['conta recorrente', 'contas recorrentes'],
 };
 
 const acknowledgeAdditionalIntent = (
   operation: IdempotentOperation,
   unresolvedCount: number,
 ): Promise<void> => new Promise((resolve) => {
-  const label = OPERATION_LABEL[operation];
+  const label = OPERATION_LABEL[operation][unresolvedCount === 1 ? 0 : 1];
   Alert.alert(
     'Operação anterior ainda não confirmada',
-    `Há ${unresolvedCount} ${label}${unresolvedCount === 1 ? '' : 's'} com resultado ainda não confirmado. Fechar o formulário anterior não cancelou essa operação. Ao continuar, você está criando uma operação financeira adicional, que poderá aparecer além da anterior quando a reconciliação terminar.`,
+    `Há ${unresolvedCount} ${label} com resultado ainda não confirmado. Fechar o formulário anterior não cancelou essa operação. Ao continuar, você está criando uma operação financeira adicional, que poderá aparecer além da anterior quando a reconciliação terminar.`,
     [{
       text: 'Criar operação adicional',
-      onPress: resolve,
+      onPress: () => resolve(),
     }],
     { cancelable: false },
   );
