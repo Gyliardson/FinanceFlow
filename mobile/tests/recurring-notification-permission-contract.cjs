@@ -33,10 +33,10 @@ function functionBody(source, name) {
 const permissionBody = functionBody(notificationService, 'requestNotificationPermissions');
 const scheduleBody = functionBody(notificationService, 'scheduleNotificationsForBill');
 
-assert.match(
+assert.doesNotMatch(
   notificationService,
-  /let notificationPermissionState:\s*NotificationPermissionState\s*=\s*'unknown'/,
-  'permission decisions must have an explicit session state',
+  /notificationPermissionState|NotificationPermissionState/,
+  'granted/denied permission decisions must not be cached across independent attempts',
 );
 assert.match(
   notificationService,
@@ -45,24 +45,39 @@ assert.match(
 );
 assert.match(
   permissionBody,
-  /if \(notificationPermissionState === 'denied'\) return false/,
-  'a denied permission decision must not re-prompt for each recurring child',
-);
-assert.match(
-  permissionBody,
   /if \(notificationPermissionInFlight\) return notificationPermissionInFlight/,
   'concurrent reminder scheduling must share one permission reconciliation',
 );
 assert.match(
   permissionBody,
+  /await Notifications\.getPermissionsAsync\(\)/,
+  'every independent readiness pass must read current OS permission state',
+);
+assert.match(
+  permissionBody,
+  /if \(existingStatus !== 'granted' && existingStatus !== 'denied'\)[\s\S]*await Notifications\.requestPermissionsAsync\(\)/,
+  'only a requestable permission state may invoke the OS permission request',
+);
+assert.doesNotMatch(
+  permissionBody,
+  /if \(existingStatus !== 'granted'\)\s*\{[\s\S]{0,160}requestPermissionsAsync/,
+  'known denied permission must not be requested again',
+);
+assert.match(
+  permissionBody,
   /setNotificationChannelAsync\('bills'/,
-  'Android channel setup remains part of readiness reconciliation',
+  'Android channel setup remains part of each granted readiness reconciliation',
 );
 assert.match(
   permissionBody,
   /catch\s*\{[\s\S]*return false;/,
   'device permission/channel failures must fail closed without escaping into financial flows',
 );
+
+const liveReadIndex = permissionBody.indexOf('await Notifications.getPermissionsAsync()');
+const channelIndex = permissionBody.indexOf("setNotificationChannelAsync('bills'");
+assert.ok(liveReadIndex >= 0, 'permission readiness must read live OS state');
+assert.ok(channelIndex > liveReadIndex, 'Android channel readiness must follow the live permission read');
 
 const readinessIndex = scheduleBody.indexOf('await requestNotificationPermissions()');
 const cancelIndex = scheduleBody.indexOf('await cancelScheduledForBill(billId)');
