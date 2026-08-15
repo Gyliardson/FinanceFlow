@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { scheduleNotificationsForBill } from '../services/NotificationService';
+import { recurringReminderTargetsFromResponse } from '../services/recurringReminderTargets';
 import { useFinancialMutation } from '../services/useFinancialMutation';
 
 export default function RecurringBillScreen({ navigation }: any) {
@@ -77,9 +78,11 @@ export default function RecurringBillScreen({ navigation }: any) {
         frequency: 'monthly',
       });
 
-      if (response.data?.data?.[0]) {
-        const newBill = response.data.data[0];
-        scheduleNotificationsForBill(newBill.id, title.trim(), newBill.due_date).catch(() => undefined);
+      // The top-level data row is the recurring template and is intentionally not
+      // payable. Only materialized children may own payable reminder identities.
+      const reminderTargets = recurringReminderTargetsFromResponse(response.data);
+      for (const target of reminderTargets) {
+        scheduleNotificationsForBill(target.id, target.description, target.dueDate).catch(() => undefined);
       }
 
       Alert.alert(
