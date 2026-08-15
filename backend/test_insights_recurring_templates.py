@@ -35,14 +35,15 @@ class FakeQuery:
             return SimpleNamespace(data=[])
 
         if ("eq", "status", "paid") in self.filters:
-            return SimpleNamespace(data=[])
+            # A pre-existing anomalous paid template must never affect cash-flow
+            # totals. Only the actual non-template paid child is authoritative.
+            if ("eq", "is_recurring", False) in self.filters:
+                return SimpleNamespace(data=[{"amount": "10.00"}])
+            return SimpleNamespace(data=[{"amount": "10.00"}, {"amount": "10.00"}])
 
         if ("in", "status", ("pending", "overdue")) in self.filters:
-            # Model the production rows that triggered #55: one recurring template
-            # and one generated child for the same R$25 obligation. The fake
-            # backend returns only the generated child when the authoritative
-            # query explicitly excludes templates; otherwise it exposes both so
-            # the regression changes the financial result, not merely call shape.
+            # Model one recurring template and one generated child for the same
+            # R$25 obligation. Only the generated child is a payable liability.
             if ("eq", "is_recurring", False) in self.filters:
                 return SimpleNamespace(data=[{"amount": "25.00"}])
             return SimpleNamespace(data=[{"amount": "25.00"}, {"amount": "25.00"}])
@@ -58,7 +59,7 @@ class FakeSupabase:
         return FakeQuery(table_name, self.calls)
 
 
-def test_authoritative_surplus_excludes_recurring_templates(monkeypatch):
+def test_authoritative_cash_flow_excludes_recurring_templates(monkeypatch):
     monkeypatch.setattr(api_handlers, "financial_today", lambda: api_handlers.date(2026, 8, 14))
     supabase = FakeSupabase()
 
@@ -72,6 +73,11 @@ def test_authoritative_surplus_excludes_recurring_templates(monkeypatch):
         },
     )
 
-    assert result["current_balance"] == api_handlers.money("100.00")
-    assert result["estimated_surplus"] == api_handlers.money("75.00")
-    assert ("finance_bills", "eq", "is_recurring", False) in supabase.calls
+    assert result["current_balance"] == api_handlers.money("90.00")
+    assert result["estimated_surplus"] == api_handlers.money("65.00")
+    recurring_false_filters = [
+        call
+        for call in supabase.calls
+        if call == ("finance_bills", "eq", "is_recurring", False)
+    ]
+    assert len(recurring_false_filters) == 2
