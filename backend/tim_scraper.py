@@ -23,6 +23,7 @@ from integration_contracts import (
     experimental_integrations_enabled,
     unavailable_result,
 )
+from receipt_uploads import sanitize_receipt_for_external_processing, validate_receipt_upload
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -50,6 +51,16 @@ def _classify_portal_text(text: str) -> PortalState | None:
     if any(keyword in normalized for keyword in ALL_PAID_KEYWORDS):
         return "all_paid"
     return None
+
+
+def _prepare_screenshot_for_external_ocr(screenshot: bytes) -> bytes | None:
+    """Validate and minimize an authenticated TIM screenshot before external OCR."""
+    try:
+        validated = validate_receipt_upload(screenshot, "image/png")
+        return sanitize_receipt_for_external_processing(validated)
+    except Exception as exc:
+        logger.warning("TIM screenshot rejected before external OCR: %s", type(exc).__name__)
+        return None
 
 
 async def _first_visible(*locators):
@@ -169,9 +180,13 @@ async def scrape_tim() -> dict:
             finally:
                 await browser.close()
 
+        provider_screenshot = _prepare_screenshot_for_external_ocr(screenshot)
+        if provider_screenshot is None:
+            return _payload(error_result("TIM screenshot validation"))
+
         from ai_service import extract_invoice_data
 
-        ocr_response = extract_invoice_data(screenshot, "image/png")
+        ocr_response = extract_invoice_data(provider_screenshot, "image/png")
         if ocr_response.get("status") != "success":
             return _payload(error_result("TIM OCR"))
         extracted = ocr_response.get("extracted_data") or {}
