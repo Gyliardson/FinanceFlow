@@ -1,6 +1,7 @@
 import React from 'react';
-import { TouchableOpacity, Text } from 'react-native';
+import { TouchableOpacity, Text, View } from 'react-native';
 import { createStackNavigator } from '@react-navigation/stack';
+import PendingFinancialStatus from '../components/PendingFinancialStatus';
 import HomeScreen from '../screens/HomeScreen';
 import DetailScreen from '../screens/DetailScreen';
 import RecurringBillScreen from '../screens/RecurringBillScreen';
@@ -16,69 +17,72 @@ export default function AppNavigator() {
   const { signOut } = useAuth();
 
   return (
-    <Stack.Navigator initialRouteName="Home" screenOptions={{
-      headerStyle: { backgroundColor: '#4f46e5' },
-      headerTintColor: '#fff',
-      headerTitleStyle: { fontWeight: 'bold' }
-    }}>
-      <Stack.Screen
-        name="Home"
-        component={HomeScreen}
-        options={{
-          title: 'Minhas Faturas',
-          headerRight: () => (
-            <TouchableOpacity
-              accessibilityRole="button"
-              accessibilityLabel="Sair da conta"
-              onPress={() => void signOut()}
-              style={{ paddingHorizontal: 16, paddingVertical: 8 }}
-            >
-              <Text style={{ color: '#fff', fontWeight: '700' }}>Sair</Text>
-            </TouchableOpacity>
-          ),
-        }}
-      />
-      <Stack.Screen name="Details" component={DetailScreen} options={{ title: 'Nova Fatura' }} />
-      <Stack.Screen
-        name="RecurringBill"
-        component={RecurringBillScreen}
-        options={{
-          title: 'Conta Recorrente',
-          headerStyle: { backgroundColor: '#8b5cf6' },
-        }}
-      />
-      <Stack.Screen
-        name="Payment"
-        component={PaymentScreen}
-        options={{
-          title: 'Registrar Pagamento',
-          headerStyle: { backgroundColor: '#10b981' },
-        }}
-      />
-      <Stack.Screen
-        name="BillHistory"
-        component={BillHistoryScreen}
-        options={{
-          title: 'Detalhes da Conta',
-          headerStyle: { backgroundColor: '#4f46e5' },
-        }}
-      />
-      <Stack.Screen
-        name="Income"
-        component={IncomeScreen}
-        options={{
-          title: 'Minhas Rendas',
-          headerStyle: { backgroundColor: '#10b981' },
-        }}
-      />
-      <Stack.Screen
-        name="Insights"
-        component={InsightsPrivacyScreen}
-        options={{
-          title: 'Saúde Financeira',
-          headerStyle: { backgroundColor: '#4f46e5' },
-        }}
-      />
-    </Stack.Navigator>
+    <View style={{ flex: 1 }}>
+      <Stack.Navigator initialRouteName="Home" screenOptions={{
+        headerStyle: { backgroundColor: '#4f46e5' },
+        headerTintColor: '#fff',
+        headerTitleStyle: { fontWeight: 'bold' }
+      }}>
+        <Stack.Screen
+          name="Home"
+          component={HomeScreen}
+          options={{
+            title: 'Minhas Faturas',
+            headerRight: () => (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Sair da conta"
+                onPress={() => void signOut()}
+                style={{ paddingHorizontal: 16, paddingVertical: 8 }}
+              >
+                <Text style={{ color: '#fff', fontWeight: '700' }}>Sair</Text>
+              </TouchableOpacity>
+            ),
+          }}
+        />
+        <Stack.Screen name="Details" component={DetailScreen} options={{ title: 'Nova Fatura' }} />
+        <Stack.Screen
+          name="RecurringBill"
+          component={RecurringBillScreen}
+          options={{
+            title: 'Conta Recorrente',
+            headerStyle: { backgroundColor: '#8b5cf6' },
+          }}
+        />
+        <Stack.Screen
+          name="Payment"
+          component={PaymentScreen}
+          options={{
+            title: 'Registrar Pagamento',
+            headerStyle: { backgroundColor: '#10b981' },
+          }}
+        />
+        <Stack.Screen
+          name="BillHistory"
+          component={BillHistoryScreen}
+          options={{
+            title: 'Detalhes da Conta',
+            headerStyle: { backgroundColor: '#4f46e5' },
+          }}
+        />
+        <Stack.Screen
+          name="Income"
+          component={IncomeScreen}
+          options={{
+            title: 'Minhas Rendas',
+            headerStyle: { backgroundColor: '#10b981' },
+          }}
+        />
+        <Stack.Screen
+          name="Insights"
+          component={InsightsPrivacyScreen}
+          options={{
+            title: 'Saúde Financeira',
+            headerStyle: { backgroundColor: '#4f46e5' },
+          }}
+        />
+      </Stack.Navigator>
+      <PendingFinancialStatus />
+    </View>
   );
 }
