@@ -8,6 +8,7 @@ const home = read('src/screens/HomeScreen.tsx');
 const detail = read('src/screens/DetailScreen.tsx');
 const income = read('src/screens/IncomeScreen.tsx');
 const insights = read('src/screens/InsightsScreen.tsx');
+const payment = read('src/screens/PaymentScreen.tsx');
 const financialDate = read('src/services/financialDate.ts');
 
 const requireMatch = (source, pattern, message) => {
@@ -35,6 +36,16 @@ requireMatch(insights, /api\.patch\('\/settings\/emergency-fund-goal', \{ emerge
 assert.doesNotMatch(insights, /api\.get\('\/settings'\)/, 'Reserve goal editor must not prefetch a full settings snapshot before saving');
 assert.doesNotMatch(insights, /api\.post\('\/settings', \{ \.\.\./, 'Reserve goal editor must not spread stale settings into a full replacement');
 requireMatch(insights, /Não foi possível confirmar se a meta foi salva\./, 'Goal update failures must communicate an unconfirmed outcome');
+
+// Payment receipts must preserve a supported image representation instead of
+// declaring every selected asset as JPEG and weakening the server MIME contract.
+requireMatch(payment, /'image\/jpeg': 'jpg'/, 'Payment upload must support canonical JPEG metadata');
+requireMatch(payment, /'image\/png': 'png'/, 'Payment upload must support canonical PNG metadata');
+requireMatch(payment, /'image\/webp': 'webp'/, 'Payment upload must support canonical WebP metadata');
+requireMatch(payment, /normalizeReceiptMime\(asset\.mimeType\)/, 'Picker MIME metadata must be preferred when available');
+requireMatch(payment, /type: receipt\.mimeType/, 'Multipart receipt MIME must come from the selected asset contract');
+requireMatch(payment, /name: `comprovante_\$\{selectedBill\.id\}\.\$\{extension\}`/, 'Receipt filename extension must match its multipart MIME');
+assert.doesNotMatch(payment, /type:\s*'image\/jpeg'/, 'Arbitrary payment receipts must not be hardcoded as JPEG');
 
 // Creation/OCR is a high-risk input path. Keep provider details out of UX/logs,
 // retain upload guardrails, and require explicit review/accessibility cues.
