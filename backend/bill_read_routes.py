@@ -6,8 +6,6 @@ only enough state to decide whether explicit short-lived receipt access is
 available or a legacy row still requires reconciliation.
 """
 
-import re
-
 from fastapi import HTTPException
 
 from database import get_supabase_client
@@ -77,6 +75,11 @@ async def get_recurring_bills():
 
 
 async def get_bill_detail(bill_id: str):
+    """Return a bill and only structurally linked recurring history.
+
+    Ordinary one-off bills do not have a stored relationship to other rows, so
+    description similarity must never be treated as authoritative history.
+    """
     try:
         supabase = get_supabase_client()
         bill_resp = supabase.table("finance_bills").select("*").eq("id", bill_id).execute()
@@ -104,17 +107,6 @@ async def get_bill_detail(bill_id: str):
                 .execute()
             )
             related = children.data or []
-        else:
-            base_desc = re.sub(r"\s*-\s*\d{2}/\d{4}$", "", bill.get("description") or "").strip()
-            if base_desc and len(base_desc) >= 3:
-                all_bills = (
-                    supabase.table("finance_bills")
-                    .select("*")
-                    .ilike("description", f"%{base_desc}%")
-                    .order("due_date", desc=True)
-                    .execute()
-                )
-                related = [row for row in (all_bills.data or []) if row["id"] != bill_id]
 
         return {
             "bill": serialize_bill_for_client(bill),
