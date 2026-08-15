@@ -44,6 +44,7 @@ class AuthServiceUnavailableError extends Error {}
 let currentSession: AuthSession | null = null;
 let sessionGeneration = 0;
 let refreshInFlight: { refreshToken: string; promise: Promise<AuthSession> } | null = null;
+let sessionPersistenceQueue: Promise<void> = Promise.resolve();
 
 function getSupabaseConfig() {
   const url = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim().replace(/\/$/, '');
@@ -117,7 +118,21 @@ async function clearLegacySessionStorage(): Promise<void> {
   await AsyncStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
 }
 
-async function persistSession(session: AuthSession | null): Promise<void> {
+async function withSessionPersistenceLock<T>(task: () => Promise<T>): Promise<T> {
+  const previous = sessionPersistenceQueue;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  sessionPersistenceQueue = previous.catch(() => undefined).then(() => gate);
+
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
+
+async function persistSessionUnlocked(session: AuthSession | null): Promise<void> {
   setCurrentSession(session);
   if (session) {
     await SecureStore.setItemAsync(SESSION_STORAGE_KEY, JSON.stringify(session));
@@ -126,6 +141,10 @@ async function persistSession(session: AuthSession | null): Promise<void> {
     await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
     await clearLegacySessionStorage();
   }
+}
+
+async function persistSession(session: AuthSession | null): Promise<void> {
+  await withSessionPersistenceLock(() => persistSessionUnlocked(session));
 }
 
 async function readPersistedSession(): Promise<{ raw: string; legacy: boolean } | null> {
@@ -211,12 +230,13 @@ async function commitRefreshedSession(
   sourceSession: AuthSession,
   refreshedSession: AuthSession,
 ): Promise<boolean> {
-  if (sameSessionIdentity(currentSession, sourceSession)) {
-    await persistSession(refreshedSession);
-    return true;
-  }
-
-  return sameSessionIdentity(currentSession, refreshedSession);
+  return withSessionPersistenceLock(async () => {
+    if (sameSessionIdentity(currentSession, sourceSession)) {
+      await persistSessionUnlocked(refreshedSession);
+      return true;
+    }
+    return sameSessionIdentity(currentSession, refreshedSession);
+  });
 }
 
 export async function initializeAuthSession(): Promise<AuthSession | null> {
@@ -266,7 +286,9 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
     if (error instanceof InvalidCredentialsError) {
       if (sameSessionIdentity(currentSession, parsed)) {
         await clearLocalFinancialState(parsed.user.id);
-        await persistSession(null);
+        if (sameSessionIdentity(currentSession, parsed)) {
+          await persistSession(null);
+        }
       }
       return currentSession;
     }
@@ -321,7 +343,9 @@ export async function getValidAuthSessionSnapshot(): Promise<AuthSessionSnapshot
         sameSessionIdentity(currentSession, sourceSession)
       ) {
         await clearLocalFinancialState(sourceSession.user.id);
-        await persistSession(null);
+        if (sameSessionIdentity(currentSession, sourceSession)) {
+          await persistSession(null);
+        }
       }
       return null;
     }
@@ -350,6 +374,25 @@ export function isAuthSessionSnapshotCurrent(snapshot: AuthSessionSnapshot): boo
   );
 }
 
+/**
+ * Fail closed when the protected FinanceFlow API authoritatively rejects the
+ * exact bearer snapshot used by a request. The session persistence lock makes
+ * the snapshot check, owner-cache purge and local-session removal atomic with
+ * respect to sign-in/token persistence, so a stale 401 cannot clear a newer
+ * account/session.
+ */
+export async function invalidateRejectedAuthSessionSnapshot(
+  snapshot: AuthSessionSnapshot,
+): Promise<boolean> {
+  return withSessionPersistenceLock(async () => {
+    if (!isAuthSessionSnapshotCurrent(snapshot)) return false;
+    await clearLocalFinancialState(snapshot.userId);
+    if (!isAuthSessionSnapshotCurrent(snapshot)) return false;
+    await persistSessionUnlocked(null);
+    return true;
+  });
+}
+
 export async function getValidAccessToken(): Promise<string | null> {
   return (await getValidAuthSessionSnapshot())?.accessToken ?? null;
 }
@@ -371,7 +414,9 @@ export async function signOutAuthSession(): Promise<void> {
     }
     if (sameSessionIdentity(currentSession, session)) {
       await clearLocalFinancialState(session.user.id);
-      await persistSession(null);
+      if (sameSessionIdentity(currentSession, session)) {
+        await persistSession(null);
+      }
     }
   } else {
     await clearLegacyGlobalFinancialCache();
