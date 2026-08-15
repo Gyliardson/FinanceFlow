@@ -176,9 +176,15 @@ def _calculate_financials(supabase, settings):
     initial_date = settings.get("initial_balance_date", "2000-01-01")
     emergency_fund_goal = money(settings.get("emergency_fund_goal", "0.00"))
     emergency_fund_balance = money(settings.get("emergency_fund_balance", "0.00"))
+    today = financial_today()
+    today_iso = today.isoformat()
 
     incomes_resp = (
-        supabase.table("finance_incomes").select("amount").gte("date", initial_date).execute()
+        supabase.table("finance_incomes")
+        .select("amount")
+        .gte("date", initial_date)
+        .lte("date", today_iso)
+        .execute()
     )
     paid_bills_resp = (
         supabase.table("finance_bills")
@@ -186,10 +192,10 @@ def _calculate_financials(supabase, settings):
         .eq("status", "paid")
         .eq("is_recurring", False)
         .gte("payment_date", initial_date)
+        .lte("payment_date", today_iso)
         .execute()
     )
 
-    today = financial_today()
     end_of_month = date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
     pending_bills_resp = (
         supabase.table("finance_bills")
