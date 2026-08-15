@@ -55,6 +55,7 @@ export default function RecurringBillScreen({ navigation }: any) {
     for (const target of reminderTargets) {
       scheduleNotificationsForBill(target.id, target.description, target.dueDate).catch(() => undefined);
     }
+    return reminderTargets.length;
   };
 
   const finishSuccessfulCreation = (payload: any) => {
@@ -69,18 +70,38 @@ export default function RecurringBillScreen({ navigation }: any) {
 
   const handleRecoverGeneration = async () => {
     if (recoveringGeneration || loading) return;
+    const recoveringDeferredCreation = generationDeferred;
     setRecoveringGeneration(true);
     try {
       const response = await api.post('/recurring-bills/generate');
       if (response.data?.status !== 'success' || !Array.isArray(response.data?.generated)) {
         throw new Error('Recurring generation did not return authoritative generated rows.');
       }
-      finishSuccessfulCreation({ generation: response.data });
+      const reminderCount = scheduleGeneratedReminders({ generation: response.data });
+      setGenerationDeferred(false);
+      if (recoveringDeferredCreation) {
+        Alert.alert(
+          'Conta recorrente criada',
+          `“${title.trim()}” foi criada e os vencimentos recorrentes foram reconciliados.`,
+          [{ text: 'OK', onPress: () => navigation.goBack() }],
+        );
+      } else {
+        Alert.alert(
+          'Sincronização concluída',
+          reminderCount > 0
+            ? `${reminderCount} vencimento${reminderCount === 1 ? '' : 's'} recorrente${reminderCount === 1 ? '' : 's'} foi${reminderCount === 1 ? '' : 'ram'} reconciliado${reminderCount === 1 ? '' : 's'}.`
+            : 'Não havia novos vencimentos recorrentes para reconciliar.',
+        );
+      }
     } catch {
-      setGenerationDeferred(true);
+      if (recoveringDeferredCreation) {
+        setGenerationDeferred(true);
+      }
       Alert.alert(
         'Geração ainda pendente',
-        'A conta recorrente já foi criada, mas os próximos vencimentos ainda não puderam ser confirmados. Use “Sincronizar vencimentos” para tentar novamente sem recriar a conta.',
+        recoveringDeferredCreation
+          ? 'A conta recorrente já foi criada, mas os próximos vencimentos ainda não puderam ser confirmados. Use “Sincronizar vencimentos” para tentar novamente sem recriar a conta.'
+          : 'Não foi possível reconciliar os vencimentos recorrentes agora. Nenhum novo template foi criado; tente a sincronização novamente mais tarde.',
       );
     } finally {
       setRecoveringGeneration(false);
