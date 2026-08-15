@@ -43,18 +43,19 @@ def test_legacy_module_has_no_independent_shared_secret_or_wildcard_surface():
 
 @patch("api_handlers.get_supabase_client")
 def test_validate_bill_amount_boundary_is_exact(mock_supabase):
+    bill_id = "12345678-1234-1234-1234-1234567890ab"
     mock_execute = (
         mock_supabase.return_value.table.return_value.select.return_value.eq.return_value.execute
     )
     mock_execute.return_value.data = [
-        {"id": "123-abc", "amount": "100.00", "due_date": "2026-08-10", "barcode": None}
+        {"id": bill_id, "amount": "100.00", "due_date": "2026-08-10", "barcode": None}
     ]
 
     accepted = asyncio.run(
-        validate_bill(BillValidationRequest(bill_id="123-abc", ocr_amount="105.00"))
+        validate_bill(BillValidationRequest(bill_id=bill_id, ocr_amount="105.00"))
     )
     rejected = asyncio.run(
-        validate_bill(BillValidationRequest(bill_id="123-abc", ocr_amount="105.01"))
+        validate_bill(BillValidationRequest(bill_id=bill_id, ocr_amount="105.01"))
     )
 
     assert accepted["details"]["amount_match"] is True

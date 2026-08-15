@@ -2,6 +2,7 @@ import logging
 
 from fastapi import File, HTTPException, UploadFile
 
+from api_models import CanonicalBillId
 from database import get_supabase_client, get_supabase_storage_client
 from receipt_access import ReceiptAccessError, ReceiptNotFoundError, create_authorized_receipt_access
 from receipt_payments import (
@@ -74,7 +75,7 @@ def _reconcile_receiptless_payment(data_client, bill_id: str):
     )
 
 
-async def pay_bill_without_receipt(bill_id: str):
+async def pay_bill_without_receipt(bill_id: CanonicalBillId):
     """Mark an authenticated user's payable bill through the database-owned transition."""
     _authenticated_user_id()
     data_client = get_supabase_client()
@@ -136,7 +137,7 @@ async def pay_bill_without_receipt(bill_id: str):
 
 
 async def pay_bill_with_private_receipt(
-    bill_id: str,
+    bill_id: CanonicalBillId,
     file: UploadFile = File(...),
 ):
     """Validate, privately store and persist a receipt-backed bill payment."""
@@ -183,7 +184,7 @@ async def pay_bill_with_private_receipt(
     }
 
 
-def get_private_receipt_access(bill_id: str):
+def get_private_receipt_access(bill_id: CanonicalBillId):
     """Return bounded temporary receipt access after RLS authorization."""
     owner_id = _authenticated_user_id()
     try:
