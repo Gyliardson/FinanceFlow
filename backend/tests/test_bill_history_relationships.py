@@ -1,6 +1,5 @@
+import asyncio
 from types import SimpleNamespace
-
-import pytest
 
 import bill_read_routes
 
@@ -42,8 +41,7 @@ class _Client:
         return _Query(self)
 
 
-@pytest.mark.asyncio
-async def test_one_off_bill_never_guesses_history_from_description(monkeypatch):
+def test_one_off_bill_never_guesses_history_from_description(monkeypatch):
     client = _Client(
         [
             {
@@ -58,7 +56,7 @@ async def test_one_off_bill_never_guesses_history_from_description(monkeypatch):
     )
     monkeypatch.setattr(bill_read_routes, "get_supabase_client", lambda: client)
 
-    result = await bill_read_routes.get_bill_detail("one-off")
+    result = asyncio.run(bill_read_routes.get_bill_detail("one-off"))
 
     assert result["history"] == []
     assert result["history_count"] == 0
@@ -68,8 +66,7 @@ async def test_one_off_bill_never_guesses_history_from_description(monkeypatch):
     assert client.executed[0] == [("select", "*"), ("eq", "id", "one-off")]
 
 
-@pytest.mark.asyncio
-async def test_recurring_child_history_uses_explicit_parent_relationship(monkeypatch):
+def test_recurring_child_history_uses_explicit_parent_relationship(monkeypatch):
     selected = {
         "id": "child-aug",
         "description": "Internet - 08/2026",
@@ -89,7 +86,7 @@ async def test_recurring_child_history_uses_explicit_parent_relationship(monkeyp
     client = _Client([selected], [selected, sibling])
     monkeypatch.setattr(bill_read_routes, "get_supabase_client", lambda: client)
 
-    result = await bill_read_routes.get_bill_detail("child-aug")
+    result = asyncio.run(bill_read_routes.get_bill_detail("child-aug"))
 
     assert [row["id"] for row in result["history"]] == ["child-jul"]
     assert result["history_count"] == 1
@@ -100,8 +97,7 @@ async def test_recurring_child_history_uses_explicit_parent_relationship(monkeyp
     ]
 
 
-@pytest.mark.asyncio
-async def test_recurring_template_history_uses_explicit_children(monkeypatch):
+def test_recurring_template_history_uses_explicit_children(monkeypatch):
     template = {
         "id": "template-internet",
         "description": "Internet",
@@ -121,7 +117,7 @@ async def test_recurring_template_history_uses_explicit_children(monkeypatch):
     client = _Client([template], [child])
     monkeypatch.setattr(bill_read_routes, "get_supabase_client", lambda: client)
 
-    result = await bill_read_routes.get_bill_detail("template-internet")
+    result = asyncio.run(bill_read_routes.get_bill_detail("template-internet"))
 
     assert [row["id"] for row in result["history"]] == ["child-aug"]
     assert result["history_count"] == 1
