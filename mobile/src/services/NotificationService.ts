@@ -48,24 +48,18 @@ const MESSAGES_DUE_DAY = {
   },
 };
 
-type NotificationPermissionState = 'unknown' | 'granted' | 'denied';
-
-let notificationPermissionState: NotificationPermissionState = 'unknown';
 let notificationPermissionInFlight: Promise<boolean> | null = null;
 
 /**
- * Reconcile OS permission and the Android channel before any local scheduling.
+ * Reconcile current OS permission and Android channel state before local scheduling.
  *
- * Multiple callers share one in-flight request. A user denial is cached for the
- * current JS session so a batch of generated recurring children cannot trigger
- * repeated permission prompts. Transient device/channel API failures are not
- * cached, allowing a later independent attempt to recover without affecting the
- * already-committed financial operation.
+ * Every independent attempt re-reads device permission so changes made in system
+ * Settings become observable without restarting the JS process. Concurrent callers
+ * share one in-flight reconciliation; only an actually requestable permission state
+ * can invoke the OS prompt. A known denial fails closed without re-prompting.
  */
 export async function requestNotificationPermissions(): Promise<boolean> {
   if (Platform.OS === 'web') return false;
-  if (notificationPermissionState === 'granted') return true;
-  if (notificationPermissionState === 'denied') return false;
   if (notificationPermissionInFlight) return notificationPermissionInFlight;
 
   const permissionRequest = (async (): Promise<boolean> => {
@@ -73,14 +67,13 @@ export async function requestNotificationPermissions(): Promise<boolean> {
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
 
-      if (existingStatus !== 'granted') {
+      if (existingStatus !== 'granted' && existingStatus !== 'denied') {
         const { status } = await Notifications.requestPermissionsAsync();
         finalStatus = status;
       }
 
       if (finalStatus !== 'granted') {
-        notificationPermissionState = 'denied';
-        console.warn('Permissão de notificações negada pelo usuário.');
+        console.warn('Permissão de notificações não concedida.');
         return false;
       }
 
@@ -94,7 +87,6 @@ export async function requestNotificationPermissions(): Promise<boolean> {
         });
       }
 
-      notificationPermissionState = 'granted';
       return true;
     } catch {
       console.warn('[Notificações] Não foi possível preparar permissão/canal para lembretes.');
