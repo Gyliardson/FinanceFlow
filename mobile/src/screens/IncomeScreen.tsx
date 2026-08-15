@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, StyleSheet, TextInput, TouchableOpacity,
+  AppState, View, Text, StyleSheet, TextInput, TouchableOpacity,
   ActivityIndicator, Alert, Modal, FlatList, KeyboardAvoidingView, Platform, ScrollView
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -85,6 +85,21 @@ export default function IncomeScreen({ navigation }: any) {
       unsubscribeBlur();
     };
   }, [navigation]);
+
+  useEffect(() => {
+    const appStateSubscription = AppState.addEventListener('change', (state) => {
+      if (
+        state === 'active'
+        && navigation.isFocused()
+        && !modalVisible
+        && !saving
+        && !intentLocked
+      ) {
+        void fetchIncomes();
+      }
+    });
+    return () => appStateSubscription.remove();
+  }, [navigation, modalVisible, saving, intentLocked]);
 
   const resetForm = () => {
     incomeMutation.startNewIntent();

@@ -50,3 +50,5 @@ jobs:
         run: node mobile/tests/income-refresh-generation-contract.cjs
       - name: Run Insights refresh generation contract
         run: node mobile/tests/insights-refresh-generation-contract.cjs
+      - name: Run passive resume reconciliation contract
+        run: node mobile/tests/passive-resume-reconciliation-contract.cjs
