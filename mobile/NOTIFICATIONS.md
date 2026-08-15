@@ -8,6 +8,14 @@ FinanceFlow treats recurring templates and payable bill instances as different d
 - A generated recurring child (`is_recurring=false`, `parent_bill_id=<template id>`) is the payable liability and is the only recurring row whose `id` may be stored in local notification data.
 - Payment cancellation uses that same payable child ID.
 
+## Permission and device readiness
+
+Before any local reminder is scheduled, `scheduleNotificationsForBill()` reconciles OS notification permission and the Android `bills` channel through `requestNotificationPermissions()`.
+
+Permission reconciliation is single-flight. Concurrent generated children share one in-flight request, and an explicit denial is remembered for the current JavaScript session so one recurring batch cannot repeatedly prompt the user. Transient device/channel API failures are not treated as a financial failure and are not cached as a permanent denial; reminder scheduling simply fails closed for that attempt.
+
+Web remains a no-op for local scheduling. Notification permission or channel failure never rolls back, recreates, or retries an already-committed recurring financial operation.
+
 ## Retry and reconciliation
 
 `scheduleNotificationsForBill()` uses replace semantics for one bill ID: existing reminders for that bill are enumerated and cancelled before a new set is created. If the existing set cannot be reconciled, the function fails closed and does not add an unknown duplicate set. This makes repeated scheduling of a known child safe for retry/reconciliation.
