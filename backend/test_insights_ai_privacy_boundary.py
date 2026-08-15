@@ -1,8 +1,10 @@
 import asyncio
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 
 import insights_routes
+import runtime
 
 
 class FakeSettingsQuery:
@@ -108,3 +110,24 @@ def test_explicit_refresh_calls_provider_and_persists_result(monkeypatch):
     assert supabase.updates == [
         {"latest_insight_text": "Novo insight", "latest_insight_date": "2026-08-15"}
     ]
+
+
+def test_canonical_runtime_uses_privacy_minimized_insights_handlers():
+    app = runtime.create_app()
+    routes = {(tuple(route.methods or []), route.path): route.endpoint for route in app.routes}
+
+    assert routes[(('GET',), '/insights')] is insights_routes.get_insights
+    assert routes[(('POST',), '/insights/refresh')] is insights_routes.refresh_insights
+
+
+def test_mobile_discloses_external_ai_aggregate_categories_before_refresh():
+    repo_root = Path(__file__).resolve().parents[1]
+    wrapper = (repo_root / 'mobile/src/screens/InsightsPrivacyScreen.tsx').read_text(encoding='utf-8')
+    navigator = (repo_root / 'mobile/src/navigation/AppNavigator.tsx').read_text(encoding='utf-8')
+
+    assert 'saldo atual' in wrapper
+    assert 'sobra estimada' in wrapper
+    assert 'meta da reserva' in wrapper
+    assert 'Faturas, recibos e transações individuais não fazem parte' in wrapper
+    assert 'InsightsPrivacyScreen' in navigator
+    assert 'component={InsightsPrivacyScreen}' in navigator
