@@ -40,3 +40,5 @@ jobs:
         run: node mobile/tests/bill-detail-focus-refresh-contract.cjs
       - name: Run Home refresh generation contract
         run: node mobile/tests/home-refresh-generation-contract.cjs
+      - name: Run income refresh generation contract
+        run: node mobile/tests/income-refresh-generation-contract.cjs
