@@ -45,12 +45,13 @@ async def get_bills():
 
 
 async def get_pending_bills():
+    """Return owner-scoped unpaid bills that are eligible for payment."""
     try:
         response = (
             get_supabase_client()
             .table("finance_bills")
             .select("*")
-            .eq("status", "pending")
+            .in_("status", ["pending", "overdue"])
             .eq("is_recurring", False)
             .order("due_date", desc=False)
             .execute()
