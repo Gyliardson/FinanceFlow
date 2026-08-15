@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useEffect } from 'react';
+import { AppState, View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 interface NetworkStatusProps {
@@ -17,6 +17,18 @@ function describeFreshness(cachedAt: number | null | undefined): string {
 }
 
 export default function NetworkStatus({ isOffline, cachedAt, onRetry }: NetworkStatusProps) {
+  useEffect(() => {
+    if (!isOffline || !onRetry) return undefined;
+
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        onRetry();
+      }
+    });
+
+    return () => subscription.remove();
+  }, [isOffline, onRetry]);
+
   if (!isOffline) return null;
   const freshness = describeFreshness(cachedAt);
 
