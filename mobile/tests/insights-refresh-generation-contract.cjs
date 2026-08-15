@@ -31,8 +31,16 @@ assert.match(screen, /await api\.patch\('\/settings\/emergency-fund-goal'[\s\S]*
 // Preserve the privacy boundary: passive reads remain local and only explicit refresh calls AI.
 const passive = routes.match(/async def get_insights\(\):[\s\S]*?async def refresh_insights\(\):/);
 assert.ok(passive, 'passive Insights route must remain identifiable');
-assert.doesNotMatch(passive[0], /generate_financial_insights\(/);
-assert.match(routes, /async def refresh_insights\(\):[\s\S]*?generate_financial_insights\([\s\S]*?explicit_user_action=True/s);
+assert.doesNotMatch(passive[0], /generate_financial_insights/);
+
+// Explicit AI generation must remain an explicit-user-action call and, because the provider adapter
+// is synchronous, it must cross the route through asyncio.to_thread instead of blocking FastAPI's loop.
+const refresh = routes.match(/async def refresh_insights\(\):[\s\S]*/);
+assert.ok(refresh, 'explicit Insights refresh route must remain identifiable');
+assert.match(
+  refresh[0],
+  /await asyncio\.to_thread\(\s*generate_financial_insights,\s*fin_data,\s*explicit_user_action=True,?\s*\)/s,
+);
 
 // Deterministic model: an older passive result/error cannot regress a newer explicit refresh.
 function createPublisher() {
