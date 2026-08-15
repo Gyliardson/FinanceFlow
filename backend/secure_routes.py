@@ -13,6 +13,7 @@ from receipt_payments import (
     BillNotFoundError,
     PaymentPersistenceError,
     ReceiptStorageError,
+    RecurringTemplatePaymentError,
     persist_private_receipt_payment,
 )
 from receipt_uploads import MAX_RECEIPT_BYTES, ReceiptValidationError
@@ -32,14 +33,14 @@ def _authenticated_user_id() -> str:
 
 
 async def pay_bill_without_receipt(bill_id: str):
-    """Mark an authenticated user's bill paid with compare-and-set idempotency."""
+    """Mark an authenticated user's payable bill with compare-and-set idempotency."""
     _authenticated_user_id()
     data_client = get_supabase_client()
 
     try:
         bill_response = (
             data_client.table("finance_bills")
-            .select("id,status,description")
+            .select("id,status,description,is_recurring")
             .eq("id", bill_id)
             .limit(1)
             .execute()
@@ -55,6 +56,11 @@ async def pay_bill_without_receipt(bill_id: str):
         raise HTTPException(status_code=404, detail="Fatura não encontrada.")
 
     bill = rows[0]
+    if bill.get("is_recurring") is True:
+        raise HTTPException(
+            status_code=409,
+            detail="Modelos recorrentes não podem ser pagos diretamente.",
+        )
     if bill.get("status") == "paid":
         return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
 
@@ -64,6 +70,7 @@ async def pay_bill_without_receipt(bill_id: str):
             data_client.table("finance_bills")
             .update({"status": "paid", "payment_date": payment_date})
             .eq("id", bill_id)
+            .eq("is_recurring", False)
             .neq("status", "paid")
             .execute()
         )
@@ -169,6 +176,11 @@ async def pay_bill_with_private_receipt(
         # RLS intentionally makes another user's identifier indistinguishable
         # from a nonexistent bill.
         raise HTTPException(status_code=404, detail="Fatura não encontrada.") from exc
+    except RecurringTemplatePaymentError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Modelos recorrentes não podem ser pagos diretamente.",
+        ) from exc
     except BillAlreadyPaidError as exc:
         raise HTTPException(status_code=409, detail="Esta fatura já foi marcada como paga.") from exc
     except ReceiptStorageError as exc:
