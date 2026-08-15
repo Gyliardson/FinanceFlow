@@ -67,9 +67,14 @@ def _is_trusted_pgmei_url(url: str) -> bool:
     """Require the sensitive CNPJ form to remain on the expected HTTPS origin."""
     try:
         parsed = urlparse(url)
+        port = parsed.port
     except (TypeError, ValueError):
         return False
-    return parsed.scheme.lower() == "https" and (parsed.hostname or "").lower() == PGMEI_HOST
+    return (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == PGMEI_HOST
+        and port in (None, 443)
+    )
 
 
 def _prepare_pdf_for_external_ocr(pdf_bytes: bytes) -> bytes | None:
