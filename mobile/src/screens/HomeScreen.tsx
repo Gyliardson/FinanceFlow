@@ -191,7 +191,10 @@ export default function HomeScreen({ navigation }: any) {
       setConfigModalVisible(false);
       await loadAllData();
     } catch {
-      Alert.alert('Não foi possível salvar', 'Verifique sua conexão e tente novamente. Nenhum valor foi alterado.');
+      Alert.alert(
+        'Resultado não confirmado',
+        'Não foi possível confirmar se as configurações foram salvas. Recarregue os dados para reconciliar o estado antes de tentar novamente.',
+      );
     } finally {
       setSavingSettings(false);
     }
