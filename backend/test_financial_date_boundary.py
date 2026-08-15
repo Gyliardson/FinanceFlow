@@ -87,18 +87,20 @@ def settings(initial_date):
     }
 
 
-def test_initial_balance_boundary_includes_income_and_payment_on_same_financial_date(monkeypatch):
+def test_initial_and_current_date_boundaries_are_both_inclusive(monkeypatch):
     monkeypatch.setattr(api_handlers, "financial_today", lambda: date(2026, 8, 14))
     supabase = FakeSupabase()
 
-    on_correct_local_day = api_handlers._calculate_financials(supabase, settings("2026-08-14"))
-    after_utc_drift = api_handlers._calculate_financials(supabase, settings("2026-08-15"))
+    on_current_financial_day = api_handlers._calculate_financials(supabase, settings("2026-08-14"))
+    initial_date_after_today = api_handlers._calculate_financials(supabase, settings("2026-08-15"))
 
-    # D is inclusive: income +100 and payment -20 on D are both authoritative.
-    assert on_correct_local_day["current_balance"] == Decimal("1105.00")
-    assert on_correct_local_day["estimated_surplus"] == Decimal("1075.00")
+    # Both bounds are inclusive: D income +100 and D payment -20 are realized,
+    # while the D+1 income +25 is future cash and must not inflate today's balance.
+    assert on_current_financial_day["current_balance"] == Decimal("1080.00")
+    assert on_current_financial_day["estimated_surplus"] == Decimal("1050.00")
 
-    # Control: shifting the same product boundary to D+1 excludes both D records.
-    assert after_utc_drift["current_balance"] == Decimal("1025.00")
-    assert after_utc_drift["estimated_surplus"] == Decimal("995.00")
-    assert on_correct_local_day != after_utc_drift
+    # Defensive control for an initial-balance date after today: no dated income
+    # or payment is realized inside the empty [initial_date, today] interval.
+    assert initial_date_after_today["current_balance"] == Decimal("1000.00")
+    assert initial_date_after_today["estimated_surplus"] == Decimal("970.00")
+    assert on_current_financial_day != initial_date_after_today
