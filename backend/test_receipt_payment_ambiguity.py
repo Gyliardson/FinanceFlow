@@ -48,7 +48,7 @@ class Query:
         self.client.select_calls += 1
         if self.client.select_calls in self.client.select_error_calls:
             raise RuntimeError("authoritative read unavailable")
-        return Response([] if self.client.bill is None else [dict(self.client.bill)])
+        return Response([dict(self.client.bill)])
 
 
 class RPCQuery:
@@ -237,7 +237,10 @@ def test_malformed_rpc_while_still_unpaid_cleans_only_after_authoritative_reread
     client = DataClient(mode="malformed")
     bucket = Bucket()
 
-    with pytest.raises(PaymentPersistenceError, match="Could not persist the payment state"):
+    with pytest.raises(
+        PaymentPersistenceError,
+        match="Payment RPC did not return a complete authoritative paid state",
+    ):
         persist(client, bucket)
 
     uploaded_path = bucket.uploads[0]["path"]
