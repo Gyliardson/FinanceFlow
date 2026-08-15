@@ -1,5 +1,5 @@
-# Use a imagem Python slim oficial como base
-FROM python:3.11-slim
+# Use the same Python minor validated by canonical backend CI / clean-room checks
+FROM python:3.12-slim
 
 # Define o diretório de trabalho no container
 WORKDIR /app
