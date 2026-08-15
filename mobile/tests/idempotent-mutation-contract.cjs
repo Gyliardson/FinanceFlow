@@ -107,6 +107,46 @@ async function midnightRestartReplaysOriginal() {
   assert.equal(authoritative.size, 1);
 }
 
+async function oldAmbiguousIntentSurvivesRestartAndReusesIdentity() {
+  resetStorage();
+  const realDateNow = Date.now;
+  let now = Date.UTC(2026, 0, 1, 12, 0, 0);
+  Date.now = () => now;
+  try {
+    let mutations = reloadModule();
+    const intentId = 'fi_income_long_gap_000001';
+    const originalPayload = {
+      title: 'Long-gap income', amount: 250, date: '2026-01-01', description: null,
+      type: 'extra', is_recurring: false,
+    };
+    const original = await mutations.getOrCreatePendingOperation(
+      OWNER_A,
+      'income_create',
+      intentId,
+      originalPayload,
+    );
+
+    now += 91 * 24 * 60 * 60 * 1000;
+    mutations = reloadModule();
+    const pending = await mutations.listPendingOperationsForOwner(OWNER_A);
+    const retained = pending.find((item) => item.intentId === intentId);
+    assert.ok(retained, 'ambiguous intent must not expire merely because 90 days elapsed');
+    assert.equal(retained.key, original.key);
+    assert.deepEqual(retained.originalPayload, originalPayload);
+
+    const retry = await mutations.getOrCreatePendingOperation(
+      OWNER_A,
+      'income_create',
+      intentId,
+      { ...originalPayload, date: '2026-04-02', amount: 999 },
+    );
+    assert.equal(retry.key, original.key, 'long-gap retry must reuse the durable transport identity');
+    assert.deepEqual(retry.originalPayload, originalPayload, 'long-gap retry must reuse first-submission payload');
+  } finally {
+    Date.now = realDateNow;
+  }
+}
+
 async function concurrentDifferentIntentsSurvive() {
   resetStorage();
   const mutations = reloadModule();
@@ -245,6 +285,7 @@ async function invalidSecureNamespaceIsRejectedAndAsyncV1Migrates() {
 (async () => {
   await explicitIdentityNotPayload();
   await midnightRestartReplaysOriginal();
+  await oldAmbiguousIntentSurvivesRestartAndReusesIdentity();
   await concurrentDifferentIntentsSurvive();
   await restartOwnerAndSecureStorage();
   await rejectionLifecycle();

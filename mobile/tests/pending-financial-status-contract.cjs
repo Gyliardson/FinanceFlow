@@ -37,8 +37,8 @@ assert.doesNotMatch(status, /intentId/,
 
 assert.match(navigator, /<PendingFinancialStatus\s*\/>/,
   'the unresolved status must survive originating form unmount inside the authenticated navigator');
-assert.match(store, /LOCAL_RETENTION_MS/,
-  'ambiguous durable state remains retained rather than being deleted to satisfy the UI contract');
+assert.doesNotMatch(store, /LOCAL_RETENTION_MS|createdAt\s*>=\s*cutoff/,
+  'ambiguous durable state must not be silently deleted because local wall-clock time passed');
 assert.match(store, /listPendingOperationsForOwner/);
 
 assert.match(hook, /if \(!intentIdRef\.current\)/,

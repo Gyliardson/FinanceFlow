@@ -55,6 +55,7 @@ Pending financial payloads are private state:
 - historical SecureStore/AsyncStorage records migrate one way where supported and legacy plaintext state is removed after migration;
 - legacy records without `intentId` receive a stable synthetic ID derived from their already-persisted operation key so ambiguous outcomes are not abandoned;
 - read/modify/write stays serialized per `owner + operation` so concurrent distinct intents cannot overwrite each other;
+- structurally valid ambiguous records have **no client-side wall-clock TTL**: age cannot prove whether a lost response hid a committed financial effect, so closure requires authoritative success or a definitive client rejection;
 - private financial payloads are not logged during reconciliation;
 - user-visible unresolved status exposes category/count only, never the durable payload or replay identifiers.
 
@@ -75,6 +76,7 @@ The mobile auth/UX contracts must prove or enforce:
 - fresh intent allocation claims its synchronous single-flight guard before the first async preflight and releases it in `finally`;
 - a concurrent same-hook submit cannot allocate/persist another intent while the first is in flight;
 - income retry across local midnight -> same intent/key/original date;
+- an unresolved intent survives a restart/read after more than 90 days and still reuses its original key/payload rather than being silently aged out;
 - deterministic old payload-equality aliasing control;
 - deterministic old pending-store last-writer-wins control and fixed preservation of both intents;
 - restart persistence;
