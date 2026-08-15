@@ -1,11 +1,13 @@
 """Least-privilege authenticated settings replacement boundary."""
 
 import logging
+from datetime import date
 
 from fastapi import HTTPException
 
 from api_models import SettingsUpdateRequest
 from database import get_supabase_client
+from financial_clock import financial_today
 from money import money_to_storage
 from request_context import get_request_user_id
 
@@ -26,9 +28,19 @@ def _rpc_payload(response):
     return None
 
 
+def _require_non_future_initial_balance_date(initial_balance_date: str) -> None:
+    """Keep the baseline date inside the authoritative financial calendar."""
+    if date.fromisoformat(initial_balance_date) > financial_today():
+        raise HTTPException(
+            status_code=422,
+            detail="A data do saldo inicial não pode estar no futuro.",
+        )
+
+
 async def update_settings(req: SettingsUpdateRequest):
     """Replace only the three public settings fields through PostgreSQL policy."""
     _require_authenticated_context()
+    _require_non_future_initial_balance_date(req.initial_balance_date)
     try:
         response = get_supabase_client().rpc(
             "finance_replace_settings",
