@@ -1,4 +1,5 @@
 import axios, { AxiosRequestConfig } from 'axios';
+import { isAuthenticationRejected } from './apiFailure';
 import {
   clearPendingOperation,
   IdempotentOperation,
@@ -13,6 +14,9 @@ type AuthSessionSnapshotProvider = () =>
 type AuthSessionSnapshotValidator = (
   snapshot: MutationSessionSnapshot,
 ) => Promise<boolean> | boolean;
+type AuthSessionRejectionHandler = (
+  snapshot: MutationSessionSnapshot,
+) => Promise<void> | void;
 
 type FinancialRequestConfig = AxiosRequestConfig & {
   financeflowIntentId?: string;
@@ -21,14 +25,17 @@ type FinancialRequestConfig = AxiosRequestConfig & {
 
 let authSessionSnapshotProvider: AuthSessionSnapshotProvider | null = null;
 let authSessionSnapshotValidator: AuthSessionSnapshotValidator | null = null;
+let authSessionRejectionHandler: AuthSessionRejectionHandler | null = null;
 let reconciliationInFlight: Promise<void> | null = null;
 
 export function configureApiAuthSessionSnapshotProvider(
   provider: AuthSessionSnapshotProvider | null,
   validator: AuthSessionSnapshotValidator | null,
+  rejectionHandler: AuthSessionRejectionHandler | null = null,
 ) {
   authSessionSnapshotProvider = provider;
   authSessionSnapshotValidator = validator;
+  authSessionRejectionHandler = rejectionHandler;
 }
 
 const api = axios.create({
@@ -77,8 +84,10 @@ api.interceptors.request.use(async (config) => {
 
   config.headers.delete('X-API-KEY');
   if (snapshot) {
+    financialConfig.financeflowSessionSnapshot = snapshot;
     config.headers.set('Authorization', `Bearer ${snapshot.accessToken}`);
   } else {
+    delete financialConfig.financeflowSessionSnapshot;
     config.headers.delete('Authorization');
   }
 
@@ -136,6 +145,18 @@ api.interceptors.response.use(
     if (metadata && isDefinitiveClientRejection(error)) {
       await clearPendingOperation(metadata.ownerId, metadata.operation, metadata.key);
       pendingMetadataByKey.delete(metadata.key);
+    }
+
+    if (isAuthenticationRejected(error) && authSessionRejectionHandler) {
+      const snapshot = (error?.config as FinancialRequestConfig | undefined)
+        ?.financeflowSessionSnapshot;
+      if (snapshot) {
+        try {
+          await authSessionRejectionHandler(snapshot);
+        } catch {
+          // Local auth cleanup must never replace the authoritative HTTP failure.
+        }
+      }
     }
     return Promise.reject(error);
   },
