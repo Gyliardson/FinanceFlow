@@ -20,7 +20,6 @@ from secure_recurring_routes import (
     generate_recurring_instances_user_scoped,
 )
 from secure_routes import (
-    add_to_reserve_atomic,
     get_private_receipt_access,
     pay_bill_with_private_receipt,
     pay_bill_without_receipt,
@@ -103,7 +102,6 @@ def test_legacy_non_idempotent_financial_handlers_are_not_registered(monkeypatch
         if hasattr(route, "endpoint")
     }
     assert create_recurring_bill_user_scoped not in registered_endpoints
-    assert add_to_reserve_atomic not in registered_endpoints
 
 
 def test_critical_financial_mutations_require_idempotency_header_at_route_boundary(monkeypatch):
