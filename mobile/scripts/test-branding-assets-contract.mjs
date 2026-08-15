@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const mobileDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const config = JSON.parse(fs.readFileSync(path.join(mobileDir, 'app.json'), 'utf8')).expo;
+const packageJson = JSON.parse(fs.readFileSync(path.join(mobileDir, 'package.json'), 'utf8'));
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const expected = {
   icon: './assets/icon.png',
@@ -13,13 +14,22 @@ const expected = {
   favicon: './assets/favicon.png',
 };
 
+const splashPlugin = config.plugins?.find(
+  (entry) => Array.isArray(entry) && entry[0] === 'expo-splash-screen',
+);
+assert.ok(splashPlugin, 'Expo splash must use the supported expo-splash-screen config plugin');
+assert.match(packageJson.dependencies?.['expo-splash-screen'] ?? '', /^~57\.0\./, 'Splash plugin dependency must track Expo SDK 57');
+
+const splashConfig = splashPlugin[1] ?? {};
 assert.equal(config.icon, expected.icon, 'Expo app icon must use the canonical production asset');
-assert.equal(config.splash?.image, expected.splash, 'Expo splash must use the canonical production asset');
-assert.equal(config.splash?.resizeMode, 'contain', 'Splash artwork must preserve its aspect ratio');
-assert.equal(config.splash?.backgroundColor?.toLowerCase(), '#4338ca');
+assert.equal(splashConfig.image, expected.splash, 'Expo splash plugin must use the canonical production asset');
+assert.equal(splashConfig.resizeMode, 'contain', 'Splash artwork must preserve its aspect ratio');
+assert.equal(splashConfig.backgroundColor?.toLowerCase(), '#4338ca');
+assert.equal(splashConfig.imageWidth, 200);
 assert.equal(config.android?.adaptiveIcon?.foregroundImage, expected.adaptive);
 assert.equal(config.android?.adaptiveIcon?.backgroundColor?.toLowerCase(), '#4338ca');
 assert.equal(config.web?.favicon, expected.favicon);
+assert.equal(config.splash, undefined, 'Legacy top-level Expo splash configuration must not return');
 
 function inspectPng(relativePath, minimumSide) {
   const absolutePath = path.resolve(mobileDir, relativePath);
