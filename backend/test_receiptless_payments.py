@@ -70,7 +70,7 @@ def test_receiptless_payment_race_converges_only_after_authoritative_paid_reread
 
 @patch("secure_routes.get_request_user_id", return_value="11111111-1111-1111-1111-111111111111")
 @patch("secure_routes.get_supabase_client")
-def test_receiptless_zero_row_still_pending_is_not_reported_as_paid(mock_client, _mock_user):
+def test_receiptless_zero_row_still_pending_is_explicitly_unconfirmed(mock_client, _mock_user):
     pending = {
         "id": "bill-1",
         "status": "pending",
@@ -84,7 +84,86 @@ def test_receiptless_zero_row_still_pending_is_not_reported_as_paid(mock_client,
         asyncio.run(pay_bill_without_receipt("bill-1"))
 
     assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "O pagamento não pôde ser confirmado. Atualize os dados e tente novamente."
+    assert exc_info.value.detail == (
+        "O resultado do pagamento não foi confirmado. Atualize os dados antes de tentar novamente."
+    )
+
+
+@patch("secure_routes.get_request_user_id", return_value="11111111-1111-1111-1111-111111111111")
+@patch("secure_routes.get_supabase_client")
+def test_receiptless_commit_then_response_loss_converges_to_paid(mock_client, _mock_user):
+    pending = {
+        "id": "bill-1",
+        "status": "pending",
+        "description": "Synthetic bill",
+        "is_recurring": False,
+    }
+    paid = {"id": "bill-1", "status": "paid", "is_recurring": False}
+    client, table = _client_for_bill(bill=pending, update_data=[])
+    table.select.return_value.eq.return_value.limit.return_value.execute.side_effect = [
+        SimpleNamespace(data=[pending]),
+        SimpleNamespace(data=[paid]),
+    ]
+    table.update.return_value.eq.return_value.eq.return_value.neq.return_value.execute.side_effect = RuntimeError(
+        "response lost after commit"
+    )
+    mock_client.return_value = client
+
+    result = asyncio.run(pay_bill_without_receipt("bill-1"))
+
+    assert result == {"status": "info", "message": "Esta fatura já foi marcada como paga."}
+
+
+@patch("secure_routes.get_request_user_id", return_value="11111111-1111-1111-1111-111111111111")
+@patch("secure_routes.get_supabase_client")
+def test_receiptless_provider_error_pending_state_is_not_reported_as_rollback(mock_client, _mock_user):
+    pending = {
+        "id": "bill-1",
+        "status": "pending",
+        "description": "Synthetic bill",
+        "is_recurring": False,
+    }
+    client, table = _client_for_bill(bill=pending, update_data=[])
+    table.update.return_value.eq.return_value.eq.return_value.neq.return_value.execute.side_effect = RuntimeError(
+        "database credential / provider detail"
+    )
+    mock_client.return_value = client
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(pay_bill_without_receipt("bill-1"))
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == (
+        "O resultado do pagamento não foi confirmado. Atualize os dados antes de tentar novamente."
+    )
+    assert "credential" not in exc_info.value.detail
+
+
+@patch("secure_routes.get_request_user_id", return_value="11111111-1111-1111-1111-111111111111")
+@patch("secure_routes.get_supabase_client")
+def test_receiptless_reconciliation_failure_stays_ambiguous_and_sanitized(mock_client, _mock_user):
+    pending = {
+        "id": "bill-1",
+        "status": "pending",
+        "description": "Synthetic bill",
+        "is_recurring": False,
+    }
+    client, table = _client_for_bill(bill=pending, update_data=[])
+    table.select.return_value.eq.return_value.limit.return_value.execute.side_effect = [
+        SimpleNamespace(data=[pending]),
+        RuntimeError("provider token / replica detail"),
+    ]
+    table.update.return_value.eq.return_value.eq.return_value.neq.return_value.execute.side_effect = RuntimeError(
+        "response lost"
+    )
+    mock_client.return_value = client
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(pay_bill_without_receipt("bill-1"))
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Não foi possível confirmar o resultado do pagamento."
+    assert "token" not in exc_info.value.detail
 
 
 @patch("secure_routes.get_request_user_id", return_value="11111111-1111-1111-1111-111111111111")
@@ -140,28 +219,3 @@ def test_receiptless_payment_cross_owner_or_missing_is_404_without_write(mock_cl
 
     assert exc_info.value.status_code == 404
     table.update.assert_not_called()
-
-
-@patch("secure_routes.get_request_user_id", return_value="11111111-1111-1111-1111-111111111111")
-@patch("secure_routes.get_supabase_client")
-def test_receiptless_payment_provider_failure_is_sanitized(mock_client, _mock_user):
-    client, table = _client_for_bill(
-        bill={
-            "id": "bill-1",
-            "status": "pending",
-            "description": "Synthetic bill",
-            "is_recurring": False,
-        },
-        update_data=[],
-    )
-    table.update.return_value.eq.return_value.eq.return_value.neq.return_value.execute.side_effect = RuntimeError(
-        "database credential / provider detail"
-    )
-    mock_client.return_value = client
-
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(pay_bill_without_receipt("bill-1"))
-
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "Não foi possível confirmar o pagamento."
-    assert "credential" not in exc_info.value.detail
