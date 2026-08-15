@@ -50,20 +50,21 @@ Wait for readiness:
 docker exec financeflow-pg pg_isready -U financeflow -d financeflow_test
 ```
 
-FinanceFlow currently stores migrations as explicit SQL files in `backend/migrations/001_...` through `005_...`. Some migrations intentionally depend on existing Supabase-compatible schema objects or explicit historical reconciliation, so blindly replaying every file against an empty generic PostgreSQL database is **not** equivalent to provisioning a production Supabase project. The disposable CI creates focused fixtures and then applies the migrations needed to prove each invariant.
+FinanceFlow currently stores migrations as explicit SQL files in `backend/migrations/001_...` through `006_...`. Migration `006_financial_idempotency.sql` defines the database-backed financial mutation idempotency primitives used by the protected non-convergent write paths. Some migrations intentionally depend on existing Supabase-compatible schema objects or explicit historical reconciliation, so blindly replaying every file against an empty generic PostgreSQL database is **not** equivalent to provisioning a production Supabase project. The disposable CI creates focused fixtures and then applies the migrations needed to prove each invariant.
 
-The authoritative disposable-PostgreSQL procedures live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). They currently prove:
+The authoritative disposable-PostgreSQL procedures live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and [`.github/workflows/financial-idempotency.yml`](../.github/workflows/financial-idempotency.yml). They currently prove:
 
 - exact `NUMERIC` money round trips;
 - recurring migration fail-closed behavior on historical duplicates;
 - uniqueness under concurrent generated-instance insertion;
 - retry idempotency and bulk-conflict rollback/recovery;
+- database-backed mutation idempotency for financial writes, including duplicate/retry behavior;
 - user A / user B RLS isolation;
 - forged-owner rejection;
 - anonymous financial-table denial;
 - fail-closed owner `NOT NULL` promotion until explicit reconciliation.
 
-Prefer executing the workflow itself for release evidence rather than maintaining a second hand-copied SQL harness that can drift.
+For release evidence, inspect the exact-candidate PostgreSQL mutation-idempotency and recurring-idempotency checks rather than treating the migration filenames alone as proof. Prefer executing the workflows themselves rather than maintaining a second hand-copied SQL harness that can drift.
 
 ### Seed status
 
@@ -176,7 +177,7 @@ Record each external check as PASS / FAIL / NOT EXECUTED in the final release re
 
 ## 9. Release-candidate checklist
 
-Before opening the final integration → `main` PR, require at minimum:
+Before moving the final integration → `main` PR out of draft or presenting it for maintainer merge review, require at minimum:
 
 - exact candidate SHA recorded;
 - FinanceFlow CI green;
@@ -190,5 +191,7 @@ Before opening the final integration → `main` PR, require at minimum:
 - documentation links/current limitations reviewed;
 - no unresolved program P0/P1/blocker;
 - external/manual steps explicitly listed.
+
+Opening the final PR early as a **draft** is allowed so exact-head PR checks and review evidence can accumulate during the independent audit; that draft must remain unmerged until the audit is exhausted and manual review is appropriate.
 
 The final `portfolio/revamp-2026 -> main` merge is manual by policy.

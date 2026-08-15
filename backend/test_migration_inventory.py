@@ -34,3 +34,15 @@ def test_migration_helper_is_successful_inventory_only(capsys):
     assert "does NOT apply migrations automatically" in output
     for filename in EXPECTED_MIGRATIONS:
         assert filename in output
+
+
+def test_clean_room_documents_current_financial_migration_boundary():
+    clean_room = (Path(__file__).resolve().parents[1] / "docs" / "CLEAN_ROOM.md").read_text(
+        encoding="utf-8"
+    )
+
+    latest = EXPECTED_MIGRATIONS[-1]
+    assert "backend/migrations/001_...` through `006_..." in clean_room
+    assert latest in clean_room
+    assert ".github/workflows/financial-idempotency.yml" in clean_room
+    assert "not** equivalent to provisioning a production Supabase project" in clean_room
