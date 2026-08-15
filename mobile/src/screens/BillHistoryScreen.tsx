@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import api from '../services/api';
 import { financialDateOnly, financialDaysBetween, formatFinancialDatePtBr } from '../services/financialDate';
 
@@ -47,33 +48,42 @@ export default function BillHistoryScreen({ route, navigation }: any) {
   const [failure, setFailure] = useState<LoadFailure>(null);
   const [receiptOpening, setReceiptOpening] = useState(false);
   const [receiptFailure, setReceiptFailure] = useState<string | null>(null);
+  const detailRequestSequence = useRef(0);
 
-  const fetchDetail = async () => {
+  const fetchDetail = useCallback(async () => {
+    const requestId = ++detailRequestSequence.current;
     setLoading(true);
+    setBill(null);
+    setHistory([]);
     setFailure(null);
     setReceiptFailure(null);
     try {
       const response = await api.get(`/bills/${billId}/detail`);
+      if (requestId !== detailRequestSequence.current) return;
       if (!response.data?.bill) {
-        setBill(null);
-        setHistory([]);
         setFailure('not-found');
         return;
       }
       setBill(response.data.bill);
       setHistory(response.data.history || []);
     } catch (error: any) {
-      setBill(null);
-      setHistory([]);
+      if (requestId !== detailRequestSequence.current) return;
       setFailure(error?.response?.status === 404 ? 'not-found' : 'unavailable');
     } finally {
-      setLoading(false);
+      if (requestId === detailRequestSequence.current) {
+        setLoading(false);
+      }
     }
-  };
-
-  useEffect(() => {
-    fetchDetail();
   }, [billId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void fetchDetail();
+      return () => {
+        detailRequestSequence.current += 1;
+      };
+    }, [fetchDetail]),
+  );
 
   const openPrivateReceipt = async () => {
     if (!bill?.has_receipt || receiptOpening) return;
