@@ -27,6 +27,7 @@ from integration_contracts import (
     experimental_integrations_enabled,
     unavailable_result,
 )
+from receipt_uploads import sanitize_receipt_for_external_processing, validate_receipt_upload
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ PGMEI_URL = (
     "Aplicacoes/ATSPO/pgmei.app/Identificacao"
 )
 NAVIGATION_TIMEOUT_MS = 45_000
+MAX_PDF_BYTES = 10 * 1024 * 1024
 
 
 def _result_payload(result: IntegrationResult) -> dict:
@@ -57,6 +59,20 @@ def _requires_human_verification(body_text: str, *, captcha_frames: int = 0) -> 
         or "impedido" in normalized
         or "verificação de segurança" in normalized
     )
+
+
+def _prepare_pdf_for_external_ocr(pdf_bytes: bytes) -> bytes | None:
+    """Validate external PGMEI bytes and produce the metadata-minimized OCR copy."""
+    try:
+        validated = validate_receipt_upload(
+            pdf_bytes,
+            "application/pdf",
+            max_bytes=MAX_PDF_BYTES,
+        )
+        return sanitize_receipt_for_external_processing(validated)
+    except Exception as exc:
+        logger.warning("DASMEI PDF rejected before external OCR: %s", type(exc).__name__)
+        return None
 
 
 async def scrape_dasmei() -> dict:
@@ -167,7 +183,11 @@ async def scrape_dasmei() -> dict:
             from ai_service import extract_invoice_data
 
             pdf_bytes = pdf_path.read_bytes()
-            ocr_response = extract_invoice_data(pdf_bytes, "application/pdf")
+            provider_pdf = _prepare_pdf_for_external_ocr(pdf_bytes)
+            if provider_pdf is None:
+                return _result_payload(error_result("DASMEI PDF validation"))
+
+            ocr_response = extract_invoice_data(provider_pdf, "application/pdf")
             if ocr_response.get("status") != "success":
                 return _result_payload(error_result("DASMEI OCR"))
 
