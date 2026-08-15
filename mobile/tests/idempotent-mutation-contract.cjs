@@ -147,6 +147,63 @@ async function oldAmbiguousIntentSurvivesRestartAndReusesIdentity() {
   }
 }
 
+async function corruptedPendingStateFailsClosedWithoutDestructiveCleanup() {
+  const expectCorruption = async (mutations, operation, manifestKey) => {
+    await assert.rejects(
+      () => mutations.listPendingOperationsForOwner(OWNER_A),
+      (error) => error?.name === 'PendingFinancialStateCorruptionError',
+      'corrupted ambiguous state must block owner enumeration instead of becoming an empty set',
+    );
+    assert.ok(await SecureStore.getItemAsync(manifestKey), 'corruption evidence manifest must not be destructively erased');
+    await assert.rejects(
+      () => mutations.getOrCreatePendingOperation(
+        OWNER_A,
+        operation,
+        'fi_income_after_corrupt_001',
+        { title: 'Unsafe new action', amount: 999, date: '2026-08-15', type: 'extra' },
+      ),
+      (error) => error?.name === 'PendingFinancialStateCorruptionError',
+      'fresh financial intent allocation must fail closed while durable state is unreadable',
+    );
+  };
+
+  resetStorage();
+  let mutations = reloadModule();
+  const manifestKey = mutations.pendingMutationStorageKey(OWNER_A, 'income_create');
+  await SecureStore.setItemAsync(manifestKey, '{not-json');
+  await expectCorruption(mutations, 'income_create', manifestKey);
+
+  resetStorage();
+  mutations = reloadModule();
+  await mutations.getOrCreatePendingOperation(
+    OWNER_A,
+    'income_create',
+    'fi_income_corrupt_chunk_001',
+    { title: 'Committed maybe', amount: 100, date: '2026-08-15', type: 'extra' },
+  );
+  let manifest = JSON.parse(await SecureStore.getItemAsync(manifestKey));
+  const firstChunkKey = `financeflow.idempotency.v5.${OWNER_A}.income_create.${manifest.generation}.0`;
+  await SecureStore.deleteItemAsync(firstChunkKey);
+  await expectCorruption(mutations, 'income_create', manifestKey);
+
+  resetStorage();
+  mutations = reloadModule();
+  await mutations.getOrCreatePendingOperation(
+    OWNER_A,
+    'income_create',
+    'fi_income_corrupt_json_0001',
+    { title: 'Committed maybe', amount: 100, date: '2026-08-15', type: 'extra' },
+  );
+  manifest = JSON.parse(await SecureStore.getItemAsync(manifestKey));
+  const payloadChunkKey = `financeflow.idempotency.v5.${OWNER_A}.income_create.${manifest.generation}.0`;
+  const originalChunk = await SecureStore.getItemAsync(payloadChunkKey);
+  assert.ok(originalChunk && originalChunk.length > 2);
+  const malformedSameLength = `{${originalChunk.slice(1)}`;
+  assert.equal(malformedSameLength.length, originalChunk.length);
+  await SecureStore.setItemAsync(payloadChunkKey, malformedSameLength);
+  await expectCorruption(mutations, 'income_create', manifestKey);
+}
+
 async function concurrentDifferentIntentsSurvive() {
   resetStorage();
   const mutations = reloadModule();
@@ -286,6 +343,7 @@ async function invalidSecureNamespaceIsRejectedAndAsyncV1Migrates() {
   await explicitIdentityNotPayload();
   await midnightRestartReplaysOriginal();
   await oldAmbiguousIntentSurvivesRestartAndReusesIdentity();
+  await corruptedPendingStateFailsClosedWithoutDestructiveCleanup();
   await concurrentDifferentIntentsSurvive();
   await restartOwnerAndSecureStorage();
   await rejectionLifecycle();
