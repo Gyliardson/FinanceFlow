@@ -12,9 +12,9 @@ FinanceFlow treats recurring templates and payable bill instances as different d
 
 Before any local reminder is scheduled, `scheduleNotificationsForBill()` reconciles OS notification permission and the Android `bills` channel through `requestNotificationPermissions()`.
 
-Permission reconciliation is single-flight. Concurrent generated children share one in-flight request, and an explicit denial is remembered for the current JavaScript session so one recurring batch cannot repeatedly prompt the user. Transient device/channel API failures are not treated as a financial failure and are not cached as a permanent denial; reminder scheduling simply fails closed for that attempt.
+Permission reconciliation is single-flight for concurrent callers, but granted/denied decisions are **not** cached across independent scheduling attempts. Each independent attempt re-reads current OS permission so a change made in device Settings can be observed without restarting the JavaScript process. A known `denied` state fails closed without invoking another permission request; only a requestable/undetermined state may trigger the OS prompt. When permission is currently granted on Android, the `bills` channel is reconciled again before scheduling.
 
-Web remains a no-op for local scheduling. Notification permission or channel failure never rolls back, recreates, or retries an already-committed recurring financial operation.
+Transient device/channel API failures are not treated as a financial failure. Reminder scheduling simply fails closed for that attempt. Web remains a no-op for local scheduling. Notification permission or channel failure never rolls back, recreates, or retries an already-committed recurring financial operation.
 
 ## Retry and reconciliation
 
