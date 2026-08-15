@@ -21,6 +21,9 @@ const requireMatch = (source, pattern, message) => {
 requireMatch(home, /type LoadState = 'ready' \| 'offline-cache' \| 'unavailable'/, 'Home must model ready/offline/unavailable states explicitly');
 requireMatch(home, /const usableOfflineData = billsResult\.hasData;/, 'Bills availability must be required for offline dashboard data');
 assert.doesNotMatch(home, /billsResult\.hasData\s*\|\|\s*settingsResult\.hasData/, 'Settings cache must never substitute for the bill list');
+requireMatch(home, /canUseOfflineCacheForApiFailure/, 'Dashboard must classify API failures before selecting financial cache');
+requireMatch(home, /catch \(error\) \{\s*if \(!canUseOfflineCacheForApiFailure\(error\)\) \{\s*setAllBills\(\[\]\);/s, 'Bills must fail closed before cache lookup on authoritative HTTP rejection');
+requireMatch(home, /catch \(error\) \{\s*if \(!canUseOfflineCacheForApiFailure\(error\)\) \{\s*return \{ online: false, hasData: false \};/s, 'Settings must fail closed before cache lookup on authoritative HTTP rejection');
 requireMatch(home, /accessibilityRole="tab"/, 'Dashboard tabs must expose tab semantics');
 requireMatch(home, /accessibilityState=\{\{ selected \}\}/, 'Dashboard tabs must expose selected state');
 requireMatch(home, /accessibilityLabel="Adicionar nova fatura"/, 'Dashboard FAB must have an accessible name');
