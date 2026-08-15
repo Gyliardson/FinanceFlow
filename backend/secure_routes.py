@@ -79,10 +79,40 @@ async def pay_bill_without_receipt(bill_id: str):
         raise HTTPException(status_code=503, detail="Não foi possível confirmar o pagamento.") from exc
 
     if not (getattr(update_response, "data", None) or []):
-        # Another request may have completed the payment between lookup/update.
-        # Treat the target state as idempotently achieved without claiming this
-        # request performed the write.
-        return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
+        # Zero rows can mean another request paid the bill, but the additional
+        # domain predicate also means it is not safe to infer success. Re-read
+        # authoritative owner-scoped state before telling the client anything.
+        try:
+            reconciled_response = (
+                data_client.table("finance_bills")
+                .select("id,status,is_recurring")
+                .eq("id", bill_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            logger.error("Receipt-less payment reconciliation failed")
+            raise HTTPException(
+                status_code=503,
+                detail="Não foi possível confirmar o pagamento.",
+            ) from exc
+
+        reconciled_rows = getattr(reconciled_response, "data", None) or []
+        if not reconciled_rows:
+            raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+
+        reconciled = reconciled_rows[0]
+        if reconciled.get("is_recurring") is True:
+            raise HTTPException(
+                status_code=409,
+                detail="Modelos recorrentes não podem ser pagos diretamente.",
+            )
+        if reconciled.get("status") == "paid":
+            return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
+        raise HTTPException(
+            status_code=409,
+            detail="O pagamento não pôde ser confirmado. Atualize os dados e tente novamente.",
+        )
 
     return {
         "status": "success",
