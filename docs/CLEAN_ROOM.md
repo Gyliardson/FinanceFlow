@@ -104,10 +104,11 @@ cd mobile
 npm ci
 npx tsc --noEmit
 npx expo-doctor
+node scripts/test-release-env-contract.mjs
 npx expo export --platform web
 ```
 
-These commands exercise the reproducible local portion of `Mobile Expo health`.
+These commands exercise the reproducible local portion of `Mobile Expo health`, including the deterministic release-environment contract. The contract uses synthetic values only; it does not contact EAS, Supabase or the production FinanceFlow API.
 
 The mobile application also has deterministic contract workflows for:
 
@@ -167,7 +168,7 @@ The client-visible contract requires:
 - `EXPO_PUBLIC_SUPABASE_URL`;
 - `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
 
-All `EXPO_PUBLIC_*` values are public bundle configuration and must never contain server-only credentials.
+All `EXPO_PUBLIC_*` values are public bundle configuration and must never contain server-only credentials. Publishable API/auth endpoints must be absolute HTTPS URLs, free of embedded URL credentials/query/fragment data, and must not target obvious local/loopback addresses. `node scripts/test-release-env-contract.mjs` proves those invariants with synthetic values; before a manual production EAS build, separately run `eas env:exec production 'node scripts/validate-release-env.mjs' --non-interactive` to validate the operator-controlled values without printing them.
 
 ## 8. External/manual release checks
 
