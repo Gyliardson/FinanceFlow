@@ -12,6 +12,8 @@ The mobile bundle requires these client-visible values:
 
 All `EXPO_PUBLIC_*` values are embedded in the client bundle and must be treated as public. They must never contain a Supabase service-role key, Gemini key, database password or other server credential.
 
+The two endpoint values are also sensitive *destinations*: the Supabase URL receives sign-in credentials and refresh/logout tokens, while the API URL receives authenticated FinanceFlow bearer requests. A publishable release must therefore use absolute HTTPS URLs with no embedded URL username/password, query string or fragment, and must not target localhost, loopback or wildcard-listener addresses. Hostnames are intentionally not pinned to Render or `supabase.co`, so legitimate custom HTTPS deployments remain supported. A trailing slash is allowed.
+
 ## EAS environments
 
 The `development`, `preview` and `production` build profiles in `mobile/eas.json` use matching named EAS environments. Configure the three public runtime values in each environment that will actually be built or updated.
@@ -32,7 +34,7 @@ Use the real project values only in the operator-controlled EAS environment. Do 
 
 `.github/workflows/deploy-frontend.yml` runs only after mobile changes reach `main`. It requires the repository secret `EXPO_TOKEN` so the GitHub Action can authenticate to EAS.
 
-Before publishing, the workflow executes the release validator inside the EAS `production` environment. The validator checks only that the three required public runtime values are present and never prints their values. Publication then uses:
+Before publishing, the workflow executes the release validator inside the EAS `production` environment. The validator fails closed when a required value is missing and when either endpoint is malformed, non-HTTPS, contains embedded URL credentials/query/fragment data, or targets an obvious local/loopback host. It reports only the variable and violated invariant; it never prints configured values. Publication then uses:
 
 ```bash
 eas update --branch production --environment production
@@ -43,6 +45,14 @@ Using the named environment keeps update-time values aligned with production bui
 ## Remote builds
 
 The `production` EAS build profile is bound to the EAS `production` environment. A remote build therefore obtains the same public runtime configuration used by production updates.
+
+Before initiating a manual production build, run the same validator against the EAS production environment:
+
+```bash
+cd mobile
+eas env:exec production 'node scripts/validate-release-env.mjs' --non-interactive
+eas build --profile production
+```
 
 The repository intentionally does not provision signing credentials, store accounts or real EAS project values. Those remain operator-managed external state.
 
