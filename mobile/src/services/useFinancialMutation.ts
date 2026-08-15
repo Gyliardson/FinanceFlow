@@ -43,6 +43,7 @@ const acknowledgeAdditionalIntent = (
 
 export function useFinancialMutation<T = any>(url: string) {
   const intentIdRef = useRef<string | null>(null);
+  const mutationInFlightRef = useRef(false);
   const [hasActiveIntent, setHasActiveIntent] = useState(false);
 
   const clearLocalIntent = useCallback((intentId?: string) => {
@@ -60,34 +61,49 @@ export function useFinancialMutation<T = any>(url: string) {
     payload: Record<string, unknown>,
     config: AxiosRequestConfig = {},
   ) => {
-    // Retry-in-place never prompts and never manufactures a new identity.
-    // Only a fresh form intent is gated when another durable operation of the
-    // same kind still has an unknown outcome for the current authenticated owner.
-    if (!intentIdRef.current) {
-      const operation = ROUTE_OPERATION[url];
-      const snapshot = operation ? await getValidAuthSessionSnapshot() : null;
-      if (operation && snapshot) {
-        const pending = await listPendingOperationsForOwner(snapshot.userId);
-        const unresolvedCount = pending.filter((item) => item.operation === operation).length;
-        if (unresolvedCount > 0) {
-          await acknowledgeAdditionalIntent(operation, unresolvedCount);
-        }
-      }
+    // React component state is presentation state, not a financial mutex. Claim
+    // this hook synchronously before any awaited preflight so two rapid submits
+    // cannot both observe an empty intent and manufacture distinct operations.
+    if (mutationInFlightRef.current) {
+      throw new Error('A financial mutation is already in progress for this form.');
     }
-
-    const intentId = intentIdRef.current ?? createFinancialIntentId();
-    intentIdRef.current = intentId;
-    setHasActiveIntent(true);
+    mutationInFlightRef.current = true;
 
     try {
-      const response = await postFinancialMutation<T>(url, payload, intentId, config);
-      clearLocalIntent(intentId);
-      return response;
-    } catch (error) {
-      if (isDefinitiveClientRejection(error)) {
-        clearLocalIntent(intentId);
+      // Retry-in-place never prompts and never manufactures a new identity.
+      // Only a fresh form intent is gated when another durable operation of the
+      // same kind still has an unknown outcome for the current authenticated owner.
+      if (!intentIdRef.current) {
+        const operation = ROUTE_OPERATION[url];
+        const snapshot = operation ? await getValidAuthSessionSnapshot() : null;
+        if (operation && snapshot) {
+          const pending = await listPendingOperationsForOwner(snapshot.userId);
+          const unresolvedCount = pending.filter((item) => item.operation === operation).length;
+          if (unresolvedCount > 0) {
+            await acknowledgeAdditionalIntent(operation, unresolvedCount);
+          }
+        }
       }
-      throw error;
+
+      const intentId = intentIdRef.current ?? createFinancialIntentId();
+      intentIdRef.current = intentId;
+      setHasActiveIntent(true);
+
+      try {
+        const response = await postFinancialMutation<T>(url, payload, intentId, config);
+        clearLocalIntent(intentId);
+        return response;
+      } catch (error) {
+        if (isDefinitiveClientRejection(error)) {
+          clearLocalIntent(intentId);
+        }
+        throw error;
+      }
+    } finally {
+      // Release after every terminal transport/preflight outcome. Ambiguous
+      // failures intentionally retain intentIdRef so a later deliberate retry
+      // reuses the exact same durable identity and original payload.
+      mutationInFlightRef.current = false;
     }
   }, [clearLocalIntent, url]);
 
