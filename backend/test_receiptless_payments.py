@@ -45,16 +45,19 @@ def test_receiptless_payment_uses_compare_and_set(mock_client, _mock_user):
 
 @patch("secure_routes.get_request_user_id", return_value="11111111-1111-1111-1111-111111111111")
 @patch("secure_routes.get_supabase_client")
-def test_receiptless_payment_race_is_idempotent_not_second_success(mock_client, _mock_user):
-    client, table = _client_for_bill(
-        bill={
-            "id": "bill-1",
-            "status": "pending",
-            "description": "Synthetic bill",
-            "is_recurring": False,
-        },
-        update_data=[],
-    )
+def test_receiptless_payment_race_converges_only_after_authoritative_paid_reread(mock_client, _mock_user):
+    pending = {
+        "id": "bill-1",
+        "status": "pending",
+        "description": "Synthetic bill",
+        "is_recurring": False,
+    }
+    paid = {"id": "bill-1", "status": "paid", "is_recurring": False}
+    client, table = _client_for_bill(bill=pending, update_data=[])
+    table.select.return_value.eq.return_value.limit.return_value.execute.side_effect = [
+        SimpleNamespace(data=[pending]),
+        SimpleNamespace(data=[paid]),
+    ]
     mock_client.return_value = client
 
     result = asyncio.run(pay_bill_without_receipt("bill-1"))
@@ -63,6 +66,25 @@ def test_receiptless_payment_race_is_idempotent_not_second_success(mock_client, 
     table.update.return_value.eq.return_value.eq.return_value.neq.assert_called_once_with(
         "status", "paid"
     )
+
+
+@patch("secure_routes.get_request_user_id", return_value="11111111-1111-1111-1111-111111111111")
+@patch("secure_routes.get_supabase_client")
+def test_receiptless_zero_row_still_pending_is_not_reported_as_paid(mock_client, _mock_user):
+    pending = {
+        "id": "bill-1",
+        "status": "pending",
+        "description": "Synthetic bill",
+        "is_recurring": False,
+    }
+    client, table = _client_for_bill(bill=pending, update_data=[])
+    mock_client.return_value = client
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(pay_bill_without_receipt("bill-1"))
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "O pagamento não pôde ser confirmado. Atualize os dados e tente novamente."
 
 
 @patch("secure_routes.get_request_user_id", return_value="11111111-1111-1111-1111-111111111111")
