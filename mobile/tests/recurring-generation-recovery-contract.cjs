@@ -35,7 +35,7 @@ assert.match(
 );
 assert.match(
   screen,
-  /finishSuccessfulCreation\(\{ generation: response\.data \}\)/,
+  /scheduleGeneratedReminders\(\{ generation: response\.data \}\)/,
   'Recovered child rows must feed the same reminder-target boundary used by normal creation.',
 );
 assert.match(
@@ -60,6 +60,7 @@ assert(recoverBlockStart >= 0 && recoverBlockEnd > recoverBlockStart, 'Recovery 
 const recoverBlock = screen.slice(recoverBlockStart, recoverBlockEnd);
 assert(!recoverBlock.includes('recurringMutation.mutate'), 'Generation recovery must never resubmit the template financial mutation.');
 assert(recoverBlock.includes("api.post('/recurring-bills/generate')"), 'Generation recovery must call only the convergent recovery endpoint.');
+assert(recoverBlock.includes('scheduleGeneratedReminders({ generation: response.data })'), 'Recovery must schedule only authoritative generated children through the shared reminder boundary.');
 
 // Deterministic behavior model: complete success exits, partial success stays recoverable,
 // recovery success exits, and recovery failure remains recoverable without a template re-submit.
