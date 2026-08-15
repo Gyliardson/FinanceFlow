@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date
 from types import SimpleNamespace
 
 import insights_routes
@@ -98,13 +99,7 @@ def test_explicit_refresh_calls_provider_and_persists_result(monkeypatch):
         "generate_financial_insights",
         lambda payload: provider_calls.append(payload) or {"status": "success", "insight": "Novo insight"},
     )
-    monkeypatch.setattr(
-        insights_routes,
-        "financial_today",
-        lambda: insights_routes.financial_today.__globals__["date"](2026, 8, 15)
-        if "date" in insights_routes.financial_today.__globals__
-        else __import__("datetime").date(2026, 8, 15),
-    )
+    monkeypatch.setattr(insights_routes, "financial_today", lambda: date(2026, 8, 15))
 
     result = asyncio.run(insights_routes.refresh_insights())
 
