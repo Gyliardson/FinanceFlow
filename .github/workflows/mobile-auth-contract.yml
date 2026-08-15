@@ -135,6 +135,7 @@ jobs:
             src/services/userCache.ts \
             src/services/authSession.ts \
             src/services/apiFailure.ts \
+            src/services/authResponse.ts \
             src/services/idempotentMutation.ts \
             src/services/financialDate.ts \
             src/services/ocrUploadFile.ts \
@@ -161,6 +162,11 @@ jobs:
         run: |
           set -o pipefail
           node tests/auth-rejection-contract.cjs 2>&1 | tee auth-rejection-contract.log
+      - name: Run stale successful-response session contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/auth-response-contract.cjs 2>&1 | tee auth-response-contract.log
       - name: Run auth notification isolation contract
         shell: bash
         run: |
@@ -209,6 +215,7 @@ jobs:
           path: |
             mobile/auth-session-contract.log
             mobile/auth-rejection-contract.log
+            mobile/auth-response-contract.log
             mobile/auth-notification-isolation-contract.log
             mobile/auth-timeout-contract.log
             mobile/offline-cache-contract.log
