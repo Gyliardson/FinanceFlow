@@ -77,6 +77,7 @@ def test_non_convergent_financial_routes_use_only_canonical_safe_handlers(monkey
 
     assert _route_endpoint_name(app, "/add-bill", "POST") == "add_bill_idempotent"
     assert _route_endpoint_name(app, "/incomes", "POST") == "add_income_idempotent"
+    assert _route_endpoint_name(app, "/recurring-bills", "POST") == "create_recurring_bill_idempotent"
     assert _route_endpoint_name(app, "/insights/reserve", "POST") == "add_to_reserve_idempotent"
     assert (
         _route_endpoint_name(app, "/bills/{bill_id}/pay-no-receipt", "POST")
