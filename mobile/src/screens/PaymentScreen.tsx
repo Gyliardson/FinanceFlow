@@ -72,27 +72,42 @@ export default function PaymentScreen({ navigation, route }: any) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
+  const [routedBillUnavailable, setRoutedBillUnavailable] = useState(false);
   const [receipt, setReceipt] = useState<ReceiptSelection | null>(null);
   const [uploading, setUploading] = useState(false);
 
+  const routedBillId = route?.params?.billId || null;
   const sharedImageUri = route?.params?.sharedImageUri || null;
   const sharedImageMimeType = normalizeReceiptMime(route?.params?.sharedImageMimeType)
     || inferReceiptMimeFromPath(route?.params?.sharedImageFileName)
     || inferReceiptMimeFromPath(sharedImageUri);
 
   useEffect(() => {
-    fetchPendingBills();
+    void fetchPendingBills();
+  }, [routedBillId]);
+
+  useEffect(() => {
     if (sharedImageUri && sharedImageMimeType) {
       setReceipt({ uri: sharedImageUri, mimeType: sharedImageMimeType });
     }
-  }, []);
+  }, [sharedImageUri, sharedImageMimeType]);
 
   const fetchPendingBills = async () => {
     setLoading(true);
     setLoadError(false);
     try {
       const response = await api.get('/bills/pending');
-      setPendingBills(response.data.data || []);
+      const bills = (response.data.data || []) as Bill[];
+      setPendingBills(bills);
+
+      if (routedBillId) {
+        const routedBill = bills.find((bill) => bill.id === routedBillId);
+        setSelectedBill(routedBill || null);
+        setRoutedBillUnavailable(Boolean(routedBillId && !routedBill));
+      } else {
+        setSelectedBill(null);
+        setRoutedBillUnavailable(false);
+      }
     } catch {
       setLoadError(true);
     } finally {
@@ -294,7 +309,10 @@ export default function PaymentScreen({ navigation, route }: any) {
           isSelected && styles.billCardSelected,
           isOverdue && styles.billCardOverdue,
         ]}
-        onPress={() => setSelectedBill(item)}
+        onPress={() => {
+          setSelectedBill(item);
+          setRoutedBillUnavailable(false);
+        }}
         activeOpacity={0.7}
       >
         <View style={styles.billCardRow}>
@@ -434,6 +452,18 @@ export default function PaymentScreen({ navigation, route }: any) {
         )}
       </View>
 
+      {routedBillUnavailable && !loading && !loadError && (
+        <View style={styles.routedBillWarning} accessibilityLiveRegion="assertive">
+          <Ionicons accessibilityElementsHidden name="alert-circle-outline" size={20} color="#92400e" />
+          <View style={styles.routedBillWarningContent}>
+            <Text style={styles.routedBillWarningTitle}>Esta fatura não está mais disponível para pagamento</Text>
+            <Text style={styles.routedBillWarningText}>
+              Ela pode ter sido paga, removida ou deixado de estar disponível nesta conta. Selecione outra fatura pendente se quiser registrar um pagamento diferente.
+            </Text>
+          </View>
+        </View>
+      )}
+
       <Text style={styles.sectionTitle}>Selecione a conta que foi paga</Text>
       <View style={styles.listArea}>{renderListState()}</View>
 
@@ -529,6 +559,31 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#fff',
     borderRadius: 22,
+  },
+  routedBillWarning: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#f59e0b',
+    backgroundColor: '#fffbeb',
+  },
+  routedBillWarningContent: { flex: 1 },
+  routedBillWarningTitle: {
+    color: '#78350f',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '800',
+  },
+  routedBillWarningText: {
+    color: '#92400e',
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 2,
   },
   sectionTitle: {
     fontSize: 15,
