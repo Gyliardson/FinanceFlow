@@ -37,6 +37,8 @@ Session restore, successful sign-in, and app foreground enumerate pending record
 
 Reconciliation triggers are serialized. If a trigger arrives while another pass is active, it receives a subsequent pass rather than being dropped. Each pass resolves and validates the current coherent session snapshot before enumerating records. The loop never enumerates User A and then recaptures User B credentials for transport; if its captured snapshot stops being current, it fails closed before the next send.
 
+If an existing pending-intent manifest/chunk set is unreadable or structurally corrupt, enumeration and fresh intent allocation fail closed for that owner/operation. The client does not reinterpret unreadable ambiguity as an empty pending set, and it does not destructively erase the only local replay evidence merely because it cannot parse it. This is intentionally stricter than ordinary read-cache corruption: replaceable cache can be fetched again from the server, while an ambiguous mutation record may represent a committed financial effect whose response was lost.
+
 ## Account/session boundary
 
 Financial preparation uses one snapshot:
@@ -56,6 +58,7 @@ Pending financial payloads are private state:
 - legacy records without `intentId` receive a stable synthetic ID derived from their already-persisted operation key so ambiguous outcomes are not abandoned;
 - read/modify/write stays serialized per `owner + operation` so concurrent distinct intents cannot overwrite each other;
 - structurally valid ambiguous records have **no client-side wall-clock TTL**: age cannot prove whether a lost response hid a committed financial effect, so closure requires authoritative success or a definitive client rejection;
+- malformed manifests, missing chunks, length mismatches, malformed pending JSON and invalid record shapes are treated as a blocking corruption condition rather than “no pending state”; the existing evidence is preserved best-effort and new financial intent allocation fails closed;
 - private financial payloads are not logged during reconciliation;
 - user-visible unresolved status exposes category/count only, never the durable payload or replay identifiers.
 
@@ -77,6 +80,7 @@ The mobile auth/UX contracts must prove or enforce:
 - a concurrent same-hook submit cannot allocate/persist another intent while the first is in flight;
 - income retry across local midnight -> same intent/key/original date;
 - an unresolved intent survives a restart/read after more than 90 days and still reuses its original key/payload rather than being silently aged out;
+- malformed pending manifest, missing chunk and malformed payload JSON preserve the ambiguity evidence and fail closed before a fresh intent can be allocated;
 - deterministic old payload-equality aliasing control;
 - deterministic old pending-store last-writer-wins control and fixed preservation of both intents;
 - restart persistence;
