@@ -19,11 +19,12 @@ const requireMatch = (source, pattern, message) => {
 // Dashboard financial data must fail closed when neither the API nor the
 // owner-scoped bills cache can provide an authoritative bill list.
 requireMatch(home, /type LoadState = 'ready' \| 'offline-cache' \| 'unavailable'/, 'Home must model ready/offline/unavailable states explicitly');
-requireMatch(home, /const usableOfflineData = billsResult\.hasData;/, 'Bills availability must be required for offline dashboard data');
+requireMatch(home, /const hasAuthoritativeFailure = billsResult\.authoritativeFailure \|\| settingsResult\.authoritativeFailure;/, 'Any authoritative read rejection must fail the dashboard as a whole closed');
+requireMatch(home, /const usableOfflineData = billsResult\.hasData && !hasAuthoritativeFailure;/, 'Offline bills are usable only when no parallel read was authoritatively rejected');
 assert.doesNotMatch(home, /billsResult\.hasData\s*\|\|\s*settingsResult\.hasData/, 'Settings cache must never substitute for the bill list');
 requireMatch(home, /canUseOfflineCacheForApiFailure/, 'Dashboard must classify API failures before selecting financial cache');
-requireMatch(home, /catch \(error\) \{\s*if \(!canUseOfflineCacheForApiFailure\(error\)\) \{\s*setAllBills\(\[\]\);/s, 'Bills must fail closed before cache lookup on authoritative HTTP rejection');
-requireMatch(home, /catch \(error\) \{\s*if \(!canUseOfflineCacheForApiFailure\(error\)\) \{\s*return \{ online: false, hasData: false \};/s, 'Settings must fail closed before cache lookup on authoritative HTTP rejection');
+requireMatch(home, /catch \(error\) \{\s*if \(!canUseOfflineCacheForApiFailure\(error\)\) \{\s*setAllBills\(\[\]\);[\s\S]*?authoritativeFailure: true/, 'Bills must fail closed before cache lookup on authoritative HTTP rejection');
+requireMatch(home, /catch \(error\) \{\s*if \(!canUseOfflineCacheForApiFailure\(error\)\) \{\s*return \{ online: false, hasData: false, authoritativeFailure: true \};/, 'Settings must fail closed before cache lookup on authoritative HTTP rejection');
 requireMatch(home, /accessibilityRole="tab"/, 'Dashboard tabs must expose tab semantics');
 requireMatch(home, /accessibilityState=\{\{ selected \}\}/, 'Dashboard tabs must expose selected state');
 requireMatch(home, /accessibilityLabel="Adicionar nova fatura"/, 'Dashboard FAB must have an accessible name');
