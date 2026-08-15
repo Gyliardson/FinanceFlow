@@ -17,17 +17,21 @@ Retry/reconnect/restart/background reconciliation for that same `intentId` reuse
 ## UI lifecycle
 
 - A financial form allocates its explicit intent handle on first submission.
-- Retry while that form/intention remains active reuses the handle.
+- Retry while that form/intention remains active reuses the handle and original persisted payload.
 - After an ambiguous result, fields are locked so retry cannot silently substitute recomputed/edited values for the persisted original payload.
-- Cancelling/leaving/resetting the form clears the local UI handle. Any ambiguous persisted record remains encrypted for reconciliation; a later form is a new explicit user intent.
-- Definitive success or definitive non-auth client rejection closes the persisted intent.
+- Cancelling/leaving/resetting the form clears only the local UI handle. It **does not cancel** an ambiguous server outcome and does not delete the encrypted persisted record.
+- The authenticated navigator exposes a privacy-safe unresolved-operation status that survives the originating form being closed. It shows only operation categories/counts; it never renders amounts, titles, original payloads, idempotency keys or intent IDs.
+- If a fresh form attempts the same operation type while an older ambiguous record still exists for the authenticated owner, the app requires explicit acknowledgement **before allocating the new identity** that this is an additional financial action and both actions may later appear after reconciliation.
+- Definitive success or definitive non-auth client rejection closes the persisted intent and refreshes the unresolved status.
 - Timeout, response loss, network loss, 5xx, 408/425/429, and auth/session loss retain the ambiguous intent.
+
+This model deliberately avoids a misleading local “cancel pending write” action. Once transport outcome is unknown, deleting the durable record could abandon a mutation that already committed on the server. The safe choices are same-intent replay/reconciliation or an explicitly acknowledged additional intent.
 
 ## Restart / foreground reconciliation
 
 Session restore, successful sign-in, and app foreground enumerate pending records for the authenticated owner. Replay uses each persisted `intentId` and `originalPayload`.
 
-The reconciliation loop is pinned to the same coherent session snapshot that enumerated those records. It never enumerates User A and then recaptures a User B snapshot for transport. If the snapshot stops being current, reconciliation fails closed before sending.
+Reconciliation triggers are serialized. If a trigger arrives while another pass is active, it receives a subsequent pass rather than being dropped. Each pass resolves and validates the current coherent session snapshot before enumerating records. The loop never enumerates User A and then recaptures User B credentials for transport; if its captured snapshot stops being current, it fails closed before the next send.
 
 ## Account/session boundary
 
@@ -37,18 +41,18 @@ Financial preparation uses one snapshot:
 
 The same snapshot defines Authorization and pending owner namespace. Validation occurs before and after pending preparation. User B cannot select/replay User A's pending intent.
 
-Normal logout does not erase an ambiguous financial outcome. The record remains encrypted/owner-scoped so the original owner can reconcile it later.
+Normal logout does not erase an ambiguous financial outcome. The record remains encrypted/owner-scoped so the original owner can reconcile it later. Global unresolved-status reads are owner-scoped and discard late results if the authenticated owner changes.
 
 ## Storage and migration
 
 Pending financial payloads are private state:
 
-- current storage: owner-scoped SecureStore v3;
-- SecureStore v2 records migrate one way to v3;
-- historical AsyncStorage v1 records migrate one way and are removed;
+- current storage: owner-scoped chunked SecureStore namespace;
+- historical SecureStore/AsyncStorage records migrate one way where supported and legacy plaintext state is removed after migration;
 - legacy records without `intentId` receive a stable synthetic ID derived from their already-persisted operation key so ambiguous outcomes are not abandoned;
 - read/modify/write stays serialized per `owner + operation` so concurrent distinct intents cannot overwrite each other;
-- private financial payloads are not logged during reconciliation.
+- private financial payloads are not logged during reconciliation;
+- user-visible unresolved status exposes category/count only, never the durable payload or replay identifiers.
 
 ## Server boundary remains unchanged
 
@@ -60,7 +64,7 @@ The explicit mobile ID exists only so the correct server replay identity/origina
 
 ## Regression evidence
 
-The Mobile auth contract must prove:
+The mobile auth/UX contracts must prove or enforce:
 
 - same explicit `intentId` + recomputed retry payload -> same key + original payload;
 - distinct explicit `intentId`s + identical payload -> distinct keys;
@@ -70,7 +74,11 @@ The Mobile auth contract must prove:
 - restart persistence;
 - logout/account switch isolation;
 - session change before preparation -> fail closed before pending creation;
-- SecureStore v2 -> v3 migration retaining ambiguous key/payload;
+- supported legacy pending-state migration retaining ambiguous key/payload;
 - all four financial screens use the explicit-intent transport boundary;
-- restore/sign-in/foreground reconciliation is pinned to the enumerating session snapshot;
+- restore/sign-in/foreground reconciliation is serialized and pinned to the enumerating session snapshot;
+- closing the originating form cannot make an ambiguous operation disappear from authenticated UI status;
+- unresolved status is owner-scoped and privacy-safe;
+- a fresh same-operation intent waits for explicit additional-operation acknowledgement before a new identity is allocated;
+- definitive closure refreshes the unresolved status;
 - the `America/Sao_Paulo` financial date contract from #37 remains green in the same gate.
