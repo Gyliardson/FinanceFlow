@@ -257,6 +257,7 @@ def _calculate_financials(supabase, settings):
         supabase.table("finance_bills")
         .select("amount")
         .in_("status", ["pending", "overdue"])
+        .eq("is_recurring", False)
         .lte("due_date", str(end_of_month))
         .execute()
     )
