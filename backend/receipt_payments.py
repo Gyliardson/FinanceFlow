@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from database import build_receipt_object_key
+from database import build_receipt_object_key, validate_receipt_object_key
 from financial_clock import financial_today
 from receipt_uploads import ValidatedReceipt, validate_receipt_upload
 
@@ -55,6 +55,45 @@ def _delete_uploaded_receipt(bucket: Any, receipt_path: str) -> None:
         pass
 
 
+def _cleanup_stale_receipts_after_commit(
+    *,
+    bucket: Any,
+    owner_id: str,
+    bill_id: str,
+    committed_receipt_path: str,
+) -> None:
+    """Best-effort cleanup after authoritative paid state exists.
+
+    Ambiguous attempts deliberately retain their upload because deleting it could
+    destroy evidence referenced by a commit whose response was lost. Once an
+    owner-scoped bill is authoritatively paid, every other object in that exact
+    owner/bill namespace is stale and may be removed without racing a successful
+    future CAS: the paid row is already the winner.
+    """
+    try:
+        validated_path = validate_receipt_object_key(
+            owner_id,
+            bill_id,
+            committed_receipt_path,
+        )
+        namespace = validated_path.rsplit("/", 1)[0]
+        objects = bucket.list(path=namespace) or []
+        stale_paths: list[str] = []
+        for item in objects:
+            name = item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
+            if not isinstance(name, str) or not name or "/" in name or "\\" in name:
+                continue
+            candidate = f"{namespace}/{name}"
+            if candidate != validated_path:
+                stale_paths.append(candidate)
+        if stale_paths:
+            bucket.remove(stale_paths)
+    except Exception:
+        # Storage lifecycle hygiene must never change an already-authoritative
+        # financial success into a client-visible payment failure.
+        pass
+
+
 def _select_bill_state(data_client: Any, bill_id: str) -> dict[str, Any] | None:
     """Read the current RLS-scoped payment state used for reconciliation."""
     response = (
@@ -88,6 +127,7 @@ def _reconcile_ambiguous_payment(
     *,
     data_client: Any,
     bucket: Any,
+    owner_id: str,
     bill_id: str,
     uploaded_receipt_path: str,
     original_error: Exception,
@@ -118,14 +158,18 @@ def _reconcile_ambiguous_payment(
 
     committed = _committed_receipt_payment(bill)
     if committed is not None:
+        _cleanup_stale_receipts_after_commit(
+            bucket=bucket,
+            owner_id=owner_id,
+            bill_id=bill_id,
+            committed_receipt_path=committed.receipt_path,
+        )
         if committed.receipt_path == uploaded_receipt_path:
             # The mutation committed and only its response was lost.
             return committed
 
-        # Another payment won. The current authoritative row references a
-        # different receipt, so this attempt's owner/bill-scoped upload is an
-        # orphan and can be cleaned without detaching the committed evidence.
-        _delete_uploaded_receipt(bucket, uploaded_receipt_path)
+        # Another payment won. Cleanup preserves its authoritative object and
+        # removes this attempt plus any older retained orphans in the namespace.
         raise BillAlreadyPaidError("Bill was completed by another payment attempt.")
 
     current_receipt_path = bill.get("receipt_path")
@@ -171,7 +215,9 @@ def persist_private_receipt_payment(
     - no public URL is generated or persisted;
     - the final write is compare-and-set on ``status != paid`` to reject double-submit races;
     - a database/API exception is treated as an ambiguous outcome, not proof of rollback;
-    - uploaded evidence is deleted only after an authoritative re-read proves it is unreferenced.
+    - uploaded evidence is deleted only after an authoritative re-read proves it is unreferenced;
+    - once a receipt-backed payment is authoritatively committed, stale objects in that exact
+      owner/bill namespace are removed best-effort while the committed receipt is preserved.
     """
     bill = _select_bill_state(data_client, bill_id)
     if bill is None:
@@ -180,16 +226,22 @@ def persist_private_receipt_payment(
         raise RecurringTemplatePaymentError("Recurring templates are not payable bills.")
 
     existing_payment = _committed_receipt_payment(bill)
+    bucket = _storage_bucket(storage_client)
     if existing_payment is not None:
         # Transport retry after a previously committed receipt payment converges
         # to the already-authoritative result without another upload or mutation.
+        _cleanup_stale_receipts_after_commit(
+            bucket=bucket,
+            owner_id=owner_id,
+            bill_id=bill_id,
+            committed_receipt_path=existing_payment.receipt_path,
+        )
         return existing_payment
     if bill.get("status") == "paid":
         raise BillAlreadyPaidError("Bill is already paid.")
 
     validated: ValidatedReceipt = validate_receipt_upload(content, declared_mime_type)
     receipt_path = build_receipt_object_key(owner_id, bill_id, validated.extension)
-    bucket = _storage_bucket(storage_client)
 
     try:
         bucket.upload(
@@ -220,6 +272,7 @@ def persist_private_receipt_payment(
         return _reconcile_ambiguous_payment(
             data_client=data_client,
             bucket=bucket,
+            owner_id=owner_id,
             bill_id=bill_id,
             uploaded_receipt_path=receipt_path,
             original_error=exc,
@@ -229,6 +282,7 @@ def persist_private_receipt_payment(
         return _reconcile_ambiguous_payment(
             data_client=data_client,
             bucket=bucket,
+            owner_id=owner_id,
             bill_id=bill_id,
             uploaded_receipt_path=receipt_path,
             original_error=PaymentPersistenceError(
@@ -236,8 +290,15 @@ def persist_private_receipt_payment(
             ),
         )
 
-    return ReceiptPaymentResult(
+    result = ReceiptPaymentResult(
         bill_id=bill_id,
         receipt_path=receipt_path,
         payment_date=effective_payment_date.isoformat(),
     )
+    _cleanup_stale_receipts_after_commit(
+        bucket=bucket,
+        owner_id=owner_id,
+        bill_id=bill_id,
+        committed_receipt_path=result.receipt_path,
+    )
+    return result
