@@ -28,6 +28,47 @@ def _authenticated_user_id() -> str:
     return user_id
 
 
+def _reconcile_receiptless_payment(data_client, bill_id: str):
+    """Resolve an uncertain receipt-less mutation from owner-scoped durable state."""
+    try:
+        reconciled_response = (
+            data_client.table("finance_bills")
+            .select("id,status,is_recurring")
+            .eq("id", bill_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        logger.error("Receipt-less payment reconciliation failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Não foi possível confirmar o resultado do pagamento.",
+        ) from exc
+
+    reconciled_rows = getattr(reconciled_response, "data", None) or []
+    if not reconciled_rows:
+        # RLS intentionally keeps a cross-owner identifier indistinguishable
+        # from a nonexistent bill during reconciliation as well.
+        raise HTTPException(status_code=404, detail="Fatura não encontrada.")
+
+    reconciled = reconciled_rows[0]
+    if reconciled.get("is_recurring") is True:
+        raise HTTPException(
+            status_code=409,
+            detail="Modelos recorrentes não podem ser pagos diretamente.",
+        )
+    if reconciled.get("status") == "paid":
+        return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
+
+    # A provider/transport exception is not proof of rollback. Even when the
+    # current authoritative row is still unpaid, keep the client-facing outcome
+    # explicit so callers reconcile fresh state before another attempt.
+    raise HTTPException(
+        status_code=409,
+        detail="O resultado do pagamento não foi confirmado. Atualize os dados antes de tentar novamente.",
+    )
+
+
 async def pay_bill_without_receipt(bill_id: str):
     """Mark an authenticated user's payable bill with compare-and-set idempotency."""
     _authenticated_user_id()
@@ -70,45 +111,16 @@ async def pay_bill_without_receipt(bill_id: str):
             .neq("status", "paid")
             .execute()
         )
-    except Exception as exc:
-        logger.error("Receipt-less payment persistence failed")
-        raise HTTPException(status_code=503, detail="Não foi possível confirmar o pagamento.") from exc
+    except Exception:
+        # The write can commit before the Data API response is lost. Re-read the
+        # authenticated row instead of treating the transport error as rollback.
+        return _reconcile_receiptless_payment(data_client, bill_id)
 
     if not (getattr(update_response, "data", None) or []):
         # Zero rows can mean another request paid the bill, but the additional
         # domain predicate also means it is not safe to infer success. Re-read
         # authoritative owner-scoped state before telling the client anything.
-        try:
-            reconciled_response = (
-                data_client.table("finance_bills")
-                .select("id,status,is_recurring")
-                .eq("id", bill_id)
-                .limit(1)
-                .execute()
-            )
-        except Exception as exc:
-            logger.error("Receipt-less payment reconciliation failed")
-            raise HTTPException(
-                status_code=503,
-                detail="Não foi possível confirmar o pagamento.",
-            ) from exc
-
-        reconciled_rows = getattr(reconciled_response, "data", None) or []
-        if not reconciled_rows:
-            raise HTTPException(status_code=404, detail="Fatura não encontrada.")
-
-        reconciled = reconciled_rows[0]
-        if reconciled.get("is_recurring") is True:
-            raise HTTPException(
-                status_code=409,
-                detail="Modelos recorrentes não podem ser pagos diretamente.",
-            )
-        if reconciled.get("status") == "paid":
-            return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
-        raise HTTPException(
-            status_code=409,
-            detail="O pagamento não pôde ser confirmado. Atualize os dados e tente novamente.",
-        )
+        return _reconcile_receiptless_payment(data_client, bill_id)
 
     return {
         "status": "success",

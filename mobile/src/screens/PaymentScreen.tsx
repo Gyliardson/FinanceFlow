@@ -176,7 +176,27 @@ export default function PaymentScreen({ navigation, route }: any) {
                   { text: 'OK', onPress: () => navigation.goBack() }
                 ]);
               } catch (error: any) {
-                Alert.alert('Erro', error?.response?.data?.detail || 'Falha ao registrar pagamento.');
+                const detail = error?.response?.data?.detail;
+                if (isAmbiguousReceiptPaymentFailure(error)) {
+                  const reconciliation = await reconcileReceiptPayment(selectedBill.id);
+                  if (reconciliation === 'paid') {
+                    cancelNotificationsForBill(selectedBill.id).catch(() => undefined);
+                    Alert.alert(
+                      'Pagamento confirmado',
+                      `“${selectedBill.description}” já consta como paga após reconciliar o estado da fatura.`,
+                      [{ text: 'OK', onPress: () => navigation.goBack() }],
+                    );
+                    return;
+                  }
+
+                  const message = reconciliation === 'not-paid'
+                    ? 'O servidor ainda não mostra esta fatura como paga. Como a tentativa anterior pode ter sido concluída enquanto a resposta se perdeu, atualize os dados e confirme o estado da fatura antes de registrar novamente.'
+                    : 'Não foi possível consultar o estado autoritativo da fatura. Atualize os dados e confirme se o pagamento foi registrado antes de tentar novamente.';
+                  Alert.alert('Resultado não confirmado', message);
+                  return;
+                }
+
+                Alert.alert('Erro no pagamento', detail || 'Não foi possível registrar o pagamento. Revise os dados e tente novamente.');
               } finally {
                 setUploading(false);
               }
