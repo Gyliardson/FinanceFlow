@@ -47,7 +47,10 @@ async def refresh_insights():
         fin_data = _calculate_financials(supabase, settings)
 
         try:
-            insight_result = generate_financial_insights(fin_data)
+            insight_result = generate_financial_insights(
+                fin_data,
+                explicit_user_action=True,
+            )
         except Exception as exc:
             raise HTTPException(status_code=502, detail="AI provider unavailable.") from exc
 
