@@ -1,9 +1,14 @@
 from datetime import date
 from typing import Any
 
-from financial_clock import financial_today
-from money import money_to_storage
-from recurrence import recurring_due_date
+
+def _rpc_payload(response: Any) -> dict[str, Any] | None:
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        return data[0]
+    return None
 
 
 def generate_recurring_instances_for_client(
@@ -11,17 +16,16 @@ def generate_recurring_instances_for_client(
     *,
     today: date | None = None,
 ) -> dict[str, Any]:
-    """Generate recurring children using only an explicitly supplied RLS client.
+    """Generate owner-scoped recurring children through the sanctioned DB boundary.
 
-    The service never resolves a client from request ContextVars itself. Callers
-    must pass the already authenticated Data API client, so execution cannot
-    accidentally fall back to anonymous/service-role access after a response.
-    PostgreSQL uniqueness remains the final idempotency authority.
+    ``today`` remains accepted for compatibility with deterministic unit callers,
+    but production due-date authority now belongs to PostgreSQL private runtime
+    configuration. The caller supplies only a parent id; amount, description,
+    ownership and next due date are derived from the authoritative template.
     """
-    effective_today = today or financial_today()
     templates_resp = (
         data_client.table("finance_bills")
-        .select("*")
+        .select("id")
         .eq("is_recurring", True)
         .execute()
     )
@@ -29,41 +33,25 @@ def generate_recurring_instances_for_client(
     if not templates:
         return {"status": "success", "message": "Nenhum template recorrente encontrado.", "generated": []}
 
-    existing_resp = (
-        data_client.table("finance_bills")
-        .select("description,due_date,parent_bill_id")
-        .not_.is_("parent_bill_id", "null")
-        .execute()
-    )
-    existing_instances = {
-        (item["parent_bill_id"], str(item["due_date"]))
-        for item in (existing_resp.data or [])
-    }
-
-    to_insert = []
+    generated: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     for template in templates:
-        target_date = recurring_due_date(template.get("recurring_day", 1), effective_today)
-        if (template["id"], str(target_date)) in existing_instances:
-            continue
-        target_suffix = f"{target_date.month:02d}/{target_date.year}"
-        to_insert.append(
-            {
-                "description": f"{template['description']} - {target_suffix}",
-                "amount": money_to_storage(template["amount"]),
-                "due_date": str(target_date),
-                "status": "pending",
-                "parent_bill_id": template["id"],
-                "is_recurring": False,
-            }
-        )
-
-    generated = []
-    if to_insert:
-        result = data_client.table("finance_bills").insert(to_insert).execute()
-        generated = result.data or []
+        parent_id = str(template["id"])
+        response = data_client.rpc(
+            "finance_generate_recurring_child",
+            {"p_parent_bill_id": parent_id},
+        ).execute()
+        payload = _rpc_payload(response)
+        child = payload.get("data") if payload and payload.get("status") == "success" else None
+        if not isinstance(child, dict) or not child.get("id"):
+            raise RuntimeError("Recurring child RPC did not return authoritative state.")
+        child_id = str(child["id"])
+        if child_id not in seen_ids:
+            seen_ids.add(child_id)
+            generated.append(child)
 
     return {
         "status": "success",
-        "message": f"{len(generated)} nova(s) instância(s) recorrente(s) gerada(s).",
+        "message": f"{len(generated)} instância(s) recorrente(s) reconciliada(s).",
         "generated": generated,
     }
