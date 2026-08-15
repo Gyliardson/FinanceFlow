@@ -166,6 +166,11 @@ jobs:
         run: |
           set -o pipefail
           node tests/auth-notification-isolation-contract.cjs 2>&1 | tee auth-notification-isolation-contract.log
+      - name: Run bounded Supabase auth timeout contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/auth-timeout-contract.cjs 2>&1 | tee auth-timeout-contract.log
       - name: Run offline cache corruption and persistence contract
         shell: bash
         run: |
@@ -205,6 +210,7 @@ jobs:
             mobile/auth-session-contract.log
             mobile/auth-rejection-contract.log
             mobile/auth-notification-isolation-contract.log
+            mobile/auth-timeout-contract.log
             mobile/offline-cache-contract.log
             mobile/idempotent-mutation-contract.log
             mobile/pending-auth-isolation-contract.log
