@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
   ActivityIndicator, Alert, Modal, FlatList, KeyboardAvoidingView, Platform, ScrollView
@@ -41,6 +41,7 @@ export default function IncomeScreen({ navigation }: any) {
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [type, setType] = useState<Income['type']>('salary');
+  const refreshGeneration = useRef(0);
   const incomeMutation = useFinancialMutation('/incomes');
   const intentLocked = incomeMutation.hasActiveIntent;
 
@@ -56,21 +57,33 @@ export default function IncomeScreen({ navigation }: any) {
   };
 
   const fetchIncomes = async () => {
+    const generation = ++refreshGeneration.current;
     setLoading(true);
     setLoadError(false);
     try {
       const response = await api.get('/incomes');
+      if (generation !== refreshGeneration.current) return;
       setIncomes(response.data.data || []);
     } catch {
+      if (generation !== refreshGeneration.current) return;
       setLoadError(true);
     } finally {
-      setLoading(false);
+      if (generation === refreshGeneration.current) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    const unsubscribe = navigation.addListener('focus', fetchIncomes);
-    return unsubscribe;
+    const unsubscribeFocus = navigation.addListener('focus', fetchIncomes);
+    const unsubscribeBlur = navigation.addListener('blur', () => {
+      refreshGeneration.current += 1;
+    });
+    return () => {
+      refreshGeneration.current += 1;
+      unsubscribeFocus();
+      unsubscribeBlur();
+    };
   }, [navigation]);
 
   const resetForm = () => {
