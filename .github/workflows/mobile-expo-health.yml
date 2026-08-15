@@ -41,6 +41,8 @@ jobs:
         run: npm ci
       - name: TypeScript
         run: npx tsc --noEmit
+      - name: Validate production branding assets
+        run: node scripts/test-branding-assets-contract.mjs
       - name: Expo Doctor
         run: npx expo-doctor
       - name: Validate mobile release environment contract
