@@ -9,6 +9,7 @@ import {
 const SESSION_STORAGE_KEY = 'financeflow.auth-session.v2';
 const LEGACY_SESSION_STORAGE_KEY = '@financeflow:auth-session:v1';
 const REFRESH_SKEW_MS = 60_000;
+export const AUTH_REQUEST_TIMEOUT_MS = 15_000;
 
 export interface AuthUser {
   id: string;
@@ -186,31 +187,38 @@ async function authRequest<T>(
   init: RequestInit,
 ): Promise<T | null> {
   const { url, publishableKey } = getSupabaseConfig();
-  let response: Response;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), AUTH_REQUEST_TIMEOUT_MS);
 
   try {
-    response = await fetch(`${url}/auth/v1${path}`, {
+    const response = await fetch(`${url}/auth/v1${path}`, {
       ...init,
+      signal: controller.signal,
       headers: {
         apikey: publishableKey,
         'Content-Type': 'application/json',
         ...(init.headers || {}),
       },
     });
-  } catch {
-    throw new AuthServiceUnavailableError('Authentication service is unavailable');
-  }
 
-  if (!response.ok) {
-    if (response.status === 400 || response.status === 401 || response.status === 403) {
-      throw new InvalidCredentialsError('Invalid or expired authentication credentials');
+    if (!response.ok) {
+      if (response.status === 400 || response.status === 401 || response.status === 403) {
+        throw new InvalidCredentialsError('Invalid or expired authentication credentials');
+      }
+      throw new AuthServiceUnavailableError('Authentication service is unavailable');
+    }
+
+    if (response.status === 204) return null;
+    const text = await response.text();
+    return text ? (JSON.parse(text) as T) : null;
+  } catch (error) {
+    if (error instanceof InvalidCredentialsError || error instanceof AuthServiceUnavailableError) {
+      throw error;
     }
     throw new AuthServiceUnavailableError('Authentication service is unavailable');
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  if (response.status === 204) return null;
-  const text = await response.text();
-  return text ? (JSON.parse(text) as T) : null;
 }
 
 async function clearLocalFinancialState(userId?: string): Promise<void> {
@@ -434,7 +442,7 @@ export async function signOutAuthSession(): Promise<void> {
         headers: { Authorization: `Bearer ${session.accessToken}` },
       });
     } catch {
-      // Local logout must still complete if the remote session is invalid/offline.
+      // Local logout must still complete if the remote session is invalid/offline/timed out.
     }
     if (sameSessionIdentity(currentSession, session)) {
       await clearLocalFinancialState(session.user.id);
