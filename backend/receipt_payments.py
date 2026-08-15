@@ -158,6 +158,10 @@ def _reconcile_ambiguous_payment(
 
     committed = _committed_receipt_payment(bill)
     if committed is not None:
+        if committed.receipt_path != uploaded_receipt_path:
+            # Keep the old bounded cleanup even when namespace listing is
+            # unavailable: the authoritative row proves this attempt lost.
+            _delete_uploaded_receipt(bucket, uploaded_receipt_path)
         _cleanup_stale_receipts_after_commit(
             bucket=bucket,
             owner_id=owner_id,
