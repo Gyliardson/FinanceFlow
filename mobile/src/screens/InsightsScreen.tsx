@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  AppState,
   View,
   Text,
   StyleSheet,
@@ -173,6 +174,24 @@ export default function InsightsScreen({ navigation }: any) {
       snapshotGeneration.current += 1;
     };
   }, []);
+
+  useEffect(() => {
+    const appStateSubscription = AppState.addEventListener('change', (state) => {
+      if (
+        state === 'active'
+        && navigation.isFocused()
+        && !snapshotBusy
+        && !modalVisible
+        && !goalModalVisible
+        && !intentLocked
+      ) {
+        // Foreground reconciliation is intentionally passive. External AI remains
+        // exclusive to the explicit handleRefreshAI() action.
+        void fetchInsights();
+      }
+    });
+    return () => appStateSubscription.remove();
+  }, [navigation, snapshotBusy, modalVisible, goalModalVisible, intentLocked]);
 
   if (loading) {
     return (
