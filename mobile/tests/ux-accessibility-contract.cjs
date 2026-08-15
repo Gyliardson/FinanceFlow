@@ -63,6 +63,18 @@ requireMatch(payment, /Alert\.alert\('Resultado não confirmado', message\)/, 'U
 requireMatch(payment, /confirme o estado da fatura antes de enviar outro comprovante/, 'Ambiguous receipt UX must require reconciliation before another upload');
 assert.doesNotMatch(payment, /O envio demorou demais\. Verifique sua conexão e tente novamente com uma imagem menor\./, 'Receipt timeout must never regress to blind retry guidance');
 
+// Receipt-less payment has the same response-loss ambiguity even though it does
+// not have a receipt-storage lifecycle. Network/retryable outcomes must use the
+// owner-scoped reconciliation path instead of claiming that the payment failed.
+requireMatch(payment, /api\.post\(`\/bills\/\$\{selectedBill\.id\}\/pay-no-receipt`\)/, 'Receipt-less payment must retain the secure server route');
+assert.ok(
+  (payment.match(/if \(isAmbiguousReceiptPaymentFailure\(error\)\)/g) || []).length >= 2,
+  'Both receipt-backed and receipt-less payment catches must classify ambiguous outcomes',
+);
+requireMatch(payment, /tentativa anterior pode ter sido concluída enquanto a resposta se perdeu/, 'Receipt-less ambiguous UX must acknowledge commit/response-loss semantics');
+requireMatch(payment, /confirme o estado da fatura antes de registrar novamente/, 'Receipt-less ambiguity must require authoritative reconciliation before another write');
+assert.doesNotMatch(payment, /Falha ao registrar pagamento\./, 'Receipt-less network failure must never regress to a definite rollback claim');
+
 // Creation/OCR is a high-risk input path. Keep provider details out of UX/logs,
 // retain upload guardrails, and require explicit review/accessibility cues.
 requireMatch(detail, /MAX_CLIENT_UPLOAD_BYTES = 10 \* 1024 \* 1024/, 'Client upload path must retain its 10 MiB early guard');
