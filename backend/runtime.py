@@ -8,14 +8,12 @@ from api_handlers import (
     get_bill_detail,
     get_bills,
     get_incomes,
-    get_insights,
     get_pending_bills,
     get_recurring_bills,
     get_settings,
     health_check,
     healthz_check,
     lifespan,
-    refresh_insights,
     root,
     update_settings,
     validate_bill,
@@ -28,6 +26,7 @@ from idempotent_routes import (
     add_to_reserve_idempotent,
     create_recurring_bill_idempotent,
 )
+from insights_routes import get_insights, refresh_insights
 from secure_ocr_routes import upload_receipt_for_ocr
 from secure_recurring_routes import generate_recurring_instances_user_scoped
 from secure_routes import (
