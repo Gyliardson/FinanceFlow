@@ -24,6 +24,9 @@ requireMatch(home, /accessibilityLabel="Adicionar nova fatura"/, 'Dashboard FAB 
 requireMatch(home, /accessibilityLiveRegion="assertive"/, 'Dashboard unavailable state must be announced');
 requireMatch(home, /new Intl\.NumberFormat\('pt-BR'/, 'Dashboard monetary display must use the locale-aware formatter');
 requireMatch(home, /KeyboardAvoidingView/, 'Dashboard settings form must be keyboard-safe');
+requireMatch(home, /Resultado não confirmado/, 'Settings save failures must communicate an ambiguous outcome');
+requireMatch(home, /Recarregue os dados para reconciliar o estado antes de tentar novamente\./, 'Settings save failures must direct the user to reconcile authoritative state');
+assert.doesNotMatch(home, /Nenhum valor foi alterado\./, 'Settings save failures must never claim rollback without server proof');
 
 // Creation/OCR is a high-risk input path. Keep provider details out of UX/logs,
 // retain upload guardrails, and require explicit review/accessibility cues.

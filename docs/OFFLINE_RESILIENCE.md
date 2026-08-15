@@ -45,7 +45,9 @@ SecureStore is used only behind an explicit storage boundary. The CI mock delibe
 
 FinanceFlow does **not** queue new financial mutations for later synchronization.
 
-While offline, actions that create or mutate financial state — including bills, income, payments and financial settings — require a working authenticated API connection. The separate pending-idempotency record exists only to reconcile an already-submitted operation whose outcome is ambiguous; it is not a general offline write queue.
+While offline, actions that create or mutate financial state — including bills, income, payments and financial settings — require a working authenticated API connection. The separate pending-idempotency record exists only to reconcile an already-submitted non-convergent operation whose outcome is ambiguous; it is not a general offline write queue.
+
+Financial settings updates are convergent replacement writes rather than additive creates, so the mobile client does not create a pending replay intent for them. A transport/server error still cannot prove rollback: the server may have committed the settings before the response was lost. The UI therefore reports an **unconfirmed outcome** and instructs the user to reload/reconcile authoritative settings before deciding whether another save is needed.
 
 A safe offline mutation queue would require a separately designed server protocol covering at least:
 
@@ -74,4 +76,5 @@ The mobile auth/cache contract covers session restart, expiry, refresh concurren
 - failed legacy-to-secure migration deleting the plaintext financial cache rather than preserving it indefinitely;
 - authoritative empty bill lists;
 - dashboard wiring that keeps successful network reads authoritative;
+- settings-save regression coverage that forbids false rollback claims after ambiguous failures;
 - explicit read-only offline UX.
