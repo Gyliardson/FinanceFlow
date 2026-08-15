@@ -52,7 +52,17 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q .
       - name: Run backend tests
-        run: pytest -q
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee pytest.log
+      - name: Upload backend test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-pytest-report
+          path: backend/pytest.log
+          if-no-files-found: warn
 
   postgres-recurring:
     name: PostgreSQL recurring idempotency

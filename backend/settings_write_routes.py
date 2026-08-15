@@ -1,10 +1,10 @@
-"""Narrow authenticated mutations for independent financial settings fields."""
+"""Least-privilege authenticated settings replacement boundary."""
 
 import logging
 
 from fastapi import HTTPException
 
-from api_models import EmergencyFundGoalUpdateRequest
+from api_models import SettingsUpdateRequest
 from database import get_supabase_client
 from money import money_to_storage
 from request_context import get_request_user_id
@@ -26,27 +26,29 @@ def _rpc_payload(response):
     return None
 
 
-async def update_emergency_fund_goal(req: EmergencyFundGoalUpdateRequest):
-    """Replace only the authenticated owner's emergency-fund goal through PostgreSQL policy."""
+async def update_settings(req: SettingsUpdateRequest):
+    """Replace only the three public settings fields through PostgreSQL policy."""
     _require_authenticated_context()
-    goal = money_to_storage(req.emergency_fund_goal)
-
     try:
         response = get_supabase_client().rpc(
-            "finance_update_emergency_fund_goal",
-            {"p_emergency_fund_goal": goal},
+            "finance_replace_settings",
+            {
+                "p_initial_balance": money_to_storage(req.initial_balance),
+                "p_initial_balance_date": req.initial_balance_date,
+                "p_emergency_fund_goal": money_to_storage(req.emergency_fund_goal),
+            },
         ).execute()
     except Exception as exc:
-        logger.error("Emergency-fund goal RPC persistence failed")
+        logger.error("Settings RPC persistence failed")
         raise HTTPException(
             status_code=503,
-            detail="Não foi possível confirmar a atualização da meta.",
+            detail="Não foi possível confirmar a atualização das configurações.",
         ) from exc
 
     payload = _rpc_payload(response)
     if not payload or payload.get("status") != "success" or not isinstance(payload.get("data"), dict):
         raise HTTPException(
             status_code=503,
-            detail="Não foi possível confirmar a atualização da meta.",
+            detail="Não foi possível confirmar a atualização das configurações.",
         )
     return payload

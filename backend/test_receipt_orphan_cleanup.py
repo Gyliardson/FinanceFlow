@@ -1,4 +1,3 @@
-from datetime import date
 from io import BytesIO
 
 from PIL import Image
@@ -27,40 +26,39 @@ class Response:
 
 
 class Query:
-    def __init__(self, client, operation="select", payload=None):
+    def __init__(self, client):
         self.client = client
-        self.operation = operation
-        self.payload = payload
 
     def select(self, *_args):
-        self.operation = "select"
-        return self
-
-    def update(self, payload):
-        self.operation = "update"
-        self.payload = payload
         return self
 
     def eq(self, *_args):
-        return self
-
-    def neq(self, *_args):
         return self
 
     def limit(self, *_args):
         return self
 
     def execute(self):
-        if self.operation == "select":
-            self.client.select_calls += 1
-            if self.client.select_calls in self.client.select_error_calls:
-                raise RuntimeError("authoritative read unavailable")
-            return Response([dict(self.client.bill)])
+        self.client.select_calls += 1
+        if self.client.select_calls in self.client.select_error_calls:
+            raise RuntimeError("authoritative read unavailable")
+        return Response([dict(self.client.bill)])
 
+
+class RPCQuery:
+    def __init__(self, client, receipt_path):
+        self.client = client
+        self.receipt_path = receipt_path
+
+    def execute(self):
         if self.client.fail_before_commit:
             raise RuntimeError("write failed before commit")
-        self.client.bill.update(self.payload)
-        return Response([dict(self.client.bill)])
+        self.client.bill.update(
+            status="paid",
+            payment_date="2026-08-15",
+            receipt_path=self.receipt_path,
+        )
+        return Response({"status": "success", "data": dict(self.client.bill)})
 
 
 class DataClient:
@@ -75,10 +73,16 @@ class DataClient:
         self.select_calls = 0
         self.select_error_calls = set()
         self.fail_before_commit = False
+        self.rpc_calls = []
 
     def table(self, name):
         assert name == "finance_bills"
         return Query(self)
+
+    def rpc(self, name, payload):
+        assert name == "finance_mark_bill_paid"
+        self.rpc_calls.append((name, payload))
+        return RPCQuery(self, payload["p_receipt_path"])
 
 
 class Bucket:
@@ -133,7 +137,6 @@ def persist(client, bucket):
         bill_id=BILL_ID,
         content=JPEG_BYTES,
         declared_mime_type="image/jpeg",
-        payment_date=date(2026, 8, 14),
     )
 
 
@@ -179,6 +182,7 @@ def test_retry_of_committed_payment_cleans_stale_namespace_without_new_upload():
     assert bucket.uploads == []
     assert committed_path in bucket.objects
     assert stale_path not in bucket.objects
+    assert client.rpc_calls == []
 
 
 def test_cleanup_listing_failure_does_not_change_authoritative_payment_success():
@@ -191,3 +195,4 @@ def test_cleanup_listing_failure_does_not_change_authoritative_payment_success()
     assert client.bill["status"] == "paid"
     assert client.bill["receipt_path"] == result.receipt_path
     assert result.receipt_path in bucket.objects
+    assert len(client.rpc_calls) == 1

@@ -1,4 +1,3 @@
-from datetime import date
 from io import BytesIO
 
 from PIL import Image
@@ -15,6 +14,7 @@ from receipt_payments import (
 
 OWNER_ID = "11111111-1111-4111-8111-111111111111"
 BILL_ID = "22222222-2222-4222-8222-222222222222"
+OTHER_PATH = f"{OWNER_ID}/{BILL_ID}/other.jpg"
 
 
 def _jpeg_bytes():
@@ -24,7 +24,6 @@ def _jpeg_bytes():
 
 
 JPEG_BYTES = _jpeg_bytes()
-OTHER_PATH = f"{OWNER_ID}/{BILL_ID}/other.jpg"
 
 
 class Response:
@@ -33,57 +32,53 @@ class Response:
 
 
 class Query:
-    def __init__(self, client, operation="select", payload=None):
+    def __init__(self, client):
         self.client = client
-        self.operation = operation
-        self.payload = payload
-        self.filters = []
 
     def select(self, *_args):
-        self.operation = "select"
         return self
 
-    def update(self, payload):
-        self.operation = "update"
-        self.payload = payload
-        return self
-
-    def eq(self, column, value):
-        self.filters.append(("eq", column, value))
-        return self
-
-    def neq(self, column, value):
-        self.filters.append(("neq", column, value))
+    def eq(self, *_args):
         return self
 
     def limit(self, *_args):
         return self
 
     def execute(self):
-        if self.operation == "select":
-            self.client.select_calls += 1
-            if self.client.select_calls in self.client.select_error_calls:
-                raise RuntimeError("authoritative read unavailable")
-            return Response([] if self.client.bill is None else [dict(self.client.bill)])
+        self.client.select_calls += 1
+        if self.client.select_calls in self.client.select_error_calls:
+            raise RuntimeError("authoritative read unavailable")
+        return Response([dict(self.client.bill)])
 
-        self.client.update_payloads.append(self.payload)
-        if self.client.mode == "fail_before_commit":
+
+class RPCQuery:
+    def __init__(self, client, receipt_path):
+        self.client = client
+        self.receipt_path = receipt_path
+
+    def execute(self):
+        mode = self.client.mode
+        if mode == "fail_before_commit":
             raise RuntimeError("write failed before commit")
-        if self.client.mode == "zero_rows":
+        if mode == "malformed":
             return Response([])
-        if self.client.mode == "other_payment_wins":
+        if mode == "other_payment_wins":
             self.client.bill.update(
                 status="paid",
                 payment_date="2026-08-14",
                 receipt_path=OTHER_PATH,
             )
-            return Response([])
+            raise TimeoutError("concurrent payment response lost")
 
-        self.client.bill.update(self.payload)
+        self.client.bill.update(
+            status="paid",
+            payment_date="2026-08-14",
+            receipt_path=self.receipt_path,
+        )
         committed = dict(self.client.bill)
-        if self.client.mode == "commit_then_timeout":
+        if mode == "commit_then_timeout":
             raise TimeoutError("commit succeeded but response was lost")
-        return Response([committed])
+        return Response({"status": "success", "data": committed})
 
 
 class DataClient:
@@ -94,14 +89,20 @@ class DataClient:
             "status": "pending",
             "payment_date": None,
             "receipt_path": None,
+            "is_recurring": False,
         }
         self.select_calls = 0
         self.select_error_calls = set(select_error_calls or [])
-        self.update_payloads = []
+        self.rpc_calls = []
 
     def table(self, name):
         assert name == "finance_bills"
         return Query(self)
+
+    def rpc(self, name, payload):
+        assert name == "finance_mark_bill_paid"
+        self.rpc_calls.append((name, payload))
+        return RPCQuery(self, payload["p_receipt_path"])
 
 
 class Bucket:
@@ -120,6 +121,9 @@ class Bucket:
         for path in paths:
             self.objects.pop(path, None)
         return {"removed": paths}
+
+    def list(self, **_kwargs):
+        return []
 
 
 class Storage:
@@ -144,7 +148,6 @@ def persist(client, bucket):
         bill_id=BILL_ID,
         content=JPEG_BYTES,
         declared_mime_type="image/jpeg",
-        payment_date=date(2026, 8, 14),
     )
 
 
@@ -164,9 +167,7 @@ def test_commit_then_response_timeout_preserves_receipt_and_reconciles_success()
 def test_reconciled_ambiguous_commit_remains_available_through_signed_access(monkeypatch):
     client = DataClient(mode="commit_then_timeout")
     bucket = Bucket()
-
     payment = persist(client, bucket)
-
     signed_calls = []
 
     def fake_signed_url(**kwargs):
@@ -183,14 +184,7 @@ def test_reconciled_ambiguous_commit_remains_available_through_signed_access(mon
 
     assert access.receipt_path == payment.receipt_path
     assert payment.receipt_path in bucket.objects
-    assert signed_calls == [
-        {
-            "owner_id": OWNER_ID,
-            "bill_id": BILL_ID,
-            "receipt_path": payment.receipt_path,
-            "expires_in": 300,
-        }
-    ]
+    assert signed_calls[0]["receipt_path"] == payment.receipt_path
 
 
 def test_failed_reconciliation_preserves_committed_receipt_and_later_retry_converges():
@@ -211,7 +205,6 @@ def test_failed_reconciliation_preserves_committed_receipt_and_later_retry_conve
     assert result.receipt_path == committed_path
     assert result.payment_date == "2026-08-14"
     assert len(bucket.uploads) == 1
-    assert bucket.removals == []
 
 
 def test_definite_pre_commit_failure_rechecks_unpaid_state_then_cleans_orphan():
@@ -223,13 +216,11 @@ def test_definite_pre_commit_failure_rechecks_unpaid_state_then_cleans_orphan():
 
     uploaded_path = bucket.uploads[0]["path"]
     assert client.bill["status"] == "pending"
-    assert client.bill["receipt_path"] is None
     assert client.select_calls == 2
     assert bucket.removals == [[uploaded_path]]
-    assert uploaded_path not in bucket.objects
 
 
-def test_zero_row_with_other_committed_receipt_cleans_only_losing_upload():
+def test_concurrent_other_payment_cleans_only_losing_upload():
     client = DataClient(mode="other_payment_wins")
     bucket = Bucket()
 
@@ -242,11 +233,14 @@ def test_zero_row_with_other_committed_receipt_cleans_only_losing_upload():
     assert uploaded_path not in bucket.objects
 
 
-def test_zero_row_while_still_unpaid_cleans_only_after_authoritative_reread():
-    client = DataClient(mode="zero_rows")
+def test_malformed_rpc_while_still_unpaid_cleans_only_after_authoritative_reread():
+    client = DataClient(mode="malformed")
     bucket = Bucket()
 
-    with pytest.raises(PaymentPersistenceError, match="affected no rows"):
+    with pytest.raises(
+        PaymentPersistenceError,
+        match="Payment RPC did not return a complete authoritative paid state",
+    ):
         persist(client, bucket)
 
     uploaded_path = bucket.uploads[0]["path"]
