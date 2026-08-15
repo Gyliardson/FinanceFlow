@@ -61,6 +61,8 @@ FinanceFlow does **not** queue new financial mutations for later synchronization
 
 While offline, actions that create or mutate financial state — including bills, income, payments and financial settings — require a working authenticated API connection. The separate pending-idempotency record exists only to reconcile an already-submitted non-convergent operation whose outcome is ambiguous; it is not a general offline write queue.
 
+Pending-idempotency state is **not disposable cache**. A malformed cache entry can be dropped because the corresponding bills/settings can be fetched again from the authoritative API. An unreadable pending mutation is different: it may be the only local mapping to a replay key for an operation that already committed while its response was lost. Therefore a present-but-malformed pending manifest, missing chunk, length mismatch, malformed JSON or invalid record shape is preserved best-effort as an unresolved safety condition. Enumeration and fresh financial intent allocation fail closed rather than converting corruption into an empty pending set. The authenticated navigator exposes only a generic privacy-safe reconciliation warning; it never displays the durable payload, key or intent identifier.
+
 A protected-API 401 is intentionally **not** a definitive financial-mutation rejection: unresolved idempotency identity remains durable so the same authenticated owner can reconcile an ambiguous submission after reauthentication. Auth invalidation must not manufacture a second logical financial intent.
 
 Financial settings updates are convergent replacement writes rather than additive creates, so the mobile client does not create a pending replay intent for them. A transport/server error still cannot prove rollback: the server may have committed the settings before the response was lost. The UI therefore reports an **unconfirmed outcome** and instructs the user to reload/reconcile authoritative settings before deciding whether another save is needed.
@@ -109,3 +111,5 @@ The offline cache contract additionally covers:
 - settings-save regression coverage that forbids false rollback claims after ambiguous failures;
 - goal-only settings regression coverage that forbids stale full-row read/modify/write;
 - explicit read-only offline UX.
+
+The idempotent-mutation contract separately proves that ambiguous non-convergent write state has no client wall-clock TTL and that malformed manifests, missing chunks and malformed pending payload JSON cannot become an empty pending set or permit a fresh financial intent. The Mobile UX contract requires the privacy-safe reconciliation-unavailable status so fail-closed storage behavior is visible rather than silently blocking the user.

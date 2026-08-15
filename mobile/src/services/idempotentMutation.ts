@@ -52,6 +52,15 @@ export const IDEMPOTENT_OPERATIONS: IdempotentOperation[] = [
 const storeQueues = new Map<string, Promise<void>>();
 const intentClosedListeners = new Set<IntentClosedListener>();
 
+export class PendingFinancialStateCorruptionError extends Error {
+  constructor() {
+    super('Pending financial state is unreadable and requires safe reconciliation.');
+    this.name = 'PendingFinancialStateCorruptionError';
+  }
+}
+
+const pendingStateCorruption = () => new PendingFinancialStateCorruptionError();
+
 const normalizeValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(normalizeValue);
   if (value && typeof value === 'object') {
@@ -176,8 +185,10 @@ const readSecurePendingRaw = async (
   if (manifestRaw === null) return null;
   const manifest = parsePendingManifest(manifestRaw);
   if (!manifest) {
-    await SecureStore.deleteItemAsync(manifestKey).catch(() => undefined);
-    return null;
+    // Unlike replaceable read caches, an unreadable pending mutation may describe
+    // a server-side commit whose response was lost. Preserve the evidence and
+    // block fresh mutation allocation rather than converting ambiguity to empty.
+    throw pendingStateCorruption();
   }
 
   const chunks: string[] = [];
@@ -186,17 +197,13 @@ const readSecurePendingRaw = async (
       pendingChunkKey(ownerId, operation, manifest.generation, index),
     );
     if (chunk === null) {
-      await cleanupPendingGeneration(ownerId, operation, manifest);
-      await SecureStore.deleteItemAsync(manifestKey).catch(() => undefined);
-      return null;
+      throw pendingStateCorruption();
     }
     chunks.push(chunk);
   }
   const raw = chunks.join('');
   if (raw.length !== manifest.totalLength) {
-    await cleanupPendingGeneration(ownerId, operation, manifest);
-    await SecureStore.deleteItemAsync(manifestKey).catch(() => undefined);
-    return null;
+    throw pendingStateCorruption();
   }
   return raw;
 };
@@ -249,7 +256,7 @@ const clearSecurePending = async (ownerId: string, operation: IdempotentOperatio
     const raw = await SecureStore.getItemAsync(manifestKey);
     manifest = raw ? parsePendingManifest(raw) : null;
   } catch {
-    // Continue: unreadable pending storage is never trusted.
+    // Explicit owner purge is destructive by definition; continue best-effort.
   }
   await cleanupPendingGeneration(ownerId, operation, manifest);
   await SecureStore.deleteItemAsync(manifestKey).catch(() => undefined);
@@ -327,21 +334,24 @@ const readPendingUnlocked = async (
   try {
     parsed = JSON.parse(raw);
   } catch {
-    parsed = [];
+    throw pendingStateCorruption();
+  }
+  if (!Array.isArray(parsed)) {
+    throw pendingStateCorruption();
   }
 
   // Ambiguous financial intents are not a cache. Wall-clock age cannot prove
   // whether the server committed an operation whose response was lost, so a
   // structurally valid pending record remains durable until authoritative
   // success or a definitive client rejection closes it.
-  const normalized = Array.isArray(parsed)
-    ? parsed
-      .map(normalizePendingRecord)
-      .filter((item): item is PendingOperation => Boolean(item))
-    : [];
+  const normalized = parsed.map(normalizePendingRecord);
+  if (normalized.some((item) => item === null)) {
+    throw pendingStateCorruption();
+  }
+  const valid = normalized as PendingOperation[];
 
   const seenIntentIds = new Set<string>();
-  const unique = normalized.filter((item) => {
+  const unique = valid.filter((item) => {
     if (seenIntentIds.has(item.intentId)) return false;
     seenIntentIds.add(item.intentId);
     return true;
