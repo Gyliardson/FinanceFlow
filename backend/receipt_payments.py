@@ -19,6 +19,10 @@ class BillAlreadyPaidError(ReceiptPaymentError):
     """Raised when another completed payment owns the authoritative bill state."""
 
 
+class RecurringTemplatePaymentError(ReceiptPaymentError):
+    """Raised when scheduling metadata is submitted as a payable bill."""
+
+
 class ReceiptStorageError(ReceiptPaymentError):
     """Raised when private receipt storage cannot persist the validated document."""
 
@@ -55,7 +59,7 @@ def _select_bill_state(data_client: Any, bill_id: str) -> dict[str, Any] | None:
     """Read the current RLS-scoped payment state used for reconciliation."""
     response = (
         data_client.table("finance_bills")
-        .select("id,status,payment_date,receipt_path")
+        .select("id,status,payment_date,receipt_path,is_recurring")
         .eq("id", bill_id)
         .limit(1)
         .execute()
@@ -160,6 +164,7 @@ def persist_private_receipt_payment(
 
     Security/correctness invariants:
     - bill lookup/update happens only through the caller-supplied authenticated client;
+    - recurring templates are scheduling metadata and can never enter payment state;
     - uploaded bytes are validated independently of the user-controlled filename;
     - storage object identity is owner/bill scoped and opaque;
     - only the durable private ``receipt_path`` is persisted;
@@ -171,6 +176,8 @@ def persist_private_receipt_payment(
     bill = _select_bill_state(data_client, bill_id)
     if bill is None:
         raise BillNotFoundError("Bill was not found in the authenticated user scope.")
+    if bill.get("is_recurring") is True:
+        raise RecurringTemplatePaymentError("Recurring templates are not payable bills.")
 
     existing_payment = _committed_receipt_payment(bill)
     if existing_payment is not None:
@@ -205,6 +212,7 @@ def persist_private_receipt_payment(
                 }
             )
             .eq("id", bill_id)
+            .eq("is_recurring", False)
             .neq("status", "paid")
             .execute()
         )
