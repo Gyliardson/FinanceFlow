@@ -32,7 +32,6 @@ from integration_contracts import (
     unavailable_result,
 )
 from receipt_uploads import (
-    ReceiptValidationError,
     sanitize_receipt_for_external_processing,
     validate_receipt_upload,
 )
@@ -86,6 +85,69 @@ def _is_allowed_message(message) -> bool:
         return True
     subject = decode_mime_words(message.get("Subject")).lower()
     return any(token in subject for token in tokens)
+
+
+def _imap_search_value(value: str) -> str:
+    """Return a bounded IMAP quoted-string value for trusted configuration text."""
+
+    normalized = value.strip()
+    if not normalized or len(normalized) > 200:
+        raise ValueError("IMAP search value is empty or too long")
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        raise ValueError("IMAP search value contains control characters")
+    escaped = normalized.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _search_allowed_unseen_ids(
+    mail,
+    allowed_senders: set[str],
+    subject_tokens: tuple[str, ...],
+    *,
+    max_messages: int = MAX_MESSAGES_PER_RUN,
+) -> list[bytes]:
+    """Search only relevant unread mail before applying the processing budget.
+
+    The server-side criteria are a coarse prefilter. `_is_allowed_message()` remains the
+    final exact guard after BODY.PEEK parsing. Running one bounded query per configured
+    sender/token keeps unrelated unread mail from consuming the candidate budget without
+    downloading the whole mailbox.
+    """
+
+    if max_messages <= 0:
+        return []
+
+    query_pairs: list[tuple[str, str | None]] = []
+    for sender in sorted(allowed_senders):
+        if subject_tokens:
+            query_pairs.extend((sender, token) for token in subject_tokens)
+        else:
+            query_pairs.append((sender, None))
+
+    # Configuration is intentionally bounded to prevent an operator mistake from
+    # turning one scheduler cycle into an excessive number of IMAP round trips.
+    if len(query_pairs) > 100:
+        raise ValueError("IMAP allowlist/subject search expands beyond 100 queries")
+
+    matched: set[bytes] = set()
+    for sender, token in query_pairs:
+        criteria = ["UNSEEN", "FROM", _imap_search_value(sender)]
+        if token is not None:
+            criteria.extend(("SUBJECT", _imap_search_value(token)))
+        status, messages = mail.search(None, *criteria)
+        if status != "OK":
+            raise RuntimeError("IMAP relevant-message search failed")
+        if not messages or not messages[0]:
+            continue
+        matched.update(messages[0].split())
+
+    def newest_first(message_id: bytes):
+        try:
+            return (1, int(message_id))
+        except (TypeError, ValueError):
+            return (0, message_id)
+
+    return sorted(matched, key=newest_first, reverse=True)[:max_messages]
 
 
 def _pdf_attachments(message):
@@ -175,15 +237,18 @@ async def scrape_vivo_email(
         if status != "OK":
             return error_result("IMAP mailbox").model_dump(mode="json", exclude_none=True)
 
-        status, messages = mail.search(None, "UNSEEN")
-        if status != "OK" or not messages or not messages[0]:
+        email_ids = _search_allowed_unseen_ids(
+            mail,
+            allowed_senders,
+            _subject_tokens(),
+        )
+        if not email_ids:
             return {
                 "status": "info",
                 "message": "No unread allowed invoice messages found.",
                 "candidates": [],
             }
 
-        email_ids = messages[0].split()[:MAX_MESSAGES_PER_RUN]
         for email_id in email_ids:
             # BODY.PEEK keeps collection non-destructive even if downstream OCR fails.
             fetch_status, msg_data = mail.fetch(email_id, "(BODY.PEEK[])")
@@ -202,6 +267,8 @@ async def scrape_vivo_email(
                 continue
 
             message = email.message_from_bytes(raw_message)
+            # Server-side IMAP search is only a coarse optimization. Keep the parsed
+            # message guard authoritative before touching any attachment/provider path.
             if not _is_allowed_message(message):
                 continue
 
