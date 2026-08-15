@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-import api_handlers
+import bill_read_routes
 
 
 class Query:
@@ -39,12 +39,20 @@ class Client:
 
 def test_pending_payment_candidates_exclude_recurring_templates(monkeypatch):
     client = Client()
-    monkeypatch.setattr(api_handlers, "get_supabase_client", lambda: client)
+    monkeypatch.setattr(bill_read_routes, "get_supabase_client", lambda: client)
 
-    response = asyncio.run(api_handlers.get_pending_bills())
+    response = asyncio.run(bill_read_routes.get_pending_bills())
 
     assert response == {
-        "data": [{"id": "child", "status": "pending", "is_recurring": False}]
+        "data": [
+            {
+                "id": "child",
+                "status": "pending",
+                "is_recurring": False,
+                "has_receipt": False,
+                "legacy_receipt_requires_reconciliation": False,
+            }
+        ]
     }
     assert ("status", "pending") in client.query.filters
     assert ("is_recurring", False) in client.query.filters
