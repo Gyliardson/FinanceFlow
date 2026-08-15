@@ -27,6 +27,14 @@ assert.match(status, /Fechar um formulário não cancela/,
   'the UI must explicitly state that closing a form is not authoritative cancellation');
 assert.match(status, /accessibilityLiveRegion="polite"/);
 assert.match(status, /accessibilityRole="summary"/);
+assert.match(status, /setReconciliationUnavailable\(true\)/,
+  'pending-store read failure must remain visible instead of becoming an empty pending set');
+assert.match(status, /Reconciliação financeira indisponível/,
+  'the blocking status must explain the safety condition without exposing private data');
+assert.match(status, /accessibilityLiveRegion="assertive"/);
+assert.match(status, /accessibilityRole="alert"/);
+assert.match(status, /novas operações financeiras podem ficar bloqueadas/,
+  'the user must understand why fresh financial actions can be prevented');
 
 assert.doesNotMatch(status, /originalPayload/,
   'the global unresolved status must never render persisted financial payloads');
@@ -39,6 +47,10 @@ assert.match(navigator, /<PendingFinancialStatus\s*\/>/,
   'the unresolved status must survive originating form unmount inside the authenticated navigator');
 assert.doesNotMatch(store, /LOCAL_RETENTION_MS|createdAt\s*>=\s*cutoff/,
   'ambiguous durable state must not be silently deleted because local wall-clock time passed');
+assert.match(store, /PendingFinancialStateCorruptionError/,
+  'durable-intent corruption must have an explicit fail-closed state');
+assert.doesNotMatch(store, /if \(!manifest\) \{\s*await SecureStore\.deleteItemAsync\(manifestKey\)/,
+  'invalid pending manifests must not be destructively converted into no pending state');
 assert.match(store, /listPendingOperationsForOwner/);
 
 assert.match(hook, /if \(!intentIdRef\.current\)/,
