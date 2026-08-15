@@ -12,7 +12,11 @@ class Query:
         return self
 
     def eq(self, column, value):
-        self.filters.append((column, value))
+        self.filters.append(("eq", column, value))
+        return self
+
+    def in_(self, column, values):
+        self.filters.append(("in", column, tuple(values)))
         return self
 
     def order(self, *_args, **_kwargs):
@@ -21,10 +25,15 @@ class Query:
     def execute(self):
         rows = [
             {"id": "template", "status": "pending", "is_recurring": True},
-            {"id": "child", "status": "pending", "is_recurring": False},
+            {"id": "pending-child", "status": "pending", "is_recurring": False},
+            {"id": "overdue-child", "status": "overdue", "is_recurring": False},
+            {"id": "paid-child", "status": "paid", "is_recurring": False},
         ]
-        for column, value in self.filters:
-            rows = [row for row in rows if row.get(column) == value]
+        for operator, column, value in self.filters:
+            if operator == "eq":
+                rows = [row for row in rows if row.get(column) == value]
+            elif operator == "in":
+                rows = [row for row in rows if row.get(column) in value]
         return SimpleNamespace(data=rows)
 
 
@@ -37,7 +46,7 @@ class Client:
         return self.query
 
 
-def test_pending_payment_candidates_exclude_recurring_templates(monkeypatch):
+def test_payment_candidates_include_pending_and_overdue_but_exclude_paid_and_templates(monkeypatch):
     client = Client()
     monkeypatch.setattr(bill_read_routes, "get_supabase_client", lambda: client)
 
@@ -46,13 +55,20 @@ def test_pending_payment_candidates_exclude_recurring_templates(monkeypatch):
     assert response == {
         "data": [
             {
-                "id": "child",
+                "id": "pending-child",
                 "status": "pending",
                 "is_recurring": False,
                 "has_receipt": False,
                 "legacy_receipt_requires_reconciliation": False,
-            }
+            },
+            {
+                "id": "overdue-child",
+                "status": "overdue",
+                "is_recurring": False,
+                "has_receipt": False,
+                "legacy_receipt_requires_reconciliation": False,
+            },
         ]
     }
-    assert ("status", "pending") in client.query.filters
-    assert ("is_recurring", False) in client.query.filters
+    assert ("in", "status", ("pending", "overdue")) in client.query.filters
+    assert ("eq", "is_recurring", False) in client.query.filters
