@@ -255,7 +255,7 @@ export default function HomeScreen({ navigation }: any) {
     }
   };
 
-  const filteredByDate = useMemo(() => allBills.filter((bill) => {
+  const billsDueInSelectedPeriod = useMemo(() => allBills.filter((bill) => {
     if (bill.is_recurring || !bill.due_date) return false;
     try {
       const due = parseFinancialDateOnly(bill.due_date);
@@ -266,25 +266,30 @@ export default function HomeScreen({ navigation }: any) {
   }), [allBills, selectedMonth, selectedYear]);
 
   const pendingBills = useMemo(
-    () => filteredByDate.filter((bill) => bill.status === 'pending' || bill.status === 'overdue'),
-    [filteredByDate],
+    () => billsDueInSelectedPeriod.filter((bill) => bill.status === 'pending' || bill.status === 'overdue'),
+    [billsDueInSelectedPeriod],
   );
-  const paidBills = useMemo(
-    () => filteredByDate.filter((bill) => bill.status === 'paid' || bill.status === 'aprovado'),
-    [filteredByDate],
-  );
+  const paidBills = useMemo(() => allBills.filter((bill) => {
+    if (bill.is_recurring || (bill.status !== 'paid' && bill.status !== 'aprovado') || !bill.payment_date) {
+      return false;
+    }
+    try {
+      const paid = parseFinancialDateOnly(bill.payment_date);
+      return paid.month - 1 === selectedMonth && paid.year === selectedYear;
+    } catch {
+      return false;
+    }
+  }), [allBills, selectedMonth, selectedYear]);
 
   const displayedBills = activeTab === 'pending'
     ? pendingBills
     : activeTab === 'paid'
       ? paidBills
-      : filteredByDate;
+      : billsDueInSelectedPeriod;
 
   const sortedBills = useMemo(() => [...displayedBills].sort((a, b) => {
     if (activeTab === 'paid') {
-      const bDate = b.payment_date || b.due_date;
-      const aDate = a.payment_date || a.due_date;
-      return bDate.localeCompare(aDate);
+      return (b.payment_date ?? '').localeCompare(a.payment_date ?? '');
     }
     return (getDaysUntilDue(a.due_date) ?? 999) - (getDaysUntilDue(b.due_date) ?? 999);
   }), [displayedBills, activeTab]);
@@ -365,7 +370,7 @@ export default function HomeScreen({ navigation }: any) {
   const tabConfig: { key: TabKey; label: string; count: number; icon: keyof typeof Ionicons.glyphMap }[] = [
     { key: 'pending', label: 'A pagar', count: pendingBills.length, icon: 'alert-circle' },
     { key: 'paid', label: 'Pagas', count: paidBills.length, icon: 'checkmark-circle' },
-    { key: 'all', label: 'Todas', count: filteredByDate.length, icon: 'list' },
+    { key: 'all', label: 'Todas', count: billsDueInSelectedPeriod.length, icon: 'list' },
   ];
 
   const quickActions = [
