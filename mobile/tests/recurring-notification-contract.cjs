@@ -46,7 +46,14 @@ assert.deepEqual(
 );
 
 const screen = fs.readFileSync(path.join(__dirname, '../src/screens/RecurringBillScreen.tsx'), 'utf8');
-assert.match(screen, /recurringReminderTargetsFromResponse\(response\.data\)/, 'screen must derive reminders from generated children');
+const reminderHelperStart = screen.indexOf('const scheduleGeneratedReminders = (payload: any) =>');
+const reminderHelperEnd = screen.indexOf('const finishSuccessfulCreation = (payload: any) =>');
+assert.ok(reminderHelperStart >= 0 && reminderHelperEnd > reminderHelperStart, 'screen must retain a shared generated-child reminder boundary');
+const reminderHelper = screen.slice(reminderHelperStart, reminderHelperEnd);
+assert.match(reminderHelper, /recurringReminderTargetsFromResponse\(payload\)/, 'shared reminder boundary must derive targets through the production child-only extractor');
+assert.match(reminderHelper, /scheduleNotificationsForBill\(target\.id, target\.description, target\.dueDate\)/, 'only extracted generated-child targets may reach notification scheduling');
+assert.match(screen, /finishSuccessfulCreation\(response\.data\)/, 'normal recurring creation must use the shared generated-child reminder boundary');
+assert.match(screen, /scheduleGeneratedReminders\(\{ generation: response\.data \}\)/, 'generation recovery must use the same generated-child reminder boundary');
 assert.doesNotMatch(screen, /response\.data\.data\[0\][\s\S]{0,180}scheduleNotificationsForBill/, 'screen must not schedule the recurring template as a payable reminder');
 
 Notifications.__reset();
