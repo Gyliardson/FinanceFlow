@@ -26,6 +26,8 @@ jobs:
           node-version: '22.13.0'
       - name: Run focused mobile contract
         run: node mobile/tests/ux-accessibility-contract.cjs
+      - name: Run signed initial balance contract
+        run: node mobile/tests/signed-initial-balance-contract.cjs
       - name: Run private receipt access contract
         run: node mobile/tests/private-receipt-access-contract.cjs
       - name: Run unresolved financial status contract
