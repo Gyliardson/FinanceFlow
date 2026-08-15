@@ -43,6 +43,7 @@ jobs:
           mkdir -p "$build_dir/node_modules/expo-secure-store"
           mkdir -p "$build_dir/node_modules/expo-notifications"
           mkdir -p "$build_dir/node_modules/react-native"
+          ln -s "$PWD/node_modules/axios" "$build_dir/node_modules/axios"
           cat > "$build_dir/node_modules/@react-native-async-storage/async-storage/index.js" <<'JS'
           const store = new Map();
           const api = {
@@ -137,6 +138,7 @@ jobs:
             src/services/apiFailure.ts \
             src/services/authResponse.ts \
             src/services/idempotentMutation.ts \
+            src/services/api.ts \
             src/services/financialDate.ts \
             src/services/ocrUploadFile.ts \
             src/services/recurringReminderTargets.ts \
@@ -192,6 +194,11 @@ jobs:
         run: |
           set -o pipefail
           node tests/pending-auth-isolation-contract.cjs 2>&1 | tee pending-auth-isolation-contract.log
+      - name: Run pending reconciliation account-switch queue contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/pending-reconciliation-queue-contract.cjs 2>&1 | tee pending-reconciliation-queue-contract.log
       - name: Run financial date-only calendar contract
         shell: bash
         run: |
@@ -221,6 +228,7 @@ jobs:
             mobile/offline-cache-contract.log
             mobile/idempotent-mutation-contract.log
             mobile/pending-auth-isolation-contract.log
+            mobile/pending-reconciliation-queue-contract.log
             mobile/financial-date-contract.log
             mobile/ocr-upload-file-contract.log
             mobile/recurring-notification-contract.log
