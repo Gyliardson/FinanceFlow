@@ -17,8 +17,16 @@ class FakeProvider:
 
 
 class FakeGenAiClient:
-    def __init__(self, *, api_key, response_text='{"amount":null,"due_date":null,"barcode":null,"confidence":"1"}', error=None):
+    def __init__(
+        self,
+        *,
+        api_key,
+        http_options=None,
+        response_text='{"amount":null,"due_date":null,"barcode":null,"confidence":"1"}',
+        error=None,
+    ):
         self.api_key = api_key
+        self.http_options = http_options
         self.response_text = response_text
         self.error = error
         self.models = self
@@ -62,8 +70,8 @@ def test_extract_invoice_data_returns_typed_public_suggestion():
 def test_gemini_adapter_uses_maintained_client_multimodal_part_and_schema(monkeypatch):
     clients = []
 
-    def fake_client(*, api_key):
-        client = FakeGenAiClient(api_key=api_key)
+    def fake_client(*, api_key, http_options):
+        client = FakeGenAiClient(api_key=api_key, http_options=http_options)
         clients.append(client)
         return client
 
@@ -75,6 +83,7 @@ def test_gemini_adapter_uses_maintained_client_multimodal_part_and_schema(monkey
     assert raw.startswith("{")
     assert len(clients) == 1
     assert clients[0].api_key == "synthetic-key"
+    assert clients[0].http_options.timeout == ai_service.OCR_PROVIDER_TIMEOUT_MS
     assert clients[0].closed is True
     assert len(clients[0].calls) == 1
     model, contents, config = clients[0].calls[0]
@@ -94,8 +103,8 @@ def test_gemini_adapter_uses_maintained_client_multimodal_part_and_schema(monkey
 def test_gemini_adapter_maps_provider_429_without_detail_leak(monkeypatch):
     rate_limit = type("SyntheticRateLimit", (Exception,), {"code": 429})("secret provider detail")
 
-    def fake_client(*, api_key):
-        return FakeGenAiClient(api_key=api_key, error=rate_limit)
+    def fake_client(*, api_key, http_options):
+        return FakeGenAiClient(api_key=api_key, http_options=http_options, error=rate_limit)
 
     monkeypatch.setattr(ai_service.genai, "Client", fake_client)
     provider = GeminiOcrProvider(api_key="synthetic-key")
@@ -109,8 +118,12 @@ def test_gemini_adapter_maps_provider_429_without_detail_leak(monkeypatch):
 def test_financial_insights_use_maintained_client_without_real_provider(monkeypatch):
     clients = []
 
-    def fake_client(*, api_key):
-        client = FakeGenAiClient(api_key=api_key, response_text="Recomendação sintética segura.")
+    def fake_client(*, api_key, http_options):
+        client = FakeGenAiClient(
+            api_key=api_key,
+            http_options=http_options,
+            response_text="Recomendação sintética segura.",
+        )
         clients.append(client)
         return client
 
@@ -129,6 +142,7 @@ def test_financial_insights_use_maintained_client_without_real_provider(monkeypa
     )
 
     assert result == {"status": "success", "insight": "Recomendação sintética segura."}
+    assert clients[0].http_options.timeout == ai_service.INSIGHTS_PROVIDER_TIMEOUT_MS
     assert clients[0].closed is True
     model, contents, config = clients[0].calls[0]
     assert model == "gemini-3.6-flash"

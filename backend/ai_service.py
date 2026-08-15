@@ -19,6 +19,8 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = "gemini-3.6-flash"
+OCR_PROVIDER_TIMEOUT_MS = 30_000
+INSIGHTS_PROVIDER_TIMEOUT_MS = 30_000
 
 
 OCR_PROMPT = """
@@ -54,6 +56,14 @@ OCR_RESPONSE_SCHEMA = {
 }
 
 
+def _gemini_client(api_key: str, timeout_ms: int):
+    """Create a GenAI client with a FinanceFlow-owned request deadline."""
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=timeout_ms),
+    )
+
+
 class GeminiOcrProvider:
     """Production OCR adapter. Provider responses remain untrusted until parsed."""
 
@@ -66,7 +76,7 @@ class GeminiOcrProvider:
             raise OcrProviderUnavailable("OCR provider is not configured")
 
         try:
-            with genai.Client(api_key=self.api_key) as client:
+            with _gemini_client(self.api_key, OCR_PROVIDER_TIMEOUT_MS) as client:
                 response = client.models.generate_content(
                     model=self.model_name,
                     contents=[
@@ -177,12 +187,15 @@ def generate_financial_insights(
         Seja profissional, técnico e objetivo. Não use emojis, gírias ou cumprimentos.
         Limite a resposta a 3 ou 4 frases curtas.
         """
-        with genai.Client(api_key=API_KEY) as client:
+        with _gemini_client(API_KEY, INSIGHTS_PROVIDER_TIMEOUT_MS) as client:
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=prompt,
             )
-        return {"status": "success", "insight": response.text.strip()}
+        text = getattr(response, "text", None)
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("AI provider returned no insight text")
+        return {"status": "success", "insight": text.strip()}
     except Exception:
         logger.error("Financial insight provider failed")
         return {
