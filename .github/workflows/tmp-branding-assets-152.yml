@@ -6,6 +6,7 @@ on:
       - work/152-mobile-production-branding
     paths:
       - '.github/workflows/tmp-branding-assets-152.yml'
+      - '.github/branding-152-trigger'
 
 permissions:
   contents: write
