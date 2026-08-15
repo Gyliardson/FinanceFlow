@@ -62,12 +62,14 @@ class FakeSupabase:
                     "payment_date": "2026-08-14",
                     "due_date": "2026-08-14",
                     "amount": "20.00",
+                    "is_recurring": False,
                 },
                 {
                     "status": "pending",
                     "payment_date": None,
                     "due_date": "2026-08-20",
                     "amount": "30.00",
+                    "is_recurring": False,
                 },
             ],
         }
