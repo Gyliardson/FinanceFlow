@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert } from 'react-native';
-import { AxiosRequestConfig } from 'axios';
+import { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { postFinancialMutation } from './api';
 import { getValidAuthSessionSnapshot } from './authSession';
 import {
@@ -44,7 +44,7 @@ const acknowledgeAdditionalIntent = (
 export function useFinancialMutation<T = any>(url: string) {
   const intentIdRef = useRef<string | null>(null);
   const mutationInFlightRef = useRef(false);
-  const mutationInFlightPromiseRef = useRef<Promise<T> | null>(null);
+  const mutationInFlightPromiseRef = useRef<Promise<AxiosResponse<T>> | null>(null);
   const [hasActiveIntent, setHasActiveIntent] = useState(false);
 
   const clearLocalIntent = useCallback((intentId?: string) => {
@@ -61,7 +61,7 @@ export function useFinancialMutation<T = any>(url: string) {
   const mutate = useCallback((
     payload: Record<string, unknown>,
     config: AxiosRequestConfig = {},
-  ): Promise<T> => {
+  ): Promise<AxiosResponse<T>> => {
     // React component state is presentation state, not a financial mutex. A
     // concurrent activation shares the already-running operation instead of
     // manufacturing another intent or surfacing a false transport failure.
@@ -70,7 +70,7 @@ export function useFinancialMutation<T = any>(url: string) {
     }
     mutationInFlightRef.current = true;
 
-    const run = (async (): Promise<T> => {
+    const run = (async (): Promise<AxiosResponse<T>> => {
       // Retry-in-place never prompts and never manufactures a new identity.
       // Only a fresh form intent is gated when another durable operation of the
       // same kind still has an unknown outcome for the current authenticated owner.
@@ -93,7 +93,7 @@ export function useFinancialMutation<T = any>(url: string) {
       try {
         const response = await postFinancialMutation<T>(url, payload, intentId, config);
         clearLocalIntent(intentId);
-        return response.data;
+        return response;
       } catch (error) {
         if (isDefinitiveClientRejection(error)) {
           clearLocalIntent(intentId);
