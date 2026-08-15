@@ -27,9 +27,11 @@ async function accountSwitchQueuesNewOwnerPass() {
   SecureStore.__reset();
   AsyncStorage.__reset();
 
-  const payloadA = { title: 'Owner A salary', amount: 100, date: '2026-08-15', type: 'salary' };
+  const payloadA1 = { title: 'Owner A salary', amount: 100, date: '2026-08-15', type: 'salary' };
+  const payloadA2 = { title: 'Owner A bonus', amount: 150, date: '2026-08-15', type: 'extra' };
   const payloadB = { title: 'Owner B salary', amount: 200, date: '2026-08-15', type: 'salary' };
-  await mutations.getOrCreatePendingOperation(OWNER_A, 'income_create', 'fi_owner_a_queue_000001', payloadA);
+  await mutations.getOrCreatePendingOperation(OWNER_A, 'income_create', 'fi_owner_a_queue_000001', payloadA1);
+  await mutations.getOrCreatePendingOperation(OWNER_A, 'income_create', 'fi_owner_a_queue_000002', payloadA2);
   await mutations.getOrCreatePendingOperation(OWNER_B, 'income_create', 'fi_owner_b_queue_000001', payloadB);
 
   let current = snapshotA;
@@ -90,10 +92,16 @@ async function accountSwitchQueuesNewOwnerPass() {
     'successful owner B replay must clear its pending logical intent',
   );
 
-  // A stale response may complete authoritatively, but no additional A operation may
-  // be transported after the session switch because each queued pass re-resolves B.
+  // A stale response may complete authoritatively, but the second A logical intent
+  // must remain pending because the loop validates the captured snapshot before
+  // every transport and stops immediately after the account switch.
   const ownerAAttempts = attempts.filter((attempt) => attempt.authorization === `Bearer ${snapshotA.accessToken}`);
-  assert.equal(ownerAAttempts.length, 1);
+  assert.equal(ownerAAttempts.length, 1, 'stale owner A must not transport its second pending operation');
+  assert.equal(
+    (await mutations.listPendingOperationsForOwner(OWNER_A)).length,
+    1,
+    'the unattempted stale-owner intent must remain durable for a future owner A session',
+  );
 
   const beforeRepeatedTrigger = attempts.length;
   await Promise.all([
