@@ -18,6 +18,7 @@ interface Bill {
 }
 
 type SupportedReceiptMime = 'image/jpeg' | 'image/png' | 'image/webp';
+type PaymentReconciliation = 'paid' | 'not-paid' | 'unavailable';
 
 interface ReceiptSelection {
   uri: string;
@@ -52,6 +53,12 @@ const receiptSelectionFromAsset = (asset: ImagePicker.ImagePickerAsset): Receipt
     || inferReceiptMimeFromPath(asset.fileName)
     || inferReceiptMimeFromPath(asset.uri);
   return mimeType ? { uri: asset.uri, mimeType } : null;
+};
+
+const isAmbiguousReceiptPaymentFailure = (error: any) => {
+  if (!error?.response) return true;
+  const status = Number(error.response.status || 0);
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 };
 
 const formatMoney = (value: number) => new Intl.NumberFormat('pt-BR', {
@@ -90,6 +97,16 @@ export default function PaymentScreen({ navigation, route }: any) {
       setLoadError(true);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const reconcileReceiptPayment = async (billId: string): Promise<PaymentReconciliation> => {
+    try {
+      const response = await api.get(`/bills/${billId}/detail`);
+      const status = String(response.data?.bill?.status || '').toLowerCase();
+      return status === 'paid' || status === 'aprovado' ? 'paid' : 'not-paid';
+    } catch {
+      return 'unavailable';
     }
   };
 
@@ -194,11 +211,26 @@ export default function PaymentScreen({ navigation, route }: any) {
       );
     } catch (error: any) {
       const detail = error?.response?.data?.detail;
-      const isTimeout = error?.code === 'ECONNABORTED';
-      const errorMsg = isTimeout
-        ? 'O envio demorou demais. Verifique sua conexão e tente novamente com uma imagem menor.'
-        : detail || 'Não foi possível processar o pagamento. Tente novamente.';
-      Alert.alert('Erro no pagamento', errorMsg);
+      if (isAmbiguousReceiptPaymentFailure(error)) {
+        const reconciliation = await reconcileReceiptPayment(selectedBill.id);
+        if (reconciliation === 'paid') {
+          cancelNotificationsForBill(selectedBill.id).catch(() => undefined);
+          Alert.alert(
+            'Pagamento confirmado',
+            `“${selectedBill.description}” já consta como paga após reconciliar o estado da fatura.`,
+            [{ text: 'OK', onPress: () => navigation.goBack() }],
+          );
+          return;
+        }
+
+        const message = reconciliation === 'not-paid'
+          ? 'O servidor ainda não mostra esta fatura como paga. Como a tentativa anterior pode ter ficado em processamento, atualize os dados e confirme o estado da fatura antes de enviar outro comprovante.'
+          : 'Não foi possível consultar o estado autoritativo da fatura. Atualize os dados e confirme se o pagamento foi registrado antes de enviar outro comprovante.';
+        Alert.alert('Resultado não confirmado', message);
+        return;
+      }
+
+      Alert.alert('Erro no pagamento', detail || 'Não foi possível processar o pagamento. Revise os dados e tente novamente.');
     } finally {
       setUploading(false);
     }
