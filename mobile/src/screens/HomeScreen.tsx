@@ -87,13 +87,15 @@ export default function HomeScreen({ navigation }: any) {
   const [configModalVisible, setConfigModalVisible] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [initialBalance, setInitialBalance] = useState('');
+  const [initialBalanceNegative, setInitialBalanceNegative] = useState(false);
   const [emergencyGoal, setEmergencyGoal] = useState('');
   const [initialDate, setInitialDate] = useState('');
   const [selectedMonth, setSelectedMonth] = useState(financialNow.month - 1);
   const [selectedYear, setSelectedYear] = useState(financialNow.year);
 
   const hydrateSettings = (settings: SettingsCache) => {
-    setInitialBalance(settings.initial_balance?.toFixed(2).replace('.', ',') || '');
+    setInitialBalanceNegative(Number(settings.initial_balance ?? 0) < 0);
+    setInitialBalance(settings.initial_balance == null ? '' : Math.abs(Number(settings.initial_balance)).toFixed(2).replace('.', ','));
     setEmergencyGoal(settings.emergency_fund_goal?.toFixed(2).replace('.', ',') || '');
     setInitialDate(settings.initial_balance_date || '');
   };
@@ -179,16 +181,17 @@ export default function HomeScreen({ navigation }: any) {
   const saveSettings = async () => {
     if (savingSettings) return;
     if (!initialBalance || !emergencyGoal) {
-      Alert.alert('Campos obrigatórios', 'Informe o saldo atual e a meta da reserva de emergência.');
+      Alert.alert('Campos obrigatórios', 'Informe o saldo inicial e a meta da reserva de emergência.');
       return;
     }
 
-    const balance = Number(initialBalance.replace(',', '.'));
+    const balanceMagnitude = Number(initialBalance.replace(',', '.'));
     const goal = Number(emergencyGoal.replace(',', '.'));
-    if (!Number.isFinite(balance) || !Number.isFinite(goal)) {
+    if (!Number.isFinite(balanceMagnitude) || !Number.isFinite(goal)) {
       Alert.alert('Valores inválidos', 'Revise os valores informados antes de salvar.');
       return;
     }
+    const balance = initialBalanceNegative && balanceMagnitude !== 0 ? -balanceMagnitude : balanceMagnitude;
 
     setSavingSettings(true);
     try {
@@ -512,16 +515,40 @@ export default function HomeScreen({ navigation }: any) {
             <Text accessibilityRole="header" style={styles.modalTitle}>Configurações financeiras</Text>
             <Text style={styles.modalSub}>Defina o saldo inicial e a meta da reserva de emergência.</Text>
 
-            <Text style={styles.modalLabel}>Saldo atual</Text>
-            <View style={styles.inputWrapper}>
-              <Text style={styles.currencyPrefix}>R$</Text>
+            <Text style={styles.modalLabel}>Saldo inicial</Text>
+            <TouchableOpacity
+              style={[styles.signToggle, initialBalanceNegative && styles.signToggleActive]}
+              onPress={() => setInitialBalanceNegative((current) => !current)}
+              accessibilityRole="switch"
+              accessibilityLabel="Saldo inicial negativo"
+              accessibilityHint="Ative quando o saldo inicial representar dívida, cheque especial ou outra posição negativa"
+              accessibilityState={{ checked: initialBalanceNegative }}
+            >
+              <Ionicons
+                accessibilityElementsHidden
+                name={initialBalanceNegative ? 'remove-circle' : 'add-circle'}
+                size={18}
+                color={initialBalanceNegative ? '#991b1b' : '#047857'}
+              />
+              <Text style={[styles.signToggleText, initialBalanceNegative && styles.signToggleTextNegative]}>
+                {initialBalanceNegative ? 'Negativo' : 'Positivo ou zero'}
+              </Text>
+            </TouchableOpacity>
+            <View style={[styles.inputWrapper, initialBalanceNegative && styles.inputWrapperNegative]}>
+              <Text style={[styles.currencyPrefix, initialBalanceNegative && styles.currencyPrefixNegative]}>
+                {initialBalanceNegative ? '-R$' : 'R$'}
+              </Text>
               <TextInput
                 style={styles.modalInputAmount}
                 keyboardType="decimal-pad"
                 placeholder="0,00"
                 value={initialBalance}
-                onChangeText={(text) => setInitialBalance(formatCurrencyInput(text))}
-                accessibilityLabel="Saldo atual em reais"
+                onChangeText={(text) => {
+                  if (text.includes('-')) setInitialBalanceNegative(true);
+                  setInitialBalance(formatCurrencyInput(text));
+                }}
+                accessibilityLabel="Magnitude do saldo inicial em reais"
+                accessibilityHint="Use o controle de saldo negativo para representar dívida ou cheque especial"
                 returnKeyType="next"
               />
             </View>
@@ -631,8 +658,14 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 20, fontWeight: '800', color: '#1e293b', marginBottom: 8 },
   modalSub: { fontSize: 13, color: '#64748b', marginBottom: 12, lineHeight: 19 },
   modalLabel: { fontSize: 13, fontWeight: '700', color: '#475569', marginBottom: 6, marginTop: 12 },
+  signToggle: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 12, marginBottom: 8, borderRadius: 10, borderWidth: 1, borderColor: '#bbf7d0', backgroundColor: '#f0fdf4' },
+  signToggleActive: { borderColor: '#fecaca', backgroundColor: '#fef2f2' },
+  signToggleText: { fontSize: 13, fontWeight: '800', color: '#047857' },
+  signToggleTextNegative: { color: '#991b1b' },
   inputWrapper: { minHeight: 52, flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 10, paddingLeft: 12 },
+  inputWrapperNegative: { borderColor: '#fecaca', backgroundColor: '#fff7f7' },
   currencyPrefix: { fontSize: 15, fontWeight: '700', color: '#64748b', marginRight: 4 },
+  currencyPrefixNegative: { color: '#991b1b' },
   modalInputAmount: { flex: 1, minHeight: 52, paddingHorizontal: 10, fontSize: 16, color: '#1e293b' },
   modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, gap: 12 },
   cancelBtn: { flex: 1, minHeight: 48, paddingHorizontal: 14, borderRadius: 12, backgroundColor: '#f1f5f9', alignItems: 'center', justifyContent: 'center' },
