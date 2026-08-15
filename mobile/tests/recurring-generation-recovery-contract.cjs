@@ -25,8 +25,18 @@ assert.match(
 );
 assert.match(
   screen,
-  /if \(recoveringGeneration \|\| loading\) return;/,
-  'Generation recovery must reject duplicate in-flight submits.',
+  /const generationRecoveryInFlightRef = useRef\(false\)/,
+  'Generation recovery must own a synchronous ref-backed single-flight guard.',
+);
+assert.match(
+  screen,
+  /if \(generationRecoveryInFlightRef\.current \|\| loading\) return;[\s\S]{0,120}generationRecoveryInFlightRef\.current = true;/,
+  'Generation recovery must acquire its synchronous guard before awaiting network work.',
+);
+assert.match(
+  screen,
+  /finally \{[\s\S]{0,120}generationRecoveryInFlightRef\.current = false;/,
+  'Generation recovery must release its synchronous guard in finally.',
 );
 assert.match(
   screen,
