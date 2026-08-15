@@ -149,8 +149,14 @@ def extract_invoice_data(
         )
 
 
-def generate_financial_insights(financial_data: dict) -> dict:
-    """Generate concise financial guidance. This is separate from the OCR boundary."""
+def generate_financial_insights(
+    financial_data: dict,
+    *,
+    explicit_user_action: bool = False,
+) -> dict:
+    """Generate guidance only for an explicitly initiated user refresh action."""
+    if not explicit_user_action:
+        raise ValueError("Financial insight generation requires explicit user action.")
     if not API_KEY:
         raise ValueError("Chave de API do Gemini ausente na configuração.")
 
