@@ -3,7 +3,6 @@ import logging
 from fastapi import File, HTTPException, UploadFile
 
 from database import get_supabase_client, get_supabase_storage_client
-from financial_clock import financial_today
 from receipt_access import ReceiptAccessError, ReceiptNotFoundError, create_authorized_receipt_access
 from receipt_payments import (
     BillAlreadyPaidError,
@@ -22,10 +21,17 @@ logger = logging.getLogger(__name__)
 def _authenticated_user_id() -> str:
     user_id = get_request_user_id()
     if not user_id:
-        # This indicates a composition/runtime invariant failure. Do not fall back
-        # to a shared secret or anonymous client.
         raise HTTPException(status_code=401, detail="Authenticated user context is required.")
     return user_id
+
+
+def _rpc_payload(response):
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        return data[0]
+    return None
 
 
 def _reconcile_receiptless_payment(data_client, bill_id: str):
@@ -33,7 +39,7 @@ def _reconcile_receiptless_payment(data_client, bill_id: str):
     try:
         reconciled_response = (
             data_client.table("finance_bills")
-            .select("id,status,is_recurring")
+            .select("id,status,is_recurring,payment_date")
             .eq("id", bill_id)
             .limit(1)
             .execute()
@@ -47,8 +53,6 @@ def _reconcile_receiptless_payment(data_client, bill_id: str):
 
     reconciled_rows = getattr(reconciled_response, "data", None) or []
     if not reconciled_rows:
-        # RLS intentionally keeps a cross-owner identifier indistinguishable
-        # from a nonexistent bill during reconciliation as well.
         raise HTTPException(status_code=404, detail="Fatura não encontrada.")
 
     reconciled = reconciled_rows[0]
@@ -58,11 +62,12 @@ def _reconcile_receiptless_payment(data_client, bill_id: str):
             detail="Modelos recorrentes não podem ser pagos diretamente.",
         )
     if reconciled.get("status") == "paid":
-        return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
+        return {
+            "status": "info",
+            "message": "Esta fatura já foi marcada como paga.",
+            "payment_date": reconciled.get("payment_date"),
+        }
 
-    # A provider/transport exception is not proof of rollback. Even when the
-    # current authoritative row is still unpaid, keep the client-facing outcome
-    # explicit so callers reconcile fresh state before another attempt.
     raise HTTPException(
         status_code=409,
         detail="O resultado do pagamento não foi confirmado. Atualize os dados antes de tentar novamente.",
@@ -70,14 +75,14 @@ def _reconcile_receiptless_payment(data_client, bill_id: str):
 
 
 async def pay_bill_without_receipt(bill_id: str):
-    """Mark an authenticated user's payable bill with compare-and-set idempotency."""
+    """Mark an authenticated user's payable bill through the database-owned transition."""
     _authenticated_user_id()
     data_client = get_supabase_client()
 
     try:
         bill_response = (
             data_client.table("finance_bills")
-            .select("id,status,description,is_recurring")
+            .select("id,status,description,is_recurring,payment_date")
             .eq("id", bill_id)
             .limit(1)
             .execute()
@@ -88,8 +93,6 @@ async def pay_bill_without_receipt(bill_id: str):
 
     rows = getattr(bill_response, "data", None) or []
     if not rows:
-        # RLS intentionally makes a cross-owner identifier indistinguishable
-        # from a nonexistent bill.
         raise HTTPException(status_code=404, detail="Fatura não encontrada.")
 
     bill = rows[0]
@@ -99,33 +102,36 @@ async def pay_bill_without_receipt(bill_id: str):
             detail="Modelos recorrentes não podem ser pagos diretamente.",
         )
     if bill.get("status") == "paid":
-        return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
+        return {
+            "status": "info",
+            "message": "Esta fatura já foi marcada como paga.",
+            "payment_date": bill.get("payment_date"),
+        }
 
-    payment_date = financial_today().isoformat()
     try:
-        update_response = (
-            data_client.table("finance_bills")
-            .update({"status": "paid", "payment_date": payment_date})
-            .eq("id", bill_id)
-            .eq("is_recurring", False)
-            .neq("status", "paid")
-            .execute()
-        )
+        rpc_response = data_client.rpc(
+            "finance_mark_bill_paid",
+            {"p_bill_id": bill_id, "p_receipt_path": None},
+        ).execute()
     except Exception:
-        # The write can commit before the Data API response is lost. Re-read the
-        # authenticated row instead of treating the transport error as rollback.
         return _reconcile_receiptless_payment(data_client, bill_id)
 
-    if not (getattr(update_response, "data", None) or []):
-        # Zero rows can mean another request paid the bill, but the additional
-        # domain predicate also means it is not safe to infer success. Re-read
-        # authoritative owner-scoped state before telling the client anything.
+    payload = _rpc_payload(rpc_response)
+    authoritative = payload.get("data") if payload else None
+    if not isinstance(authoritative, dict) or authoritative.get("status") != "paid":
         return _reconcile_receiptless_payment(data_client, bill_id)
+
+    if payload.get("status") == "info":
+        return {
+            "status": "info",
+            "message": "Esta fatura já foi marcada como paga.",
+            "payment_date": authoritative.get("payment_date"),
+        }
 
     return {
         "status": "success",
         "message": f"Fatura '{bill.get('description', '')}' paga com sucesso!",
-        "payment_date": payment_date,
+        "payment_date": authoritative.get("payment_date"),
     }
 
 
@@ -135,8 +141,6 @@ async def pay_bill_with_private_receipt(
 ):
     """Validate, privately store and persist a receipt-backed bill payment."""
     owner_id = _authenticated_user_id()
-    # Read at most one byte beyond the policy so oversized uploads are rejected
-    # without buffering an unbounded request body in application memory.
     content = await file.read(MAX_RECEIPT_BYTES + 1)
 
     try:
@@ -151,8 +155,6 @@ async def pay_bill_with_private_receipt(
     except ReceiptValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except BillNotFoundError as exc:
-        # RLS intentionally makes another user's identifier indistinguishable
-        # from a nonexistent bill.
         raise HTTPException(status_code=404, detail="Fatura não encontrada.") from exc
     except RecurringTemplatePaymentError as exc:
         raise HTTPException(
