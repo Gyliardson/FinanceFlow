@@ -122,7 +122,7 @@ Detalhes e casos de borda estão em [`backend/FINANCIAL_RULES.md`](backend/FINAN
 
 ### Requisitos
 
-- Python 3.10+.
+- Python **3.12**.
 - Node.js **22.13+** para a baseline mobile atual.
 - PostgreSQL/Supabase para desenvolvimento integrado.
 - Expo CLI/EAS CLI apenas para fluxos mobile que os utilizem.
@@ -320,7 +320,7 @@ See [`backend/FINANCIAL_RULES.md`](backend/FINANCIAL_RULES.md) for the detailed 
 
 ### Requirements
 
-- Python 3.10+.
+- Python **3.12**.
 - Node.js **22.13+** for the current mobile baseline.
 - PostgreSQL/Supabase for integrated development.
 
