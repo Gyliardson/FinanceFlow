@@ -50,9 +50,9 @@ Wait for readiness:
 docker exec financeflow-pg pg_isready -U financeflow -d financeflow_test
 ```
 
-FinanceFlow currently stores migrations as explicit SQL files in `backend/migrations/001_...` through `008_...`. Migration `006_financial_idempotency.sql` defines the database-backed financial mutation idempotency primitives used by the protected non-convergent write paths. Migration `007_authenticated_data_plane.sql` starts the least-privilege authenticated write boundary by hardening the existing idempotent RPCs and adding field-scoped settings/insight RPCs. Migration `008_payment_recurring_data_plane.sql` adds database-owned payment-date semantics plus owner-derived payment and recurring-child RPCs. These stages are intentionally applied before unrestricted financial-table DML is finally revoked, so an intermediate deployment does not break canonical backend writes. Some migrations intentionally depend on existing Supabase-compatible schema objects or explicit historical reconciliation, so blindly replaying every file against an empty generic PostgreSQL database is **not** equivalent to provisioning a production Supabase project. The disposable CI creates focused fixtures and then applies the migrations needed to prove each invariant.
+FinanceFlow currently stores migrations as explicit SQL files in `backend/migrations/001_...` through `009_...`. Migration `006_financial_idempotency.sql` defines the database-backed financial mutation idempotency primitives used by the protected non-convergent write paths. Migration `007_authenticated_data_plane.sql` starts the least-privilege authenticated write boundary by hardening the existing idempotent RPCs and adding field-scoped settings/insight RPCs. Migration `008_payment_recurring_data_plane.sql` adds database-owned payment-date semantics plus owner-derived payment and recurring-child RPCs. Migration `009_revoke_authenticated_table_dml.sql` is the final least-privilege step: authenticated table `INSERT`, `UPDATE`, and `DELETE` are removed only after the sanctioned functions exist and canonical application call sites use them. Some migrations intentionally depend on existing Supabase-compatible schema objects or explicit historical reconciliation, so blindly replaying every file against an empty generic PostgreSQL database is **not** equivalent to provisioning a production Supabase project. The disposable CI creates focused fixtures and then applies the migrations needed to prove each invariant.
 
-The authoritative disposable-PostgreSQL procedures live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and [`.github/workflows/financial-idempotency.yml`](../.github/workflows/financial-idempotency.yml). They currently prove:
+The authoritative disposable-PostgreSQL procedures live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`.github/workflows/financial-idempotency.yml`](../.github/workflows/financial-idempotency.yml), and [`.github/workflows/authenticated-data-plane.yml`](../.github/workflows/authenticated-data-plane.yml). Together they prove or are required to prove:
 
 - exact `NUMERIC` money round trips;
 - recurring migration fail-closed behavior on historical duplicates;
@@ -62,11 +62,15 @@ The authoritative disposable-PostgreSQL procedures live in [`.github/workflows/c
 - user A / user B RLS isolation;
 - forged-owner rejection;
 - anonymous financial-table denial;
-- fail-closed owner `NOT NULL` promotion until explicit reconciliation.
+- fail-closed owner `NOT NULL` promotion until explicit reconciliation;
+- direct authenticated financial-table `INSERT`, `UPDATE`, and `DELETE` denial;
+- positive sanctioned bill/income/reserve/settings/insight/payment/recurring-child mutation paths;
+- payment state/date ownership inside PostgreSQL;
+- cross-owner and recurring-template payment rejection.
 
-The authenticated data-plane migrations are not considered certified merely because their SQL files exist. Before #91 can close, the PostgreSQL gate must additionally prove that direct authenticated `INSERT`, `UPDATE`, and `DELETE` are denied while each sanctioned owner-scoped RPC still succeeds and preserves its field/domain invariants, payment convergence, database-owned financial date and recurring uniqueness.
+The authenticated data-plane migrations are not considered certified merely because their SQL files exist. #91 requires the dedicated real-PostgreSQL workflow to pass on the exact candidate head, alongside the existing financial idempotency and ownership/RLS gates.
 
-For release evidence, inspect the exact-candidate PostgreSQL mutation-idempotency, ownership/data-plane, and recurring-idempotency checks rather than treating the migration filenames alone as proof. Prefer executing the workflows themselves rather than maintaining a second hand-copied SQL harness that can drift.
+For release evidence, inspect the exact-candidate PostgreSQL mutation-idempotency, authenticated-data-plane, ownership/RLS, and recurring-idempotency checks rather than treating migration filenames alone as proof. Prefer executing the workflows themselves rather than maintaining an undocumented hand-copied SQL harness that can drift.
 
 ### Seed status
 
@@ -183,6 +187,7 @@ Before moving the final integration → `main` PR out of draft or presenting it 
 
 - exact candidate SHA recorded;
 - FinanceFlow CI green;
+- Authenticated data plane green;
 - Backend container green;
 - Mobile auth/cache contract green;
 - Mobile UX contract green;
