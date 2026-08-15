@@ -8,13 +8,14 @@ import {
   IdempotentOperation,
   listPendingOperationsForOwner,
   PendingOperationWithType,
+  subscribeFinancialIntentClosed,
 } from '../services/idempotentMutation';
 
-const OPERATION_LABELS: Record<IdempotentOperation, string> = {
-  bill_create: 'fatura',
-  income_create: 'renda',
-  reserve_add: 'reserva',
-  recurring_template_create: 'conta recorrente',
+const OPERATION_LABELS: Record<IdempotentOperation, [string, string]> = {
+  bill_create: ['fatura', 'faturas'],
+  income_create: ['renda', 'rendas'],
+  reserve_add: ['adição à reserva', 'adições à reserva'],
+  recurring_template_create: ['conta recorrente', 'contas recorrentes'],
 };
 
 const operationSummary = (pending: PendingOperationWithType[]) => {
@@ -23,7 +24,7 @@ const operationSummary = (pending: PendingOperationWithType[]) => {
     counts.set(item.operation, (counts.get(item.operation) ?? 0) + 1);
   }
   return Array.from(counts.entries())
-    .map(([operation, count]) => `${count} ${OPERATION_LABELS[operation]}${count === 1 ? '' : 's'}`)
+    .map(([operation, count]) => `${count} ${OPERATION_LABELS[operation][count === 1 ? 0 : 1]}`)
     .join(', ');
 };
 
@@ -32,9 +33,9 @@ const operationSummary = (pending: PendingOperationWithType[]) => {
  *
  * The banner intentionally exposes only operation categories/counts. It never
  * renders the persisted payload, amount, title or idempotency key. Route changes,
- * foreground transitions and authenticated-owner changes refresh the owner-scoped
- * SecureStore-backed pending state so a form can be closed without making an
- * unresolved financial action disappear from the UI.
+ * foreground transitions, authenticated-owner changes and authoritative intent
+ * closure refresh the owner-scoped SecureStore-backed pending state so a form can
+ * be closed without making an unresolved financial action disappear from the UI.
  */
 export default function PendingFinancialStatus() {
   const { session } = useAuth();
@@ -77,6 +78,10 @@ export default function PendingFinancialStatus() {
   useEffect(() => {
     void refresh();
   }, [ownerId, navigationIndex, refresh]);
+
+  useEffect(() => subscribeFinancialIntentClosed(() => {
+    void refresh();
+  }), [refresh]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
