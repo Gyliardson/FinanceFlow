@@ -38,6 +38,8 @@ jobs:
         run: node mobile/tests/payment-route-identity-contract.cjs
       - name: Run payment attempt identity lock contract
         run: node mobile/tests/payment-attempt-identity-lock-contract.cjs
+      - name: Run payment lifecycle refresh contract
+        run: node mobile/tests/payment-refresh-lifecycle-contract.cjs
       - name: Run bill detail focus refresh contract
         run: node mobile/tests/bill-detail-focus-refresh-contract.cjs
       - name: Run Home refresh generation contract
