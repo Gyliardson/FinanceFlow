@@ -65,9 +65,29 @@ const validateEndpoint = (name) => {
   return null;
 };
 
+const looksLikeServerOnlySupabaseKey = (value) => {
+  const key = value.trim();
+  if (/^sb_secret_/i.test(key)) return true;
+
+  const jwtParts = key.split('.');
+  if (jwtParts.length !== 3) return false;
+  try {
+    const payload = JSON.parse(Buffer.from(jwtParts[1], 'base64url').toString('utf8'));
+    return payload?.role === 'service_role';
+  } catch {
+    return false;
+  }
+};
+
 const endpointErrors = ENDPOINT_VARS
   .map(validateEndpoint)
   .filter(Boolean);
+
+if (looksLikeServerOnlySupabaseKey(process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY)) {
+  endpointErrors.push(
+    'EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY must not contain a server-only Supabase key',
+  );
+}
 
 if (endpointErrors.length > 0) {
   // Error messages identify only the variable and violated invariant. Never print
