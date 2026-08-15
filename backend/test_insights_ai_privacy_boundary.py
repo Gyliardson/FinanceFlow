@@ -3,6 +3,9 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+import ai_service
 import insights_routes
 import runtime
 
@@ -52,6 +55,11 @@ def _financials():
     }
 
 
+def test_provider_rejects_generation_without_explicit_user_action():
+    with pytest.raises(ValueError, match="explicit user action"):
+        ai_service.generate_financial_insights(_financials())
+
+
 def test_passive_get_never_calls_external_ai(monkeypatch):
     supabase = FakeSupabase(
         {
@@ -63,7 +71,7 @@ def test_passive_get_never_calls_external_ai(monkeypatch):
     monkeypatch.setattr(insights_routes, "get_supabase_client", lambda: supabase)
     monkeypatch.setattr(insights_routes, "_calculate_financials", lambda *_args: _financials())
 
-    def forbidden_provider_call(_payload):
+    def forbidden_provider_call(_payload, **_kwargs):
         raise AssertionError("passive GET must not invoke external AI")
 
     monkeypatch.setattr(insights_routes, "generate_financial_insights", forbidden_provider_call)
@@ -82,7 +90,7 @@ def test_passive_get_returns_null_when_no_stored_insight(monkeypatch):
     monkeypatch.setattr(
         insights_routes,
         "generate_financial_insights",
-        lambda _payload: (_ for _ in ()).throw(AssertionError("provider must stay unused")),
+        lambda _payload, **_kwargs: (_ for _ in ()).throw(AssertionError("provider must stay unused")),
     )
 
     result = asyncio.run(insights_routes.get_insights())
@@ -96,16 +104,17 @@ def test_explicit_refresh_calls_provider_and_persists_result(monkeypatch):
     provider_calls = []
     monkeypatch.setattr(insights_routes, "get_supabase_client", lambda: supabase)
     monkeypatch.setattr(insights_routes, "_calculate_financials", lambda *_args: _financials())
-    monkeypatch.setattr(
-        insights_routes,
-        "generate_financial_insights",
-        lambda payload: provider_calls.append(payload) or {"status": "success", "insight": "Novo insight"},
-    )
+
+    def fake_provider(payload, *, explicit_user_action=False):
+        provider_calls.append((payload, explicit_user_action))
+        return {"status": "success", "insight": "Novo insight"}
+
+    monkeypatch.setattr(insights_routes, "generate_financial_insights", fake_provider)
     monkeypatch.setattr(insights_routes, "financial_today", lambda: date(2026, 8, 15))
 
     result = asyncio.run(insights_routes.refresh_insights())
 
-    assert provider_calls == [_financials()]
+    assert provider_calls == [(_financials(), True)]
     assert result["data"]["insight"] == "Novo insight"
     assert supabase.updates == [
         {"latest_insight_text": "Novo insight", "latest_insight_date": "2026-08-15"}
