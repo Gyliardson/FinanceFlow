@@ -95,6 +95,7 @@ jobs:
             "$build_dir/process-env.d.ts" \
             src/services/userCache.ts \
             src/services/authSession.ts \
+            src/services/apiFailure.ts \
             src/services/idempotentMutation.ts \
             src/services/financialDate.ts \
             --ignoreConfig \
@@ -113,6 +114,11 @@ jobs:
         run: |
           set -o pipefail
           node tests/auth-session-contract.cjs 2>&1 | tee auth-session-contract.log
+      - name: Run API auth rejection and offline classification contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/auth-rejection-contract.cjs 2>&1 | tee auth-rejection-contract.log
       - name: Run offline cache corruption and persistence contract
         shell: bash
         run: |
@@ -140,6 +146,7 @@ jobs:
           name: mobile-auth-contract-log
           path: |
             mobile/auth-session-contract.log
+            mobile/auth-rejection-contract.log
             mobile/offline-cache-contract.log
             mobile/idempotent-mutation-contract.log
             mobile/pending-auth-isolation-contract.log

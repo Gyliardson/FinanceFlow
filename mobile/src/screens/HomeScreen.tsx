@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../services/AuthContext';
+import { canUseOfflineCacheForApiFailure } from '../services/apiFailure';
 import { getUserCacheSnapshot, trySetUserCache } from '../services/userCache';
 import {
   financialDateOnly,
@@ -103,15 +104,19 @@ export default function HomeScreen({ navigation }: any) {
       const bills = response.data?.data || [];
       setAllBills(bills);
       if (userId) void trySetUserCache(userId, 'bills', bills);
-      return { online: true, hasData: true, cachedAt: null as number | null };
-    } catch {
+      return { online: true, hasData: true, cachedAt: null as number | null, authoritativeFailure: false };
+    } catch (error) {
+      if (!canUseOfflineCacheForApiFailure(error)) {
+        setAllBills([]);
+        return { online: false, hasData: false, cachedAt: null as number | null, authoritativeFailure: true };
+      }
       const cached = userId ? await getUserCacheSnapshot<Bill[]>(userId, 'bills') : null;
       if (cached) {
         setAllBills(cached.data);
-        return { online: false, hasData: true, cachedAt: cached.cachedAt };
+        return { online: false, hasData: true, cachedAt: cached.cachedAt, authoritativeFailure: false };
       }
       setAllBills([]);
-      return { online: false, hasData: false, cachedAt: null as number | null };
+      return { online: false, hasData: false, cachedAt: null as number | null, authoritativeFailure: false };
     }
   };
 
@@ -125,14 +130,17 @@ export default function HomeScreen({ navigation }: any) {
       } else {
         setConfigModalVisible(true);
       }
-      return { online: true, hasData: Boolean(settings) };
-    } catch {
+      return { online: true, hasData: Boolean(settings), authoritativeFailure: false };
+    } catch (error) {
+      if (!canUseOfflineCacheForApiFailure(error)) {
+        return { online: false, hasData: false, authoritativeFailure: true };
+      }
       const cached = userId ? await getUserCacheSnapshot<SettingsCache>(userId, 'settings') : null;
       if (cached) {
         hydrateSettings(cached.data);
-        return { online: false, hasData: true };
+        return { online: false, hasData: true, authoritativeFailure: false };
       }
-      return { online: false, hasData: false };
+      return { online: false, hasData: false, authoritativeFailure: false };
     }
   };
 
@@ -141,7 +149,8 @@ export default function HomeScreen({ navigation }: any) {
     try {
       const [billsResult, settingsResult] = await Promise.all([fetchBills(), fetchSettings()]);
       const fullyOnline = billsResult.online && settingsResult.online;
-      const usableOfflineData = billsResult.hasData;
+      const hasAuthoritativeFailure = billsResult.authoritativeFailure || settingsResult.authoritativeFailure;
+      const usableOfflineData = billsResult.hasData && !hasAuthoritativeFailure;
       const nextState: LoadState = fullyOnline ? 'ready' : usableOfflineData ? 'offline-cache' : 'unavailable';
       setLoadState(nextState);
       setOfflineCachedAt(nextState === 'offline-cache' ? billsResult.cachedAt : null);
@@ -497,7 +506,6 @@ export default function HomeScreen({ navigation }: any) {
       >
         <Ionicons accessibilityElementsHidden name="add" size={28} color="#fff" />
       </TouchableOpacity>
-
       <Modal visible={configModalVisible} animationType="slide" transparent onRequestClose={() => !savingSettings && setConfigModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
           <View style={styles.modalContainer} accessibilityViewIsModal>
