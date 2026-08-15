@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -48,6 +48,22 @@ interface SettingsCache {
 type TabKey = 'pending' | 'paid' | 'all';
 type LoadState = 'ready' | 'offline-cache' | 'unavailable';
 
+type BillsLoadResult = {
+  online: boolean;
+  hasData: boolean;
+  cachedAt: number | null;
+  authoritativeFailure: boolean;
+  data: Bill[] | null;
+};
+
+type SettingsLoadResult = {
+  online: boolean;
+  hasData: boolean;
+  authoritativeFailure: boolean;
+  data: SettingsCache | null;
+  shouldOpenConfig: boolean;
+};
+
 const MONTH_NAMES = [
   'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
   'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez',
@@ -77,6 +93,7 @@ export default function HomeScreen({ navigation }: any) {
   const { session } = useAuth();
   const userId = session?.user.id;
   const financialNow = financialDateParts();
+  const refreshGeneration = useRef(0);
 
   const [allBills, setAllBills] = useState<Bill[]>([]);
   const [loading, setLoading] = useState(true);
@@ -100,56 +117,67 @@ export default function HomeScreen({ navigation }: any) {
     setInitialDate(settings.initial_balance_date || '');
   };
 
-  const fetchBills = async () => {
+  const fetchBills = async (): Promise<BillsLoadResult> => {
     try {
       const response = await api.get('/bills');
       const bills = response.data?.data || [];
-      setAllBills(bills);
-      if (userId) void trySetUserCache(userId, 'bills', bills);
-      return { online: true, hasData: true, cachedAt: null as number | null, authoritativeFailure: false };
+      return { online: true, hasData: true, cachedAt: null, authoritativeFailure: false, data: bills };
     } catch (error) {
       if (!canUseOfflineCacheForApiFailure(error)) {
-        setAllBills([]);
-        return { online: false, hasData: false, cachedAt: null as number | null, authoritativeFailure: true };
+        return { online: false, hasData: false, cachedAt: null, authoritativeFailure: true, data: null };
       }
       const cached = userId ? await getUserCacheSnapshot<Bill[]>(userId, 'bills') : null;
       if (cached) {
-        setAllBills(cached.data);
-        return { online: false, hasData: true, cachedAt: cached.cachedAt, authoritativeFailure: false };
+        return { online: false, hasData: true, cachedAt: cached.cachedAt, authoritativeFailure: false, data: cached.data };
       }
-      setAllBills([]);
-      return { online: false, hasData: false, cachedAt: null as number | null, authoritativeFailure: false };
+      return { online: false, hasData: false, cachedAt: null, authoritativeFailure: false, data: null };
     }
   };
 
-  const fetchSettings = async () => {
+  const fetchSettings = async (): Promise<SettingsLoadResult> => {
     try {
       const response = await api.get('/settings');
       const settings = response.data?.data as SettingsCache | undefined;
-      if (settings) {
-        hydrateSettings(settings);
-        if (userId) void trySetUserCache(userId, 'settings', settings);
-      } else {
-        setConfigModalVisible(true);
-      }
-      return { online: true, hasData: Boolean(settings), authoritativeFailure: false };
+      return {
+        online: true,
+        hasData: Boolean(settings),
+        authoritativeFailure: false,
+        data: settings ?? null,
+        shouldOpenConfig: !settings,
+      };
     } catch (error) {
       if (!canUseOfflineCacheForApiFailure(error)) {
-        return { online: false, hasData: false, authoritativeFailure: true };
+        return { online: false, hasData: false, authoritativeFailure: true, data: null, shouldOpenConfig: false };
       }
       const cached = userId ? await getUserCacheSnapshot<SettingsCache>(userId, 'settings') : null;
       if (cached) {
-        hydrateSettings(cached.data);
-        return { online: false, hasData: true, authoritativeFailure: false };
+        return { online: false, hasData: true, authoritativeFailure: false, data: cached.data, shouldOpenConfig: false };
       }
-      return { online: false, hasData: false, authoritativeFailure: false };
+      return { online: false, hasData: false, authoritativeFailure: false, data: null, shouldOpenConfig: false };
     }
   };
 
   const loadAllData = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
     setLoading(true);
     try {
       const [billsResult, settingsResult] = await Promise.all([fetchBills(), fetchSettings()]);
+      if (generation !== refreshGeneration.current) return;
+
+      setAllBills(billsResult.data ?? []);
+      if (settingsResult.data) {
+        hydrateSettings(settingsResult.data);
+      } else if (settingsResult.shouldOpenConfig) {
+        setConfigModalVisible(true);
+      }
+
+      if (userId && billsResult.online && billsResult.data) {
+        void trySetUserCache(userId, 'bills', billsResult.data);
+      }
+      if (userId && settingsResult.online && settingsResult.data) {
+        void trySetUserCache(userId, 'settings', settingsResult.data);
+      }
+
       const fullyOnline = billsResult.online && settingsResult.online;
       const hasAuthoritativeFailure = billsResult.authoritativeFailure || settingsResult.authoritativeFailure;
       const usableOfflineData = billsResult.hasData && !hasAuthoritativeFailure;
@@ -157,9 +185,15 @@ export default function HomeScreen({ navigation }: any) {
       setLoadState(nextState);
       setOfflineCachedAt(nextState === 'offline-cache' ? billsResult.cachedAt : null);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (generation === refreshGeneration.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
+  }, [userId]);
+
+  useEffect(() => () => {
+    refreshGeneration.current += 1;
   }, [userId]);
 
   useEffect(() => {
@@ -169,7 +203,7 @@ export default function HomeScreen({ navigation }: any) {
 
   const onRefresh = () => {
     setRefreshing(true);
-    loadAllData();
+    void loadAllData();
   };
 
   const formatCurrencyInput = (value: string) => {
