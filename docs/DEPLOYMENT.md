@@ -56,7 +56,7 @@ The repository intentionally does not provision signing credentials, store accou
 - `CORS_ALLOWED_ORIGINS` must be explicit in production;
 - `/health` is the deployment health-check endpoint.
 
-The production image starts the canonical `runtime:create_app --factory` composition on port 8000 as the dedicated unprivileged `financeflow` user (UID/GID 10001), not as root. The `Backend container` workflow inspects the built image and executes an identity assertion inside the container so this least-privilege boundary cannot silently regress.
+The production image uses Python 3.12, matching the canonical backend CI and clean-room interpreter baseline. It starts the canonical `runtime:create_app --factory` composition on port 8000 as the dedicated unprivileged `financeflow` user (UID/GID 10001), not as root. The `Backend container` workflow executes the built image to verify the Python 3.12 runtime, inspects the production entrypoint, and asserts the effective non-root identity so these release boundaries cannot silently drift.
 
 ## Release verification
 
@@ -66,7 +66,7 @@ Before promoting `portfolio/revamp-2026` to `main`, require the exact-head repos
 - Mobile auth/cache contract;
 - Mobile UX contract;
 - Mobile Expo health, including the release-environment contract and export smoke;
-- backend container build;
+- backend container build, Python-runtime parity, entrypoint and non-root checks;
 - dependency/secret evidence.
 
 A green repository gate does not prove that external EAS/Render/Supabase credentials are provisioned correctly. The final release report must list those external checks as manual operator steps when they cannot be verified without production access.
