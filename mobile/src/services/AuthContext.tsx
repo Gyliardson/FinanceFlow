@@ -6,6 +6,7 @@ import {
 } from './api';
 import {
   AuthSession,
+  configureAuthLocalSessionCleanup,
   getCurrentAuthSession,
   getValidAuthSessionSnapshot,
   initializeAuthSession,
@@ -14,6 +15,7 @@ import {
   signInWithPassword,
   signOutAuthSession,
 } from './authSession';
+import { cancelAllNotifications } from './NotificationService';
 
 type AuthContextValue = {
   session: AuthSession | null;
@@ -24,12 +26,17 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+const cleanupSessionNotifications = async () => {
+  await cancelAllNotifications();
+};
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<AuthSession | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
+    configureAuthLocalSessionCleanup(cleanupSessionNotifications);
     configureApiAuthSessionSnapshotProvider(
       async () => {
         const snapshot = await getValidAuthSessionSnapshot();
@@ -65,6 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       active = false;
       appStateSubscription.remove();
       configureApiAuthSessionSnapshotProvider(null, null, null);
+      configureAuthLocalSessionCleanup(null);
     };
   }, []);
 
