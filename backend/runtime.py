@@ -15,7 +15,6 @@ from api_handlers import (
     healthz_check,
     lifespan,
     root,
-    update_settings,
     validate_bill,
 )
 from api_models import HealthResponse
@@ -35,6 +34,7 @@ from secure_routes import (
     pay_bill_without_receipt,
 )
 from settings_routes import update_emergency_fund_goal
+from settings_write_routes import update_settings
 
 
 PUBLIC_PATHS = {"/", "/health", "/healthz", "/docs", "/openapi.json", "/redoc"}
