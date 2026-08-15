@@ -7,6 +7,7 @@ routers from importing and constructing a second FastAPI application as a side e
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, BeforeValidator, Field
 
@@ -40,7 +41,16 @@ def canonical_date(value) -> str:
     return parsed.isoformat()
 
 
+def canonical_bill_id(value) -> str:
+    """Normalize bill identifiers before a request can reach UUID-backed storage."""
+    try:
+        return str(UUID(str(value)))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("Bill identifier must be a valid UUID.") from exc
+
+
 CanonicalDate = Annotated[str, BeforeValidator(canonical_date)]
+CanonicalBillId = Annotated[str, BeforeValidator(canonical_bill_id)]
 
 
 class HealthResponse(BaseModel):
@@ -71,7 +81,7 @@ class RecurringBillCreateRequest(BaseModel):
 
 
 class BillValidationRequest(BaseModel):
-    bill_id: str
+    bill_id: CanonicalBillId
     ocr_amount: Optional[CanonicalMoney] = None
     ocr_due_date: Optional[CanonicalDate] = None
     ocr_barcode: Optional[str] = None
