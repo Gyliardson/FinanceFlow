@@ -3,6 +3,7 @@ import logging
 from fastapi import File, HTTPException, UploadFile
 
 from database import get_supabase_client, get_supabase_storage_client
+from financial_clock import financial_today
 from receipt_access import ReceiptAccessError, ReceiptNotFoundError, create_authorized_receipt_access
 from receipt_payments import (
     BillAlreadyPaidError,
