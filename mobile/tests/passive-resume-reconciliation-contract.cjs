@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const read = (name) => fs.readFileSync(path.join(__dirname, '..', 'src', 'screens', name), 'utf8');
+const withoutLineComments = (source) => source.replace(/\/\/.*$/gm, '');
 const income = read('IncomeScreen.tsx');
 const insights = read('InsightsScreen.tsx');
 
@@ -50,9 +51,10 @@ const insightsListenerStart = insights.indexOf("const appStateSubscription = App
 const insightsListenerEnd = insights.indexOf('return () => appStateSubscription.remove();', insightsListenerStart);
 assert.ok(insightsListenerStart >= 0 && insightsListenerEnd > insightsListenerStart, 'Insights AppState listener must be bounded');
 const insightsListener = insights.slice(insightsListenerStart, insightsListenerEnd);
+const executableInsightsListener = withoutLineComments(insightsListener);
 assert.ok(insightsListener.includes('void fetchInsights();'), 'Insights resume must use passive snapshot reconciliation');
-assert.ok(!/\bhandleRefreshAI\s*\(/.test(insightsListener), 'Insights resume must never invoke explicit AI refresh');
-assert.ok(!insightsListener.includes("api.post('/insights/refresh')"), 'Insights resume must never contact external AI directly');
+assert.ok(!/\bhandleRefreshAI\s*\(/.test(executableInsightsListener), 'Insights resume must never invoke explicit AI refresh');
+assert.ok(!executableInsightsListener.includes("api.post('/insights/refresh')"), 'Insights resume must never contact external AI directly');
 
 // Explicit AI remains a user-action handler and is kept separate from lifecycle work.
 assert.ok(
