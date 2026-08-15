@@ -11,6 +11,7 @@ EXPECTED_MIGRATIONS = [
     "005_private_receipt_paths.sql",
     "006_financial_idempotency.sql",
     "007_authenticated_data_plane.sql",
+    "008_payment_recurring_data_plane.sql",
 ]
 
 
@@ -43,7 +44,7 @@ def test_clean_room_documents_current_financial_migration_boundary():
     )
 
     latest = EXPECTED_MIGRATIONS[-1]
-    assert "backend/migrations/001_...` through `007_..." in clean_room
+    assert "backend/migrations/001_...` through `008_..." in clean_room
     assert latest in clean_room
     assert ".github/workflows/financial-idempotency.yml" in clean_room
     assert "not** equivalent to provisioning a production Supabase project" in clean_room
