@@ -42,6 +42,8 @@ jobs:
         run: node mobile/tests/bill-detail-focus-refresh-contract.cjs
       - name: Run Home refresh generation contract
         run: node mobile/tests/home-refresh-generation-contract.cjs
+      - name: Run offline resume reconciliation contract
+        run: node mobile/tests/offline-resume-reconciliation-contract.cjs
       - name: Run income refresh generation contract
         run: node mobile/tests/income-refresh-generation-contract.cjs
       - name: Run Insights refresh generation contract
