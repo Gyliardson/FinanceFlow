@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth_middleware import SupabaseAuthMiddleware
+from authentication import AuthenticationError, AuthenticationServiceUnavailable
 from request_context import get_request_client, get_request_user_id
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
@@ -41,6 +42,42 @@ def test_missing_bearer_token_is_rejected_with_auth_challenge():
     assert response.status_code == 401
     assert response.json() == {"detail": "Unauthorized – invalid or expired bearer token."}
     assert response.headers["www-authenticate"] == "Bearer"
+
+
+@patch("auth_middleware.authenticate_bearer_header")
+def test_authoritative_invalid_token_remains_401(mock_authenticate):
+    mock_authenticate.side_effect = AuthenticationError("provider detail")
+    client = TestClient(_build_app())
+
+    response = client.get(
+        "/protected",
+        headers={"Authorization": "Bearer rejected-jwt"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized – invalid or expired bearer token."}
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert "provider detail" not in response.text
+
+
+@patch("auth_middleware.authenticate_bearer_header")
+def test_auth_upstream_failure_returns_sanitized_503_without_auth_challenge(
+    mock_authenticate,
+):
+    mock_authenticate.side_effect = AuthenticationServiceUnavailable(
+        "sensitive upstream transport detail"
+    )
+    client = TestClient(_build_app())
+
+    response = client.get(
+        "/protected",
+        headers={"Authorization": "Bearer still-potentially-valid-jwt"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Authentication service temporarily unavailable."}
+    assert "www-authenticate" not in response.headers
+    assert "sensitive upstream transport detail" not in response.text
 
 
 @patch("auth_middleware.authenticate_bearer_header")

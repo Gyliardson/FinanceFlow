@@ -4,7 +4,11 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from authentication import AuthenticationError, authenticate_bearer_header
+from authentication import (
+    AuthenticationError,
+    AuthenticationServiceUnavailable,
+    authenticate_bearer_header,
+)
 from request_context import (
     bind_request_client,
     bind_request_user_id,
@@ -31,6 +35,11 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
                 status_code=401,
                 content={"detail": "Unauthorized – invalid or expired bearer token."},
                 headers={"WWW-Authenticate": "Bearer"},
+            )
+        except AuthenticationServiceUnavailable:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Authentication service temporarily unavailable."},
             )
 
         client_token = bind_request_client(session.data_client)
