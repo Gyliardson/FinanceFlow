@@ -1,10 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
-// ===========================================================================
-// Configuração Global de Notificações
-// ===========================================================================
-
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -15,14 +11,10 @@ Notifications.setNotificationHandler({
   }),
 });
 
-// ===========================================================================
-// Conteúdo de notificações
-// ===========================================================================
 // Notification previews can be rendered on a locked device. Keep visible copy
 // generic by default: bill names and other financial details belong inside the
 // authenticated app, not in title/body previews. The opaque billId remains in
 // notification data only so the app can identify/cancel the correct reminder.
-
 const MESSAGES_BEFORE = [
   {
     title: 'Lembrete de vencimento',
@@ -56,14 +48,6 @@ const MESSAGES_DUE_DAY = {
   },
 };
 
-// ===========================================================================
-// Funções Principais
-// ===========================================================================
-
-/**
- * Solicita permissão de notificações ao usuário.
- * Deve ser chamada na inicialização do app.
- */
 export async function requestNotificationPermissions(): Promise<boolean> {
   if (Platform.OS === 'web') return false;
 
@@ -93,15 +77,25 @@ export async function requestNotificationPermissions(): Promise<boolean> {
   return true;
 }
 
+const cancelScheduledForBill = async (billId: string): Promise<number> => {
+  const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
+  const identifiers = allScheduled
+    .filter((notification) => notification.content.data?.billId === billId)
+    .map((notification) => notification.identifier);
+
+  await Promise.all(
+    identifiers.map((identifier) => Notifications.cancelScheduledNotificationAsync(identifier)),
+  );
+  return identifiers.length;
+};
+
 /**
- * Agenda todas as notificações para uma fatura específica.
+ * Replace all pending reminders for one payable bill instance.
  *
- * Lógica:
- * - T-3, T-2, T-1: Uma notificação por dia (9h da manhã)
- * - Dia T (vencimento): 3 notificações (9h, 14h, 20h)
- *
- * `billName` is retained in the public function contract for current callers but
- * intentionally never enters visible notification content.
+ * Replacement is deliberate: retries/reconciliation can safely call this function
+ * again for the same child bill without multiplying OS notifications. If existing
+ * reminders cannot be enumerated/cancelled, scheduling fails closed rather than
+ * adding an unknown duplicate set.
  */
 export async function scheduleNotificationsForBill(
   billId: string,
@@ -109,6 +103,13 @@ export async function scheduleNotificationsForBill(
   dueDate: string
 ): Promise<string[]> {
   if (Platform.OS === 'web') return [];
+
+  try {
+    await cancelScheduledForBill(billId);
+  } catch {
+    console.warn('[Notificações] Falha ao reconciliar lembretes existentes; novo agendamento ignorado.');
+    return [];
+  }
 
   const promises: Promise<string | void>[] = [];
   const due = new Date(dueDate + 'T00:00:00');
@@ -155,7 +156,6 @@ export async function scheduleNotificationsForBill(
     if (triggerDate <= now) continue;
 
     const msg = MESSAGES_DUE_DAY[period];
-
     const promise = Notifications.scheduleNotificationAsync({
       content: {
         title: msg.title,
@@ -176,43 +176,22 @@ export async function scheduleNotificationsForBill(
 
   const results = await Promise.all(promises);
   const scheduledIds = results.filter((id): id is string => typeof id === 'string');
-
   console.log(`[Notificações] ${scheduledIds.length} lembrete(s) agendado(s).`);
   return scheduledIds;
 }
 
-/**
- * Cancela todas as notificações pendentes de uma fatura específica.
- * Usado quando o pagamento é registrado.
- */
+/** Cancel all pending reminders associated with a payable bill instance. */
 export async function cancelNotificationsForBill(billId: string): Promise<void> {
   if (Platform.OS === 'web') return;
 
   try {
-    const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
-    const cancelPromises: Promise<void>[] = [];
-
-    for (const notification of allScheduled) {
-      if (notification.content.data?.billId === billId) {
-        cancelPromises.push(
-          Notifications.cancelScheduledNotificationAsync(notification.identifier)
-        );
-      }
-    }
-
-    if (cancelPromises.length > 0) {
-      await Promise.all(cancelPromises);
-    }
-
-    console.log(`[Notificações] ${cancelPromises.length} lembrete(s) cancelado(s).`);
+    const cancelled = await cancelScheduledForBill(billId);
+    console.log(`[Notificações] ${cancelled} lembrete(s) cancelado(s).`);
   } catch {
     console.warn('[Notificações] Falha ao cancelar lembretes.');
   }
 }
 
-/**
- * Cancela TODAS as notificações agendadas (útil para debug/reset).
- */
 export async function cancelAllNotifications(): Promise<void> {
   if (Platform.OS === 'web') return;
   await Notifications.cancelAllScheduledNotificationsAsync();
