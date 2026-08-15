@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Literal
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
@@ -28,7 +29,8 @@ from receipt_uploads import sanitize_receipt_for_external_processing, validate_r
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-MEU_TIM_URL = "https://meuplano2.tim.com.br/home"
+MEU_TIM_HOST = "meuplano2.tim.com.br"
+MEU_TIM_URL = f"https://{MEU_TIM_HOST}/home"
 NAVIGATION_TIMEOUT_MS = 60_000
 ALL_PAID_KEYWORDS = (
     "suas contas estão todas pagas",
@@ -51,6 +53,20 @@ def _classify_portal_text(text: str) -> PortalState | None:
     if any(keyword in normalized for keyword in ALL_PAID_KEYWORDS):
         return "all_paid"
     return None
+
+
+def _is_trusted_tim_url(url: str) -> bool:
+    """Require TIM credentials to stay on the configured HTTPS login origin."""
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == MEU_TIM_HOST
+        and port in (None, 443)
+    )
 
 
 def _prepare_screenshot_for_external_ocr(screenshot: bytes) -> bytes | None:
@@ -107,6 +123,12 @@ async def scrape_tim() -> dict:
                     timeout=NAVIGATION_TIMEOUT_MS,
                 )
 
+                # Login credentials are sensitive configuration. Never fill them
+                # after a downgrade or cross-origin redirect, even if a lookalike
+                # page exposes matching labels/input types.
+                if not _is_trusted_tim_url(page.url):
+                    return _payload(unavailable_result("TIM secure login origin"))
+
                 initial_state = _classify_portal_text(
                     await page.locator("body").inner_text()
                 )
@@ -127,7 +149,14 @@ async def scrape_tim() -> dict:
                 if phone_input is None or password_input is None:
                     return _payload(unavailable_result("TIM login interface"))
 
+                if not _is_trusted_tim_url(page.url):
+                    return _payload(unavailable_result("TIM secure login origin"))
                 await phone_input.fill(phone)
+
+                # Re-check immediately before the password boundary so a portal
+                # transition cannot silently move the more sensitive field.
+                if not _is_trusted_tim_url(page.url):
+                    return _payload(unavailable_result("TIM secure login origin"))
                 await password_input.fill(password)
                 submit = await _first_visible(
                     page.get_by_role("button", name="Entrar", exact=False),

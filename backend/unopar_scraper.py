@@ -11,6 +11,7 @@ import logging
 import os
 import re
 from typing import Literal
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
@@ -28,7 +29,8 @@ from integration_contracts import (
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-UNOPAR_URL = "https://login.unopar.br"
+UNOPAR_HOST = "login.unopar.br"
+UNOPAR_URL = f"https://{UNOPAR_HOST}"
 NAVIGATION_TIMEOUT_MS = 60_000
 PortalState = Literal["blocked", "unavailable"]
 
@@ -44,6 +46,20 @@ def _classify_portal_text(text: str) -> PortalState | None:
     if "indisponível" in normalized or "tente novamente" in normalized:
         return "unavailable"
     return None
+
+
+def _is_trusted_unopar_url(url: str) -> bool:
+    """Require Unopar credentials to stay on the configured HTTPS login origin."""
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == UNOPAR_HOST
+        and port in (None, 443)
+    )
 
 
 async def _first_visible(*locators):
@@ -107,6 +123,12 @@ async def scrape_unopar() -> dict:
                     timeout=NAVIGATION_TIMEOUT_MS,
                 )
 
+                # Student identity/password are sensitive configuration. Never enter
+                # them after a downgrade or cross-origin redirect merely because the
+                # page still exposes compatible controls.
+                if not _is_trusted_unopar_url(page.url):
+                    return _payload(unavailable_result("Unopar secure login origin"))
+
                 initial_state = _classify_portal_text(
                     await page.locator("body").inner_text()
                 )
@@ -122,6 +144,8 @@ async def scrape_unopar() -> dict:
                 )
                 if identity_input is None:
                     return _payload(unavailable_result("Unopar login interface"))
+                if not _is_trusted_unopar_url(page.url):
+                    return _payload(unavailable_result("Unopar secure login origin"))
                 await identity_input.fill(student_id)
                 await identity_input.press("Enter")
 
@@ -131,6 +155,12 @@ async def scrape_unopar() -> dict:
                 )
                 if password_input is None:
                     return _payload(unavailable_result("Unopar login interface"))
+
+                # The identity submit is an explicit navigation boundary. Re-check
+                # before filling the password so a redirected IdP/lookalike host is
+                # rejected rather than trusted implicitly.
+                if not _is_trusted_unopar_url(page.url):
+                    return _payload(unavailable_result("Unopar secure login origin"))
                 await password_input.fill(password)
                 await password_input.press("Enter")
                 await page.wait_for_load_state("domcontentloaded")
