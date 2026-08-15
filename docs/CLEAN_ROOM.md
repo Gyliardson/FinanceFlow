@@ -50,7 +50,7 @@ Wait for readiness:
 docker exec financeflow-pg pg_isready -U financeflow -d financeflow_test
 ```
 
-FinanceFlow currently stores migrations as explicit SQL files in `backend/migrations/001_...` through `009_...`. Migration `006_financial_idempotency.sql` defines the database-backed financial mutation idempotency primitives used by the protected non-convergent write paths. Migration `007_authenticated_data_plane.sql` starts the least-privilege authenticated write boundary by hardening the existing idempotent RPCs and adding field-scoped settings/insight RPCs. Migration `008_payment_recurring_data_plane.sql` adds database-owned payment-date semantics plus owner-derived payment and recurring-child RPCs. Migration `009_revoke_authenticated_table_dml.sql` is the final least-privilege step: authenticated table `INSERT`, `UPDATE`, and `DELETE` are removed only after the sanctioned functions exist and canonical application call sites use them. Some migrations intentionally depend on existing Supabase-compatible schema objects or explicit historical reconciliation, so blindly replaying every file against an empty generic PostgreSQL database is **not** equivalent to provisioning a production Supabase project. The disposable CI creates focused fixtures and then applies the migrations needed to prove each invariant.
+FinanceFlow currently stores migrations as explicit SQL files in `backend/migrations/001_...` through `010_...`. Migration `006_financial_idempotency.sql` defines the database-backed financial mutation idempotency primitives used by the protected non-convergent write paths. Migration `007_authenticated_data_plane.sql` starts the least-privilege authenticated write boundary by hardening the existing idempotent RPCs and adding field-scoped settings/insight RPCs. Migration `008_payment_recurring_data_plane.sql` adds database-owned payment-date semantics plus owner-derived payment and recurring-child RPCs. Migration `009_revoke_authenticated_table_dml.sql` is the final least-privilege table-DML step: authenticated table `INSERT`, `UPDATE`, and `DELETE` are removed only after the sanctioned functions exist and canonical application call sites use them. Migration `010_initial_balance_date_boundary.sql` hardens the sanctioned settings RPC so an authenticated direct Data API caller cannot set an initial-balance baseline after the canonical financial today; today and historical dates remain valid. Some migrations intentionally depend on existing Supabase-compatible schema objects or explicit historical reconciliation, so blindly replaying every file against an empty generic PostgreSQL database is **not** equivalent to provisioning a production Supabase project. The disposable CI creates focused fixtures and then applies the migrations needed to prove each invariant.
 
 The authoritative disposable-PostgreSQL procedures live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`.github/workflows/financial-idempotency.yml`](../.github/workflows/financial-idempotency.yml), and [`.github/workflows/authenticated-data-plane.yml`](../.github/workflows/authenticated-data-plane.yml). Together they prove or are required to prove:
 
@@ -66,9 +66,10 @@ The authoritative disposable-PostgreSQL procedures live in [`.github/workflows/c
 - direct authenticated financial-table `INSERT`, `UPDATE`, and `DELETE` denial;
 - positive sanctioned bill/income/reserve/settings/insight/payment/recurring-child mutation paths;
 - payment state/date ownership inside PostgreSQL;
+- canonical initial-balance-date enforcement inside PostgreSQL;
 - cross-owner and recurring-template payment rejection.
 
-The authenticated data-plane migrations are not considered certified merely because their SQL files exist. #91 requires the dedicated real-PostgreSQL workflow to pass on the exact candidate head, alongside the existing financial idempotency and ownership/RLS gates.
+The authenticated data-plane migrations are not considered certified merely because their SQL files exist. The dedicated real-PostgreSQL workflow must pass on the exact candidate head, alongside the existing financial idempotency and ownership/RLS gates.
 
 For release evidence, inspect the exact-candidate PostgreSQL mutation-idempotency, authenticated-data-plane, ownership/RLS, and recurring-idempotency checks rather than treating migration filenames alone as proof. Prefer executing the workflows themselves rather than maintaining an undocumented hand-copied SQL harness that can drift.
 
@@ -90,7 +91,7 @@ From the repository root:
 docker build -f backend/Dockerfile -t financeflow-backend:clean-room backend
 ```
 
-The GitHub `Backend container` workflow is the canonical automated proof that the production image builds and uses `runtime:create_app --factory` as the application entrypoint.
+The GitHub `Backend container` workflow is the canonical automated proof that the production image builds, runs Python 3.12, uses `runtime:create_app --factory` as the application entrypoint, and executes as the unprivileged `financeflow` user.
 
 A real authenticated runtime smoke additionally requires valid Supabase/server environment values. Do not invent production credentials merely to make this step green.
 
