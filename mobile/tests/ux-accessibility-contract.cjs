@@ -10,6 +10,7 @@ const income = read('src/screens/IncomeScreen.tsx');
 const insights = read('src/screens/InsightsScreen.tsx');
 const payment = read('src/screens/PaymentScreen.tsx');
 const financialDate = read('src/services/financialDate.ts');
+const notifications = read('src/services/NotificationService.ts');
 
 const requireMatch = (source, pattern, message) => {
   assert.match(source, pattern, message);
@@ -57,6 +58,16 @@ requireMatch(detail, /Revise valor, vencimento e linha digitável antes de confi
 requireMatch(detail, /KeyboardAvoidingView/, 'Creation form must be keyboard-safe');
 assert.doesNotMatch(detail, /console\.(?:log|error)\s*\(/, 'Creation/OCR screen must not log raw provider/request errors');
 assert.doesNotMatch(detail, /Gemini/, 'User-facing creation flow must not be coupled to a specific AI provider');
+
+// Local notification previews can be visible on a locked device. Visible copy
+// must stay generic while billId may remain internal data for cancellation.
+requireMatch(notifications, /_billName: string/, 'Notification API must explicitly mark bill name as non-rendered input');
+requireMatch(notifications, /data: \{ billId, type: 'reminder' \}/, 'Reminder identity must remain internal notification data');
+requireMatch(notifications, /data: \{ billId, type: 'urgent' \}/, 'Due-day identity must remain internal notification data');
+assert.doesNotMatch(notifications, /body:\s*\([^)]*name[^)]*\)\s*=>/, 'Visible notification body builders must not accept bill names');
+assert.doesNotMatch(notifications, /\$\{(?:billName|_billName|name)\}/, 'Visible notification strings must not interpolate bill names');
+assert.doesNotMatch(notifications, /AINDA NÃO PAGOU|Não vacile|ÚLTIMA CHANCE|💀|🔥/, 'Notification copy must remain professional and non-coercive');
+requireMatch(notifications, /Abra o FinanceFlow para conferir os detalhes\./, 'Privacy-safe previews must still provide a useful action');
 
 // Financial date-only values use the product IANA calendar, never UTC slicing or
 // the device-local calendar. Keep this UX-level contract aligned with the deeper
