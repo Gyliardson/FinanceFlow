@@ -9,6 +9,7 @@ import {
   getCurrentAuthSession,
   getValidAuthSessionSnapshot,
   initializeAuthSession,
+  invalidateRejectedAuthSessionSnapshot,
   isAuthSessionSnapshotCurrent,
   signInWithPassword,
   signOutAuthSession,
@@ -36,6 +37,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return snapshot;
       },
       isAuthSessionSnapshotCurrent,
+      async (snapshot) => {
+        const invalidated = await invalidateRejectedAuthSessionSnapshot(snapshot);
+        if (invalidated && active) {
+          setSession(getCurrentAuthSession());
+        }
+      },
     );
 
     initializeAuthSession()
@@ -57,7 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
       appStateSubscription.remove();
-      configureApiAuthSessionSnapshotProvider(null, null);
+      configureApiAuthSessionSnapshotProvider(null, null, null);
     };
   }, []);
 
