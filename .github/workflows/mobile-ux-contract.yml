@@ -28,3 +28,5 @@ jobs:
         run: node mobile/tests/ux-accessibility-contract.cjs
       - name: Run private receipt access contract
         run: node mobile/tests/private-receipt-access-contract.cjs
+      - name: Run unresolved financial status contract
+        run: node mobile/tests/pending-financial-status-contract.cjs
