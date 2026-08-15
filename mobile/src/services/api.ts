@@ -27,7 +27,7 @@ type FinancialRequestConfig = AxiosRequestConfig & {
 let authSessionSnapshotProvider: AuthSessionSnapshotProvider | null = null;
 let authSessionSnapshotValidator: AuthSessionSnapshotValidator | null = null;
 let authSessionRejectionHandler: AuthSessionRejectionHandler | null = null;
-let reconciliationInFlight: Promise<void> | null = null;
+let reconciliationQueue: Promise<void> = Promise.resolve();
 
 export function configureApiAuthSessionSnapshotProvider(
   provider: AuthSessionSnapshotProvider | null,
@@ -183,39 +183,42 @@ export const postFinancialMutation = <T = any>(
   { ...config, financeflowIntentId: intentId } as FinancialRequestConfig,
 );
 
-export const reconcilePendingFinancialMutations = async (): Promise<void> => {
-  if (reconciliationInFlight) return reconciliationInFlight;
+const runPendingFinancialReconciliationPass = async (): Promise<void> => {
+  const snapshot = authSessionSnapshotProvider
+    ? await authSessionSnapshotProvider()
+    : null;
+  if (!snapshot || !authSessionSnapshotValidator) return;
+  if (!(await authSessionSnapshotValidator(snapshot))) return;
 
-  const run = (async () => {
-    const snapshot = authSessionSnapshotProvider
-      ? await authSessionSnapshotProvider()
-      : null;
-    if (!snapshot || !authSessionSnapshotValidator) return;
+  const pending = await listPendingOperationsForOwner(snapshot.userId);
+  for (const operation of pending) {
     if (!(await authSessionSnapshotValidator(snapshot))) return;
-
-    const pending = await listPendingOperationsForOwner(snapshot.userId);
-    for (const operation of pending) {
-      if (!(await authSessionSnapshotValidator(snapshot))) return;
-      try {
-        await postFinancialMutation(
-          routeForOperation(operation.operation),
-          operation.originalPayload,
-          operation.intentId,
-          { financeflowSessionSnapshot: snapshot },
-        );
-      } catch {
-        // The response interceptor applies the lifecycle policy. Never log private
-        // financial payloads while reconciling an ambiguous operation.
-      }
+    try {
+      await postFinancialMutation(
+        routeForOperation(operation.operation),
+        operation.originalPayload,
+        operation.intentId,
+        { financeflowSessionSnapshot: snapshot },
+      );
+    } catch {
+      // The response interceptor applies the lifecycle policy. Never log private
+      // financial payloads while reconciling an ambiguous operation.
     }
-  })();
-
-  reconciliationInFlight = run;
-  try {
-    await run;
-  } finally {
-    if (reconciliationInFlight === run) reconciliationInFlight = null;
   }
+};
+
+/**
+ * Serialize reconciliation triggers instead of dropping calls while a pass is
+ * active. Every trigger gets a subsequent pass that re-resolves the current
+ * authenticated snapshot, so an account switch cannot make the new owner's
+ * sign-in replay disappear behind an obsolete owner's in-flight work.
+ */
+export const reconcilePendingFinancialMutations = (): Promise<void> => {
+  const run = reconciliationQueue
+    .catch(() => undefined)
+    .then(runPendingFinancialReconciliationPass);
+  reconciliationQueue = run;
+  return run;
 };
 
 export default api;
