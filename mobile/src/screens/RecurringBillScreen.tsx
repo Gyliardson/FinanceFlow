@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -25,6 +25,7 @@ export default function RecurringBillScreen({ navigation }: any) {
   const [loading, setLoading] = useState(false);
   const [generationDeferred, setGenerationDeferred] = useState(false);
   const [recoveringGeneration, setRecoveringGeneration] = useState(false);
+  const generationRecoveryInFlightRef = useRef(false);
   const recurringMutation = useFinancialMutation('/recurring-bills');
   const intentLocked = recurringMutation.hasActiveIntent;
 
@@ -69,7 +70,8 @@ export default function RecurringBillScreen({ navigation }: any) {
   };
 
   const handleRecoverGeneration = async () => {
-    if (recoveringGeneration || loading) return;
+    if (generationRecoveryInFlightRef.current || loading) return;
+    generationRecoveryInFlightRef.current = true;
     const recoveringDeferredCreation = generationDeferred;
     setRecoveringGeneration(true);
     try {
@@ -104,6 +106,7 @@ export default function RecurringBillScreen({ navigation }: any) {
           : 'Não foi possível reconciliar os vencimentos recorrentes agora. Nenhum novo template foi criado; tente a sincronização novamente mais tarde.',
       );
     } finally {
+      generationRecoveryInFlightRef.current = false;
       setRecoveringGeneration(false);
     }
   };
