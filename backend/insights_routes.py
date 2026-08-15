@@ -1,0 +1,72 @@
+"""Privacy-minimized Insights routes for the canonical FinanceFlow runtime.
+
+Passive reads calculate owner-scoped financial aggregates locally and return only
+an already-persisted insight. External AI generation is reserved for the explicit
+refresh mutation.
+"""
+
+from fastapi import HTTPException
+
+from ai_service import generate_financial_insights
+from api_handlers import _calculate_financials
+from database import get_supabase_client
+from financial_clock import financial_today
+
+
+def _load_settings(supabase):
+    response = supabase.table("finance_user_settings").select("*").limit(1).execute()
+    if not response.data:
+        raise HTTPException(
+            status_code=400,
+            detail="Configurações (Saldo Inicial) não encontradas. Configure o saldo inicial primeiro.",
+        )
+    return response.data[0]
+
+
+async def get_insights():
+    """Return local aggregates plus the latest stored insight without calling AI."""
+    try:
+        supabase = get_supabase_client()
+        settings = _load_settings(supabase)
+        fin_data = _calculate_financials(supabase, settings)
+        return {
+            "status": "success",
+            "data": {**fin_data, "insight": settings.get("latest_insight_text")},
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Unable to load insights.") from exc
+
+
+async def refresh_insights():
+    """Generate a new insight only after the user's explicit refresh request."""
+    try:
+        supabase = get_supabase_client()
+        settings = _load_settings(supabase)
+        fin_data = _calculate_financials(supabase, settings)
+
+        try:
+            insight_result = generate_financial_insights(
+                fin_data,
+                explicit_user_action=True,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="AI provider unavailable.") from exc
+
+        if insight_result.get("status") == "error":
+            raise HTTPException(status_code=502, detail="AI provider unavailable.")
+
+        new_text = insight_result.get("insight")
+        if not isinstance(new_text, str) or not new_text.strip():
+            raise HTTPException(status_code=502, detail="AI provider returned an invalid insight.")
+
+        today = financial_today()
+        supabase.table("finance_user_settings").update(
+            {"latest_insight_text": new_text, "latest_insight_date": today.isoformat()}
+        ).eq("id", settings["id"]).execute()
+        return {"status": "success", "data": {**fin_data, "insight": new_text}}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Unable to refresh insights.") from exc
