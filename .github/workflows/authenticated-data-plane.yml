@@ -103,6 +103,7 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f backend/migrations/007_authenticated_data_plane.sql
           psql -v ON_ERROR_STOP=1 -f backend/migrations/008_payment_recurring_data_plane.sql
           psql -v ON_ERROR_STOP=1 -f backend/migrations/009_revoke_authenticated_table_dml.sql
+          psql -v ON_ERROR_STOP=1 -f backend/migrations/010_initial_balance_date_boundary.sql
 
       - name: Seed two owners outside authenticated role
         shell: bash
@@ -171,6 +172,38 @@ jobs:
           SQL
           test "$(psql -Atc "SELECT count(*) FROM finance_bills WHERE owner_id='11111111-1111-1111-1111-111111111111' AND description='Internet';")" = '1'
           test "$(psql -Atc "SELECT count(*) FROM finance_incomes WHERE owner_id='11111111-1111-1111-1111-111111111111' AND title='Salary';")" = '1'
+
+      - name: Future initial-balance date is rejected by authenticated RPC
+        shell: bash
+        run: |
+          set -euo pipefail
+          if psql -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT set_config('request.jwt.claim.sub','11111111-1111-1111-1111-111111111111',false);
+          SET ROLE authenticated;
+          SELECT public.finance_replace_settings(
+            '125.00',
+            (timezone('America/Sao_Paulo',now())::date + 1),
+            '250.00'
+          );
+          SQL
+          then
+            echo "Future initial_balance_date unexpectedly succeeded" >&2
+            exit 1
+          fi
+
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT set_config('request.jwt.claim.sub','11111111-1111-1111-1111-111111111111',false);
+          SET ROLE authenticated;
+          SELECT public.finance_replace_settings(
+            '125.00',
+            timezone('America/Sao_Paulo',now())::date,
+            '250.00'
+          );
+          RESET ROLE;
+          SQL
+          expected=$(psql -Atc "SELECT timezone('America/Sao_Paulo',now())::date;")
+          actual=$(psql -Atc "SELECT initial_balance_date FROM finance_user_settings WHERE owner_id='11111111-1111-1111-1111-111111111111';")
+          test "$actual" = "$expected"
 
       - name: Settings RPCs are owner-derived and field scoped
         shell: bash
