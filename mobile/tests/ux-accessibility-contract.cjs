@@ -7,6 +7,7 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 const home = read('src/screens/HomeScreen.tsx');
 const detail = read('src/screens/DetailScreen.tsx');
 const income = read('src/screens/IncomeScreen.tsx');
+const insights = read('src/screens/InsightsScreen.tsx');
 const financialDate = read('src/services/financialDate.ts');
 
 const requireMatch = (source, pattern, message) => {
@@ -27,6 +28,13 @@ requireMatch(home, /KeyboardAvoidingView/, 'Dashboard settings form must be keyb
 requireMatch(home, /Resultado não confirmado/, 'Settings save failures must communicate an ambiguous outcome');
 requireMatch(home, /Recarregue os dados para reconciliar o estado antes de tentar novamente\./, 'Settings save failures must direct the user to reconcile authoritative state');
 assert.doesNotMatch(home, /Nenhum valor foi alterado\./, 'Settings save failures must never claim rollback without server proof');
+
+// Goal-only edits must not replay a stale full settings snapshot. A partial
+// server mutation keeps initial balance/date independent under concurrency.
+requireMatch(insights, /api\.patch\('\/settings\/emergency-fund-goal', \{ emergency_fund_goal: goalVal \}\)/, 'Reserve goal editor must use the narrow server-side settings mutation');
+assert.doesNotMatch(insights, /api\.get\('\/settings'\)/, 'Reserve goal editor must not prefetch a full settings snapshot before saving');
+assert.doesNotMatch(insights, /api\.post\('\/settings', \{ \.\.\./, 'Reserve goal editor must not spread stale settings into a full replacement');
+requireMatch(insights, /Não foi possível confirmar se a meta foi salva\./, 'Goal update failures must communicate an unconfirmed outcome');
 
 // Creation/OCR is a high-risk input path. Keep provider details out of UX/logs,
 // retain upload guardrails, and require explicit review/accessibility cues.
