@@ -10,7 +10,7 @@ The mobile bundle requires these client-visible values:
 - `EXPO_PUBLIC_SUPABASE_URL` — Supabase project URL used by the mobile authentication flow.
 - `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` — Supabase publishable client key.
 
-All `EXPO_PUBLIC_*` values are embedded in the client bundle and must be treated as public. They must never contain a Supabase service-role key, Gemini key, database password or other server credential.
+All `EXPO_PUBLIC_*` values are embedded in the client bundle and must be treated as public. They must never contain a Supabase service-role key, Gemini key, database password or other server credential. The release validator rejects obvious server-only Supabase key shapes (`sb_secret_*` and legacy JWTs whose payload declares `role=service_role`) without printing the configured key.
 
 The two endpoint values are also sensitive *destinations*: the Supabase URL receives sign-in credentials and refresh/logout tokens, while the API URL receives authenticated FinanceFlow bearer requests. A publishable release must therefore use absolute HTTPS URLs with no embedded URL username/password, query string or fragment, and must not target localhost, loopback or wildcard-listener addresses. Hostnames are intentionally not pinned to Render or `supabase.co`, so legitimate custom HTTPS deployments remain supported. A trailing slash is allowed.
 
@@ -34,7 +34,7 @@ Use the real project values only in the operator-controlled EAS environment. Do 
 
 `.github/workflows/deploy-frontend.yml` runs only after mobile changes reach `main`. It requires the repository secret `EXPO_TOKEN` so the GitHub Action can authenticate to EAS.
 
-Before publishing, the workflow executes the release validator inside the EAS `production` environment. The validator fails closed when a required value is missing and when either endpoint is malformed, non-HTTPS, contains embedded URL credentials/query/fragment data, or targets an obvious local/loopback host. It reports only the variable and violated invariant; it never prints configured values. Publication then uses:
+Before publishing, the workflow executes the release validator inside the EAS `production` environment. The validator fails closed when a required value is missing, the public Supabase key is recognizably server-only, or either endpoint is malformed, non-HTTPS, contains embedded URL credentials/query/fragment data, or targets an obvious local/loopback host. It reports only the variable and violated invariant; it never prints configured values. Publication then uses:
 
 ```bash
 eas update --branch production --environment production
