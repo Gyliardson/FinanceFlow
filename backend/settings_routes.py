@@ -17,57 +17,36 @@ def _require_authenticated_context() -> None:
         raise HTTPException(status_code=401, detail="Authenticated user context is required.")
 
 
-async def update_emergency_fund_goal(req: EmergencyFundGoalUpdateRequest):
-    """Replace only the authenticated owner's emergency-fund goal.
+def _rpc_payload(response):
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        return data[0]
+    return None
 
-    The goal editor must not perform a client-side read/modify/write of the entire
-    settings row. RLS scopes the query to the authenticated owner; this mutation
-    intentionally leaves initial balance/date and reserve balance untouched.
-    """
+
+async def update_emergency_fund_goal(req: EmergencyFundGoalUpdateRequest):
+    """Replace only the authenticated owner's emergency-fund goal through PostgreSQL policy."""
     _require_authenticated_context()
-    data_client = get_supabase_client()
     goal = money_to_storage(req.emergency_fund_goal)
 
     try:
-        settings_response = (
-            data_client.table("finance_user_settings")
-            .select("id")
-            .limit(1)
-            .execute()
-        )
+        response = get_supabase_client().rpc(
+            "finance_update_emergency_fund_goal",
+            {"p_emergency_fund_goal": goal},
+        ).execute()
     except Exception as exc:
-        logger.error("Emergency-fund goal lookup failed")
-        raise HTTPException(status_code=503, detail="Não foi possível consultar as configurações.") from exc
-
-    rows = getattr(settings_response, "data", None) or []
-    if not rows:
-        raise HTTPException(
-            status_code=400,
-            detail="Configurações (Saldo Inicial) não encontradas.",
-        )
-
-    settings_id = rows[0]["id"]
-    try:
-        update_response = (
-            data_client.table("finance_user_settings")
-            .update({"emergency_fund_goal": goal})
-            .eq("id", settings_id)
-            .execute()
-        )
-    except Exception as exc:
-        logger.error("Emergency-fund goal persistence failed")
+        logger.error("Emergency-fund goal RPC persistence failed")
         raise HTTPException(
             status_code=503,
             detail="Não foi possível confirmar a atualização da meta.",
         ) from exc
 
-    updated_rows = getattr(update_response, "data", None) or []
-    if not updated_rows:
-        # RLS visibility can change between lookup and update. Do not claim that
-        # a write rolled back merely because the response contains no row.
+    payload = _rpc_payload(response)
+    if not payload or payload.get("status") != "success" or not isinstance(payload.get("data"), dict):
         raise HTTPException(
             status_code=503,
             detail="Não foi possível confirmar a atualização da meta.",
         )
-
-    return {"status": "success", "data": updated_rows[0]}
+    return payload
