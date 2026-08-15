@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert } from 'react-native';
-import { AxiosRequestConfig } from 'axios';
+import { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { postFinancialMutation } from './api';
 import { getValidAuthSessionSnapshot } from './authSession';
 import {
@@ -43,6 +43,8 @@ const acknowledgeAdditionalIntent = (
 
 export function useFinancialMutation<T = any>(url: string) {
   const intentIdRef = useRef<string | null>(null);
+  const mutationInFlightRef = useRef(false);
+  const mutationInFlightPromiseRef = useRef<Promise<AxiosResponse<T>> | null>(null);
   const [hasActiveIntent, setHasActiveIntent] = useState(false);
 
   const clearLocalIntent = useCallback((intentId?: string) => {
@@ -56,39 +58,59 @@ export function useFinancialMutation<T = any>(url: string) {
     clearLocalIntent(closedIntentId);
   }), [clearLocalIntent]);
 
-  const mutate = useCallback(async (
+  const mutate = useCallback((
     payload: Record<string, unknown>,
     config: AxiosRequestConfig = {},
-  ) => {
-    // Retry-in-place never prompts and never manufactures a new identity.
-    // Only a fresh form intent is gated when another durable operation of the
-    // same kind still has an unknown outcome for the current authenticated owner.
-    if (!intentIdRef.current) {
-      const operation = ROUTE_OPERATION[url];
-      const snapshot = operation ? await getValidAuthSessionSnapshot() : null;
-      if (operation && snapshot) {
-        const pending = await listPendingOperationsForOwner(snapshot.userId);
-        const unresolvedCount = pending.filter((item) => item.operation === operation).length;
-        if (unresolvedCount > 0) {
-          await acknowledgeAdditionalIntent(operation, unresolvedCount);
+  ): Promise<AxiosResponse<T>> => {
+    // React component state is presentation state, not a financial mutex. A
+    // concurrent activation shares the already-running operation instead of
+    // manufacturing another intent or surfacing a false transport failure.
+    if (mutationInFlightRef.current && mutationInFlightPromiseRef.current) {
+      return mutationInFlightPromiseRef.current;
+    }
+    mutationInFlightRef.current = true;
+
+    const run = (async (): Promise<AxiosResponse<T>> => {
+      // Retry-in-place never prompts and never manufactures a new identity.
+      // Only a fresh form intent is gated when another durable operation of the
+      // same kind still has an unknown outcome for the current authenticated owner.
+      if (!intentIdRef.current) {
+        const operation = ROUTE_OPERATION[url];
+        const snapshot = operation ? await getValidAuthSessionSnapshot() : null;
+        if (operation && snapshot) {
+          const pending = await listPendingOperationsForOwner(snapshot.userId);
+          const unresolvedCount = pending.filter((item) => item.operation === operation).length;
+          if (unresolvedCount > 0) {
+            await acknowledgeAdditionalIntent(operation, unresolvedCount);
+          }
         }
       }
-    }
 
-    const intentId = intentIdRef.current ?? createFinancialIntentId();
-    intentIdRef.current = intentId;
-    setHasActiveIntent(true);
+      const intentId = intentIdRef.current ?? createFinancialIntentId();
+      intentIdRef.current = intentId;
+      setHasActiveIntent(true);
 
-    try {
-      const response = await postFinancialMutation<T>(url, payload, intentId, config);
-      clearLocalIntent(intentId);
-      return response;
-    } catch (error) {
-      if (isDefinitiveClientRejection(error)) {
+      try {
+        const response = await postFinancialMutation<T>(url, payload, intentId, config);
         clearLocalIntent(intentId);
+        return response;
+      } catch (error) {
+        if (isDefinitiveClientRejection(error)) {
+          clearLocalIntent(intentId);
+        }
+        throw error;
       }
-      throw error;
-    }
+    })();
+
+    mutationInFlightPromiseRef.current = run;
+    void run.finally(() => {
+      if (mutationInFlightPromiseRef.current === run) {
+        mutationInFlightPromiseRef.current = null;
+        mutationInFlightRef.current = false;
+      }
+    }).catch(() => undefined);
+
+    return run;
   }, [clearLocalIntent, url]);
 
   const startNewIntent = useCallback(() => {

@@ -14,9 +14,12 @@ One unresolved explicit user intent owns one owner-scoped persisted record conta
 
 Retry/reconnect/restart/background reconciliation for that same `intentId` reuses the same key and original payload. A **new explicit user intent gets a new `intentId` and a new key even if its business payload is identical to an older unresolved intent**. Payload equality is never the definition of user-intent identity.
 
+Fresh intent allocation is single-flight per mounted `useFinancialMutation` hook. The hook claims a synchronous re-entrancy guard before any awaited auth/pending-state preflight. React `saving`/loading state remains presentation feedback, not the financial correctness mutex. A second activation while the first submit is still being prepared or transported cannot allocate or persist a second logical intent.
+
 ## UI lifecycle
 
 - A financial form allocates its explicit intent handle on first submission.
+- Allocation/preparation/transport is single-flight per mounted mutation hook; rapid concurrent activation cannot manufacture two identities before React rerenders.
 - Retry while that form/intention remains active reuses the handle and original persisted payload.
 - After an ambiguous result, fields are locked so retry cannot silently substitute recomputed/edited values for the persisted original payload.
 - Cancelling/leaving/resetting the form clears only the local UI handle. It **does not cancel** an ambiguous server outcome and does not delete the encrypted persisted record.
@@ -24,6 +27,7 @@ Retry/reconnect/restart/background reconciliation for that same `intentId` reuse
 - If a fresh form attempts the same operation type while an older ambiguous record still exists for the authenticated owner, the app requires explicit acknowledgement **before allocating the new identity** that this is an additional financial action and both actions may later appear after reconciliation.
 - Definitive success or definitive non-auth client rejection closes the persisted intent and refreshes the unresolved status.
 - Timeout, response loss, network loss, 5xx, 408/425/429, and auth/session loss retain the ambiguous intent.
+- The single-flight guard releases after every terminal preflight/transport outcome. An intentional later retry is therefore allowed, and an ambiguous retry still reuses the retained identity instead of creating another one.
 
 This model deliberately avoids a misleading local “cancel pending write” action. Once transport outcome is unknown, deleting the durable record could abandon a mutation that already committed on the server. The safe choices are same-intent replay/reconciliation or an explicitly acknowledged additional intent.
 
@@ -68,6 +72,8 @@ The mobile auth/UX contracts must prove or enforce:
 
 - same explicit `intentId` + recomputed retry payload -> same key + original payload;
 - distinct explicit `intentId`s + identical payload -> distinct keys;
+- fresh intent allocation claims its synchronous single-flight guard before the first async preflight and releases it in `finally`;
+- a concurrent same-hook submit cannot allocate/persist another intent while the first is in flight;
 - income retry across local midnight -> same intent/key/original date;
 - deterministic old payload-equality aliasing control;
 - deterministic old pending-store last-writer-wins control and fixed preservation of both intents;

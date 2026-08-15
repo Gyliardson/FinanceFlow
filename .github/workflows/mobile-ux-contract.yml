@@ -30,3 +30,5 @@ jobs:
         run: node mobile/tests/private-receipt-access-contract.cjs
       - name: Run unresolved financial status contract
         run: node mobile/tests/pending-financial-status-contract.cjs
+      - name: Run financial submit single-flight contract
+        run: node mobile/tests/financial-submit-single-flight-contract.cjs
