@@ -15,12 +15,8 @@ from idempotent_routes import (
 )
 from runtime import _privacy_safe_http_exception_handler, configured_cors_origins, create_app
 from secure_ocr_routes import upload_receipt_for_ocr
-from secure_recurring_routes import (
-    create_recurring_bill_user_scoped,
-    generate_recurring_instances_user_scoped,
-)
+from secure_recurring_routes import generate_recurring_instances_user_scoped
 from secure_routes import (
-    add_to_reserve_atomic,
     get_private_receipt_access,
     pay_bill_with_private_receipt,
     pay_bill_without_receipt,
@@ -93,17 +89,6 @@ def test_runtime_registers_canonical_secure_and_idempotent_handlers(monkeypatch)
         routes = _matching_routes(app, path, method)
         assert len(routes) == 1
         assert routes[0].endpoint is endpoint
-
-
-def test_legacy_non_idempotent_financial_handlers_are_not_registered(monkeypatch):
-    app = _production_app(monkeypatch)
-    registered_endpoints = {
-        route.endpoint
-        for route in app.router.routes
-        if hasattr(route, "endpoint")
-    }
-    assert create_recurring_bill_user_scoped not in registered_endpoints
-    assert add_to_reserve_atomic not in registered_endpoints
 
 
 def test_critical_financial_mutations_require_idempotency_header_at_route_boundary(monkeypatch):

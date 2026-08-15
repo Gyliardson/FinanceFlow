@@ -14,21 +14,10 @@ from datetime import date, datetime
 from fastapi import FastAPI, HTTPException
 
 from ai_service import generate_financial_insights
-from api_models import (
-    BillCreateRequest,
-    BillValidationRequest,
-    HealthResponse,
-    IncomeCreateRequest,
-    ReserveAddRequest,
-    SettingsUpdateRequest,
-)
+from api_models import BillValidationRequest, HealthResponse, SettingsUpdateRequest
 from database import ensure_receipts_bucket, get_supabase_client
 from financial_clock import financial_today
-from financial_math import (
-    add_to_reserve as calculate_reserve_addition,
-    amounts_within_percentage,
-    calculate_balances,
-)
+from financial_math import amounts_within_percentage, calculate_balances
 from money import money, money_to_storage
 
 logger = logging.getLogger(__name__)
@@ -75,22 +64,6 @@ async def get_pending_bills():
             .execute()
         )
         return {"data": response.data}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-async def add_bill(req: BillCreateRequest):
-    try:
-        supabase = get_supabase_client()
-        data = {
-            "description": req.description,
-            "amount": money_to_storage(req.amount),
-            "due_date": req.due_date,
-            "barcode": req.barcode if req.barcode else None,
-            "status": req.status,
-        }
-        response = supabase.table("finance_bills").insert(data).execute()
-        return {"status": "success", "data": response.data}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -157,53 +130,11 @@ async def get_bill_detail(bill_id: str):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-async def pay_bill_no_receipt(bill_id: str):
-    try:
-        supabase = get_supabase_client()
-        bill_resp = supabase.table("finance_bills").select("*").eq("id", bill_id).execute()
-        if not bill_resp.data:
-            raise HTTPException(status_code=404, detail="Fatura não encontrada.")
-
-        bill = bill_resp.data[0]
-        if bill.get("is_recurring") is True:
-            raise HTTPException(
-                status_code=409,
-                detail="Modelos recorrentes não podem ser pagos diretamente.",
-            )
-        if bill.get("status") == "paid":
-            return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
-
-        today_str = financial_today().isoformat()
-        supabase.table("finance_bills").update(
-            {"status": "paid", "payment_date": today_str}
-        ).eq("id", bill_id).eq("is_recurring", False).execute()
-        return {
-            "status": "success",
-            "message": f"Fatura '{bill['description']}' paga com sucesso!",
-            "payment_date": today_str,
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
 async def get_incomes():
     try:
         supabase = get_supabase_client()
         response = supabase.table("finance_incomes").select("*").order("date", desc=True).execute()
         return {"data": response.data}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-async def add_income(req: IncomeCreateRequest):
-    try:
-        supabase = get_supabase_client()
-        data = req.model_dump()
-        data["amount"] = money_to_storage(req.amount)
-        response = supabase.table("finance_incomes").insert(data).execute()
-        return {"status": "success", "data": response.data}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -347,35 +278,6 @@ async def refresh_insights():
         raise
     except Exception as exc:
         logger.error("Erro no endpoint POST insights/refresh: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-async def add_to_reserve(req: ReserveAddRequest):
-    try:
-        supabase = get_supabase_client()
-        settings_resp = supabase.table("finance_user_settings").select("*").limit(1).execute()
-        if not settings_resp.data:
-            raise HTTPException(status_code=400, detail="Configurações (Saldo Inicial) não encontradas.")
-
-        settings = settings_resp.data[0]
-        new_reserve = calculate_reserve_addition(
-            settings.get("emergency_fund_balance", "0.00"), req.amount
-        )
-        updated = (
-            supabase.table("finance_user_settings")
-            .update({"emergency_fund_balance": money_to_storage(new_reserve)})
-            .eq("id", settings["id"])
-            .execute()
-        )
-        return {
-            "status": "success",
-            "message": "Fundo de reserva atualizado com sucesso.",
-            "data": updated.data[0],
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Erro no endpoint POST insights/reserve: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

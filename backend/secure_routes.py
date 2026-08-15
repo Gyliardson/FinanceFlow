@@ -2,11 +2,8 @@ import logging
 
 from fastapi import File, HTTPException, UploadFile
 
-from api_models import ReserveAddRequest
 from database import get_supabase_client, get_supabase_storage_client
 from financial_clock import financial_today
-from financial_math import add_to_reserve as calculate_reserve_addition
-from money import money, money_to_storage
 from receipt_access import ReceiptAccessError, ReceiptNotFoundError, create_authorized_receipt_access
 from receipt_payments import (
     BillAlreadyPaidError,
@@ -20,7 +17,6 @@ from receipt_uploads import MAX_RECEIPT_BYTES, ReceiptValidationError
 from request_context import get_request_user_id
 
 logger = logging.getLogger(__name__)
-RESERVE_UPDATE_ATTEMPTS = 3
 
 
 def _authenticated_user_id() -> str:
@@ -119,66 +115,6 @@ async def pay_bill_without_receipt(bill_id: str):
         "message": f"Fatura '{bill.get('description', '')}' paga com sucesso!",
         "payment_date": payment_date,
     }
-
-
-async def add_to_reserve_atomic(req: ReserveAddRequest):
-    """Add to the authenticated user's reserve without losing concurrent writes.
-
-    PostgREST does not expose a portable arithmetic update in the current client
-    boundary. Use bounded optimistic compare-and-set: every write is conditioned on
-    the exact decimal balance that was read. A competing write therefore affects
-    zero rows and causes a fresh read/retry instead of silently overwriting money.
-    """
-    _authenticated_user_id()
-    data_client = get_supabase_client()
-
-    for _attempt in range(RESERVE_UPDATE_ATTEMPTS):
-        try:
-            settings_response = (
-                data_client.table("finance_user_settings")
-                .select("id,emergency_fund_balance")
-                .limit(1)
-                .execute()
-            )
-        except Exception as exc:
-            logger.error("Reserve lookup failed")
-            raise HTTPException(status_code=503, detail="Não foi possível consultar a reserva.") from exc
-
-        rows = getattr(settings_response, "data", None) or []
-        if not rows:
-            raise HTTPException(
-                status_code=400,
-                detail="Configurações (Saldo Inicial) não encontradas.",
-            )
-
-        settings = rows[0]
-        current = money(settings.get("emergency_fund_balance", "0.00"))
-        new_reserve = calculate_reserve_addition(current, req.amount)
-
-        try:
-            update_response = (
-                data_client.table("finance_user_settings")
-                .update({"emergency_fund_balance": money_to_storage(new_reserve)})
-                .eq("id", settings["id"])
-                .eq("emergency_fund_balance", money_to_storage(current))
-                .execute()
-            )
-        except Exception as exc:
-            logger.error("Reserve persistence failed")
-            raise HTTPException(status_code=503, detail="Não foi possível atualizar a reserva.") from exc
-
-        updated_rows = getattr(update_response, "data", None) or []
-        if updated_rows:
-            return {
-                "status": "success",
-                "message": "Fundo de reserva atualizado com sucesso.",
-                "data": updated_rows[0],
-            }
-
-    raise HTTPException(
-        status_code=409,
-        detail="A reserva foi alterada simultaneamente. Atualize os dados e tente novamente.",
-    )
 
 
 async def pay_bill_with_private_receipt(
