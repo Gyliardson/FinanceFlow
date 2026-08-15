@@ -17,6 +17,43 @@ interface Bill {
   status: string;
 }
 
+type SupportedReceiptMime = 'image/jpeg' | 'image/png' | 'image/webp';
+
+interface ReceiptSelection {
+  uri: string;
+  mimeType: SupportedReceiptMime;
+}
+
+const RECEIPT_EXTENSION_BY_MIME: Record<SupportedReceiptMime, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+};
+
+const normalizeReceiptMime = (value?: string | null): SupportedReceiptMime | null => {
+  const normalized = value?.split(';', 1)[0].trim().toLowerCase();
+  if (normalized === 'image/jpeg' || normalized === 'image/jpg') return 'image/jpeg';
+  if (normalized === 'image/png') return 'image/png';
+  if (normalized === 'image/webp') return 'image/webp';
+  return null;
+};
+
+const inferReceiptMimeFromPath = (value?: string | null): SupportedReceiptMime | null => {
+  if (!value) return null;
+  const clean = value.split(/[?#]/, 1)[0].toLowerCase();
+  if (clean.endsWith('.jpg') || clean.endsWith('.jpeg')) return 'image/jpeg';
+  if (clean.endsWith('.png')) return 'image/png';
+  if (clean.endsWith('.webp')) return 'image/webp';
+  return null;
+};
+
+const receiptSelectionFromAsset = (asset: ImagePicker.ImagePickerAsset): ReceiptSelection | null => {
+  const mimeType = normalizeReceiptMime(asset.mimeType)
+    || inferReceiptMimeFromPath(asset.fileName)
+    || inferReceiptMimeFromPath(asset.uri);
+  return mimeType ? { uri: asset.uri, mimeType } : null;
+};
+
 const formatMoney = (value: number) => new Intl.NumberFormat('pt-BR', {
   style: 'currency',
   currency: 'BRL',
@@ -28,15 +65,18 @@ export default function PaymentScreen({ navigation, route }: any) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
-  const [receiptUri, setReceiptUri] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<ReceiptSelection | null>(null);
   const [uploading, setUploading] = useState(false);
 
   const sharedImageUri = route?.params?.sharedImageUri || null;
+  const sharedImageMimeType = normalizeReceiptMime(route?.params?.sharedImageMimeType)
+    || inferReceiptMimeFromPath(route?.params?.sharedImageFileName)
+    || inferReceiptMimeFromPath(sharedImageUri);
 
   useEffect(() => {
     fetchPendingBills();
-    if (sharedImageUri) {
-      setReceiptUri(sharedImageUri);
+    if (sharedImageUri && sharedImageMimeType) {
+      setReceipt({ uri: sharedImageUri, mimeType: sharedImageMimeType });
     }
   }, []);
 
@@ -53,6 +93,18 @@ export default function PaymentScreen({ navigation, route }: any) {
     }
   };
 
+  const selectReceiptAsset = (asset: ImagePicker.ImagePickerAsset) => {
+    const selection = receiptSelectionFromAsset(asset);
+    if (!selection) {
+      Alert.alert(
+        'Formato não identificado',
+        'Selecione um comprovante JPEG, PNG ou WebP com formato reconhecível.',
+      );
+      return;
+    }
+    setReceipt(selection);
+  };
+
   const handlePickReceipt = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
@@ -65,7 +117,7 @@ export default function PaymentScreen({ navigation, route }: any) {
     });
 
     if (!result.canceled && result.assets?.length > 0) {
-      setReceiptUri(result.assets[0].uri);
+      selectReceiptAsset(result.assets[0]);
     }
   };
 
@@ -80,7 +132,7 @@ export default function PaymentScreen({ navigation, route }: any) {
     });
 
     if (!result.canceled && result.assets?.length > 0) {
-      setReceiptUri(result.assets[0].uri);
+      selectReceiptAsset(result.assets[0]);
     }
   };
 
@@ -90,7 +142,7 @@ export default function PaymentScreen({ navigation, route }: any) {
       return;
     }
 
-    if (!receiptUri) {
+    if (!receipt) {
       Alert.alert(
         'Sem comprovante',
         'Deseja registrar o pagamento sem anexar um comprovante?',
@@ -120,11 +172,12 @@ export default function PaymentScreen({ navigation, route }: any) {
 
     setUploading(true);
     try {
+      const extension = RECEIPT_EXTENSION_BY_MIME[receipt.mimeType];
       const formData = new FormData();
       formData.append('file', {
-        uri: receiptUri,
-        name: `comprovante_${selectedBill.id}.jpg`,
-        type: 'image/jpeg',
+        uri: receipt.uri,
+        name: `comprovante_${selectedBill.id}.${extension}`,
+        type: receipt.mimeType,
       } as any);
 
       await api.post(`/bills/${selectedBill.id}/pay`, formData, {
@@ -287,11 +340,11 @@ export default function PaymentScreen({ navigation, route }: any) {
       </View>
 
       <View style={styles.receiptSection}>
-        {receiptUri ? (
+        {receipt ? (
           <View style={styles.receiptPreview}>
             <Image
               accessibilityLabel="Prévia do comprovante selecionado"
-              source={{ uri: receiptUri }}
+              source={{ uri: receipt.uri }}
               style={styles.receiptImage}
             />
             <TouchableOpacity
@@ -300,7 +353,7 @@ export default function PaymentScreen({ navigation, route }: any) {
               accessibilityHint="Remove esta imagem antes de registrar o pagamento"
               hitSlop={8}
               style={styles.removeReceipt}
-              onPress={() => setReceiptUri(null)}
+              onPress={() => setReceipt(null)}
             >
               <Ionicons accessibilityElementsHidden name="close-circle" size={30} color="#b91c1c" />
             </TouchableOpacity>
