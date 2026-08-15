@@ -9,6 +9,7 @@ from receipt_payments import (
     BillNotFoundError,
     PaymentPersistenceError,
     ReceiptStorageError,
+    RecurringTemplatePaymentError,
     persist_private_receipt_payment,
 )
 from receipt_uploads import ReceiptValidationError
@@ -73,7 +74,9 @@ class Query:
 
 class DataClient:
     def __init__(self, *, select_rows=None, update_rows=None, update_error=None):
-        self.select_rows = select_rows if select_rows is not None else [{"id": BILL_ID, "status": "pending"}]
+        self.select_rows = select_rows if select_rows is not None else [
+            {"id": BILL_ID, "status": "pending", "is_recurring": False}
+        ]
         self.update_rows = update_rows if update_rows is not None else [{"id": BILL_ID}]
         self.update_error = update_error
         self.update_payloads = []
@@ -153,9 +156,61 @@ def test_persist_private_receipt_payment_uses_owner_scoped_path_and_no_public_ur
         }
     ]
     assert data_client.update_filters == [
-        [("eq", "id", BILL_ID), ("neq", "status", "paid")]
+        [
+            ("eq", "id", BILL_ID),
+            ("eq", "is_recurring", False),
+            ("neq", "status", "paid"),
+        ]
     ]
     assert bucket.removals == []
+
+
+def test_recurring_template_fails_before_storage_or_update():
+    data_client = DataClient(
+        select_rows=[{"id": BILL_ID, "status": "pending", "is_recurring": True}]
+    )
+    bucket = Bucket()
+
+    with pytest.raises(RecurringTemplatePaymentError):
+        persist_private_receipt_payment(
+            data_client=data_client,
+            storage_client=StorageClient(bucket),
+            owner_id=OWNER_ID,
+            bill_id=BILL_ID,
+            content=JPEG_BYTES,
+            declared_mime_type="image/jpeg",
+        )
+
+    assert bucket.uploads == []
+    assert data_client.update_payloads == []
+
+
+def test_generated_recurring_child_remains_payable():
+    data_client = DataClient(
+        select_rows=[
+            {
+                "id": BILL_ID,
+                "status": "pending",
+                "is_recurring": False,
+                "parent_bill_id": "template-id",
+            }
+        ]
+    )
+    bucket = Bucket()
+
+    result = persist_private_receipt_payment(
+        data_client=data_client,
+        storage_client=StorageClient(bucket),
+        owner_id=OWNER_ID,
+        bill_id=BILL_ID,
+        content=JPEG_BYTES,
+        declared_mime_type="image/jpeg",
+        payment_date=date(2026, 8, 14),
+    )
+
+    assert result.payment_date == "2026-08-14"
+    assert len(bucket.uploads) == 1
+    assert len(data_client.update_payloads) == 1
 
 
 def test_bill_not_visible_in_authenticated_scope_fails_before_storage():
@@ -177,7 +232,9 @@ def test_bill_not_visible_in_authenticated_scope_fails_before_storage():
 
 
 def test_already_paid_bill_fails_before_storage():
-    data_client = DataClient(select_rows=[{"id": BILL_ID, "status": "paid"}])
+    data_client = DataClient(
+        select_rows=[{"id": BILL_ID, "status": "paid", "is_recurring": False}]
+    )
     bucket = Bucket()
 
     with pytest.raises(BillAlreadyPaidError):

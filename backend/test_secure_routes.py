@@ -11,6 +11,7 @@ from receipt_payments import (
     PaymentPersistenceError,
     ReceiptPaymentResult,
     ReceiptStorageError,
+    RecurringTemplatePaymentError,
 )
 from receipt_uploads import MAX_RECEIPT_BYTES, ReceiptValidationError
 
@@ -80,6 +81,11 @@ def test_private_payment_route_uses_bounded_read_and_returns_no_receipt_url(monk
     [
         (ReceiptValidationError("Receipt file exceeds the allowed size."), 400, "Receipt file exceeds the allowed size."),
         (BillNotFoundError("internal scope detail"), 404, "Fatura não encontrada."),
+        (
+            RecurringTemplatePaymentError("internal template detail"),
+            409,
+            "Modelos recorrentes não podem ser pagos diretamente.",
+        ),
         (BillAlreadyPaidError("internal state detail"), 409, "Esta fatura já foi marcada como paga."),
         (
             ReceiptStorageError("provider secret detail"),

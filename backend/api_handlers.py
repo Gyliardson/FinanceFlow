@@ -70,6 +70,7 @@ async def get_pending_bills():
             supabase.table("finance_bills")
             .select("*")
             .eq("status", "pending")
+            .eq("is_recurring", False)
             .order("due_date", desc=False)
             .execute()
         )
@@ -164,13 +165,18 @@ async def pay_bill_no_receipt(bill_id: str):
             raise HTTPException(status_code=404, detail="Fatura não encontrada.")
 
         bill = bill_resp.data[0]
+        if bill.get("is_recurring") is True:
+            raise HTTPException(
+                status_code=409,
+                detail="Modelos recorrentes não podem ser pagos diretamente.",
+            )
         if bill.get("status") == "paid":
             return {"status": "info", "message": "Esta fatura já foi marcada como paga."}
 
         today_str = financial_today().isoformat()
         supabase.table("finance_bills").update(
             {"status": "paid", "payment_date": today_str}
-        ).eq("id", bill_id).execute()
+        ).eq("id", bill_id).eq("is_recurring", False).execute()
         return {
             "status": "success",
             "message": f"Fatura '{bill['description']}' paga com sucesso!",
@@ -247,6 +253,7 @@ def _calculate_financials(supabase, settings):
         supabase.table("finance_bills")
         .select("amount")
         .eq("status", "paid")
+        .eq("is_recurring", False)
         .gte("payment_date", initial_date)
         .execute()
     )
