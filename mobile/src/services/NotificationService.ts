@@ -48,33 +48,68 @@ const MESSAGES_DUE_DAY = {
   },
 };
 
+type NotificationPermissionState = 'unknown' | 'granted' | 'denied';
+
+let notificationPermissionState: NotificationPermissionState = 'unknown';
+let notificationPermissionInFlight: Promise<boolean> | null = null;
+
+/**
+ * Reconcile OS permission and the Android channel before any local scheduling.
+ *
+ * Multiple callers share one in-flight request. A user denial is cached for the
+ * current JS session so a batch of generated recurring children cannot trigger
+ * repeated permission prompts. Transient device/channel API failures are not
+ * cached, allowing a later independent attempt to recover without affecting the
+ * already-committed financial operation.
+ */
 export async function requestNotificationPermissions(): Promise<boolean> {
   if (Platform.OS === 'web') return false;
+  if (notificationPermissionState === 'granted') return true;
+  if (notificationPermissionState === 'denied') return false;
+  if (notificationPermissionInFlight) return notificationPermissionInFlight;
 
-  const { status: existingStatus } = await Notifications.getPermissionsAsync();
-  let finalStatus = existingStatus;
+  const permissionRequest = (async (): Promise<boolean> => {
+    try {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
 
-  if (existingStatus !== 'granted') {
-    const { status } = await Notifications.requestPermissionsAsync();
-    finalStatus = status;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+
+      if (finalStatus !== 'granted') {
+        notificationPermissionState = 'denied';
+        console.warn('Permissão de notificações negada pelo usuário.');
+        return false;
+      }
+
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('bills', {
+          name: 'Contas a Pagar',
+          importance: Notifications.AndroidImportance.HIGH,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#FF231F7C',
+          sound: 'default',
+        });
+      }
+
+      notificationPermissionState = 'granted';
+      return true;
+    } catch {
+      console.warn('[Notificações] Não foi possível preparar permissão/canal para lembretes.');
+      return false;
+    }
+  })();
+
+  notificationPermissionInFlight = permissionRequest;
+  try {
+    return await permissionRequest;
+  } finally {
+    if (notificationPermissionInFlight === permissionRequest) {
+      notificationPermissionInFlight = null;
+    }
   }
-
-  if (finalStatus !== 'granted') {
-    console.warn('Permissão de notificações negada pelo usuário.');
-    return false;
-  }
-
-  if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('bills', {
-      name: 'Contas a Pagar',
-      importance: Notifications.AndroidImportance.HIGH,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: '#FF231F7C',
-      sound: 'default',
-    });
-  }
-
-  return true;
 }
 
 const cancelScheduledForBill = async (billId: string): Promise<number> => {
@@ -135,10 +170,11 @@ export async function reconcileScheduledBillNotifications(
 /**
  * Replace all pending reminders for one payable bill instance.
  *
- * Replacement is deliberate: retries/reconciliation can safely call this function
- * again for the same child bill without multiplying OS notifications. If existing
- * reminders cannot be enumerated/cancelled, scheduling fails closed rather than
- * adding an unknown duplicate set.
+ * Scheduling first reconciles permission/channel readiness. Replacement is deliberate:
+ * retries/reconciliation can safely call this function again for the same child bill
+ * without multiplying OS notifications. If permission/channel setup or the existing
+ * reminder set cannot be reconciled, scheduling fails closed rather than adding an
+ * unknown duplicate set.
  */
 export async function scheduleNotificationsForBill(
   billId: string,
@@ -146,6 +182,12 @@ export async function scheduleNotificationsForBill(
   dueDate: string
 ): Promise<string[]> {
   if (Platform.OS === 'web') return [];
+
+  const notificationsReady = await requestNotificationPermissions();
+  if (!notificationsReady) {
+    console.warn('[Notificações] Lembretes não agendados: permissão/canal indisponível.');
+    return [];
+  }
 
   try {
     await cancelScheduledForBill(billId);
