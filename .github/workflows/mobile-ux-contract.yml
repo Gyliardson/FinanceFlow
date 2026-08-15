@@ -34,3 +34,5 @@ jobs:
         run: node mobile/tests/pending-financial-status-contract.cjs
       - name: Run financial submit single-flight contract
         run: node mobile/tests/financial-submit-single-flight-contract.cjs
+      - name: Run payment route identity contract
+        run: node mobile/tests/payment-route-identity-contract.cjs
