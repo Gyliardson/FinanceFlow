@@ -40,7 +40,6 @@ type PendingManifest = {
   totalLength: number;
 };
 
-const LOCAL_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const SECURE_CHUNK_SIZE = 1800;
 const INTENT_ID_RE = /^fi_[A-Za-z0-9_-]{12,96}$/;
 export const IDEMPOTENT_OPERATIONS: IdempotentOperation[] = [
@@ -331,11 +330,14 @@ const readPendingUnlocked = async (
     parsed = [];
   }
 
-  const cutoff = Date.now() - LOCAL_RETENTION_MS;
+  // Ambiguous financial intents are not a cache. Wall-clock age cannot prove
+  // whether the server committed an operation whose response was lost, so a
+  // structurally valid pending record remains durable until authoritative
+  // success or a definitive client rejection closes it.
   const normalized = Array.isArray(parsed)
     ? parsed
       .map(normalizePendingRecord)
-      .filter((item): item is PendingOperation => Boolean(item && item.createdAt >= cutoff))
+      .filter((item): item is PendingOperation => Boolean(item))
     : [];
 
   const seenIntentIds = new Set<string>();
