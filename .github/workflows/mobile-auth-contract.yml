@@ -33,7 +33,7 @@ jobs:
         run: npm ci
       - name: Resolve Expo native config
         run: npx expo config --type public > "$RUNNER_TEMP/expo-public-config.json"
-      - name: Compile production auth/cache/idempotency/date/upload modules for Node harness
+      - name: Compile production auth/cache/idempotency/date/upload/notification modules for Node harness
         shell: bash
         run: |
           set -euo pipefail
@@ -41,6 +41,8 @@ jobs:
           rm -rf "$build_dir"
           mkdir -p "$build_dir/node_modules/@react-native-async-storage/async-storage"
           mkdir -p "$build_dir/node_modules/expo-secure-store"
+          mkdir -p "$build_dir/node_modules/expo-notifications"
+          mkdir -p "$build_dir/node_modules/react-native"
           cat > "$build_dir/node_modules/@react-native-async-storage/async-storage/index.js" <<'JS'
           const store = new Map();
           const api = {
@@ -86,6 +88,43 @@ jobs:
             __store: store,
           };
           JS
+          cat > "$build_dir/node_modules/react-native/index.js" <<'JS'
+          module.exports = { Platform: { OS: 'android' } };
+          JS
+          cat > "$build_dir/node_modules/expo-notifications/index.js" <<'JS'
+          let scheduled = [];
+          let sequence = 0;
+          let failNextList = false;
+          let scheduleCalls = 0;
+          module.exports = {
+            SchedulableTriggerInputTypes: { DATE: 'date' },
+            AndroidImportance: { HIGH: 4 },
+            setNotificationHandler() {},
+            async getPermissionsAsync() { return { status: 'granted' }; },
+            async requestPermissionsAsync() { return { status: 'granted' }; },
+            async setNotificationChannelAsync() {},
+            async getAllScheduledNotificationsAsync() {
+              if (failNextList) { failNextList = false; throw new Error('synthetic list failure'); }
+              return scheduled.map((item) => ({ ...item, content: { ...item.content, data: { ...item.content.data } } }));
+            },
+            async cancelScheduledNotificationAsync(identifier) {
+              scheduled = scheduled.filter((item) => item.identifier !== identifier);
+            },
+            async scheduleNotificationAsync(request) {
+              scheduleCalls += 1;
+              const identifier = `scheduled-${++sequence}`;
+              scheduled.push({ identifier, content: request.content, trigger: request.trigger });
+              return identifier;
+            },
+            async cancelAllScheduledNotificationsAsync() { scheduled = []; },
+            __reset() { scheduled = []; sequence = 0; failNextList = false; scheduleCalls = 0; },
+            __seed(items) { scheduled.push(...items); },
+            __scheduledFor(billId) { return scheduled.filter((item) => item.content.data?.billId === billId); },
+            __identifiers() { return scheduled.map((item) => item.identifier); },
+            __failNextList() { failNextList = true; },
+            __scheduleCallCount() { return scheduleCalls; },
+          };
+          JS
           cat > "$build_dir/process-env.d.ts" <<'TS'
           declare const process: {
             env: Record<string, string | undefined>;
@@ -99,6 +138,8 @@ jobs:
             src/services/idempotentMutation.ts \
             src/services/financialDate.ts \
             src/services/ocrUploadFile.ts \
+            src/services/recurringReminderTargets.ts \
+            src/services/NotificationService.ts \
             --ignoreConfig \
             --ignoreDeprecations 6.0 \
             --outDir "$build_dir" \
@@ -145,7 +186,12 @@ jobs:
         run: |
           set -o pipefail
           node tests/ocr-upload-file-contract.cjs 2>&1 | tee ocr-upload-file-contract.log
-      - name: Upload auth, cache, idempotency, date and upload contract diagnostics
+      - name: Run recurring notification identity and replacement contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/recurring-notification-contract.cjs 2>&1 | tee recurring-notification-contract.log
+      - name: Upload auth, cache, idempotency, date, upload and notification contract diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -158,4 +204,5 @@ jobs:
             mobile/pending-auth-isolation-contract.log
             mobile/financial-date-contract.log
             mobile/ocr-upload-file-contract.log
+            mobile/recurring-notification-contract.log
           if-no-files-found: warn
