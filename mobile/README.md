@@ -61,6 +61,18 @@ FinanceFlow distinguishes a **financial calendar date** from a timestamp/instant
 
 The Mobile auth contract includes deterministic financial-date tests for the UTC-next-day window, local midnight, month/year rollovers, IANA historical offset behavior and a static guard against reintroducing UTC slicing in financial screens. Backend tests separately prove that shifting `initial_balance_date` from D to D+1 changes which same-day incomes/payments enter authoritative balance calculation.
 
+## Notification privacy
+
+Local notification previews are treated as an unauthenticated display surface because the operating system may show them while the device is locked.
+
+- Default notification titles and bodies are deliberately generic and do not include bill names, amounts, barcodes, account identifiers, receipt details or other financial payloads.
+- The opaque bill ID remains only in `notification.content.data` so FinanceFlow can identify and cancel reminders for the matching bill. It is not rendered in title/body preview text.
+- Opening the authenticated application is the boundary for viewing the bill's financial details.
+- Reminder copy is concise and neutral; notifications should prompt review without coercive or alarming language.
+- The mobile UX contract statically rejects bill-name interpolation and previously aggressive reminder phrases in `NotificationService.ts`.
+
+This policy minimizes incidental lock-screen disclosure without relying on a particular Android/iOS preview configuration. Users may apply stricter operating-system notification settings independently.
+
 ## Native/runtime notes
 
 - `react-native-gesture-handler` is imported before application bootstrap because the navigation stack depends on its native initialization.
