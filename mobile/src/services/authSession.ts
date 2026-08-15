@@ -45,6 +45,19 @@ let currentSession: AuthSession | null = null;
 let sessionGeneration = 0;
 let refreshInFlight: { refreshToken: string; promise: Promise<AuthSession> } | null = null;
 let sessionPersistenceQueue: Promise<void> = Promise.resolve();
+let localSessionCleanup: (() => Promise<void>) | null = null;
+
+/**
+ * Configure device-local artifacts that must not survive an authenticated
+ * session boundary (for example OS-scheduled bill reminders).
+ *
+ * Cleanup is invoked while the session persistence lock is held, before a new
+ * session can be persisted. Failures are intentionally swallowed so logout
+ * cannot be blocked by a device API failure.
+ */
+export function configureAuthLocalSessionCleanup(cleanup: (() => Promise<void>) | null): void {
+  localSessionCleanup = cleanup;
+}
 
 function getSupabaseConfig() {
   const url = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim().replace(/\/$/, '');
@@ -132,6 +145,16 @@ async function withSessionPersistenceLock<T>(task: () => Promise<T>): Promise<T>
   }
 }
 
+async function cleanupLocalSessionArtifactsUnlocked(): Promise<void> {
+  const cleanup = localSessionCleanup;
+  if (!cleanup) return;
+  try {
+    await cleanup();
+  } catch {
+    // Authentication teardown must complete even if a device-local API fails.
+  }
+}
+
 async function persistSessionUnlocked(session: AuthSession | null): Promise<void> {
   setCurrentSession(session);
   if (session) {
@@ -140,6 +163,7 @@ async function persistSessionUnlocked(session: AuthSession | null): Promise<void
   } else {
     await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
     await clearLegacySessionStorage();
+    await cleanupLocalSessionArtifactsUnlocked();
   }
 }
 
@@ -242,7 +266,7 @@ async function commitRefreshedSession(
 export async function initializeAuthSession(): Promise<AuthSession | null> {
   const stored = await readPersistedSession();
   if (!stored) {
-    setCurrentSession(null);
+    await persistSession(null);
     await clearLegacyGlobalFinancialCache();
     return null;
   }
@@ -377,9 +401,9 @@ export function isAuthSessionSnapshotCurrent(snapshot: AuthSessionSnapshot): boo
 /**
  * Fail closed when the protected FinanceFlow API authoritatively rejects the
  * exact bearer snapshot used by a request. The session persistence lock makes
- * the snapshot check, owner-cache purge and local-session removal atomic with
- * respect to sign-in/token persistence, so a stale 401 cannot clear a newer
- * account/session.
+ * the snapshot check, owner-cache purge, device-local cleanup and local-session
+ * removal atomic with respect to sign-in/token persistence, so a stale 401
+ * cannot clear a newer account/session or its newly scheduled reminders.
  */
 export async function invalidateRejectedAuthSessionSnapshot(
   snapshot: AuthSessionSnapshot,
