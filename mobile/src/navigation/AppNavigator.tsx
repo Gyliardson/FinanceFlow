@@ -7,7 +7,7 @@ import RecurringBillScreen from '../screens/RecurringBillScreen';
 import PaymentScreen from '../screens/PaymentScreen';
 import BillHistoryScreen from '../screens/BillHistoryScreen';
 import IncomeScreen from '../screens/IncomeScreen';
-import InsightsScreen from '../screens/InsightsScreen';
+import InsightsPrivacyScreen from '../screens/InsightsPrivacyScreen';
 import { useAuth } from '../services/AuthContext';
 
 const Stack = createStackNavigator();
@@ -73,7 +73,7 @@ export default function AppNavigator() {
       />
       <Stack.Screen
         name="Insights"
-        component={InsightsScreen}
+        component={InsightsPrivacyScreen}
         options={{
           title: 'Saúde Financeira',
           headerStyle: { backgroundColor: '#4f46e5' },
