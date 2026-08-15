@@ -174,7 +174,11 @@ async function testDashboardKeepsNetworkReadAuthoritativeAndShowsFreshness() {
   assert.match(home, /void trySetUserCache\(userId, 'bills', bills\)/);
   assert.match(home, /void trySetUserCache\(userId, 'settings', settings\)/);
   assert.doesNotMatch(home, /await setUserCache\(/, 'cache persistence must not downgrade a successful API read');
-  assert.match(home, /const usableOfflineData = billsResult\.hasData;/, 'settings cache cannot substitute for bills cache');
+  assert.match(
+    home,
+    /const usableOfflineData = billsResult\.hasData && !hasAuthoritativeFailure;/,
+    'settings cache cannot substitute for bills cache and authoritative auth failures must fail the dashboard closed',
+  );
   assert.match(home, /cachedAt=\{offlineCachedAt\}/, 'offline banner must receive bill-cache freshness');
   assert.match(networkStatus, /Última atualização salva:/, 'known cache freshness must be visible');
   assert.match(networkStatus, /Alterações financeiras exigem conexão\./, 'offline financial writes must remain explicitly unsupported');

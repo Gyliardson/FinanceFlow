@@ -31,6 +31,11 @@ from integration_contracts import (
     experimental_integrations_enabled,
     unavailable_result,
 )
+from receipt_uploads import (
+    ReceiptValidationError,
+    sanitize_receipt_for_external_processing,
+    validate_receipt_upload,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -98,6 +103,28 @@ def _pdf_attachments(message):
         if not payload.lstrip().startswith(b"%PDF-"):
             continue
         yield filename, payload
+
+
+def _prepare_pdf_for_external_ocr(pdf_bytes: bytes) -> bytes | None:
+    """Validate and minimize an IMAP PDF before any third-party processing.
+
+    Source identity remains based on the original attachment bytes. Only this normalized
+    provider copy crosses the OCR boundary. Any validation or normalization failure fails
+    closed; original bytes are never used as a fallback for external processing.
+    """
+    try:
+        validated = validate_receipt_upload(
+            pdf_bytes,
+            "application/pdf",
+            max_bytes=MAX_PDF_BYTES,
+        )
+        return sanitize_receipt_for_external_processing(validated)
+    except Exception as exc:
+        # The collector is experimental and read-only. A malformed attachment or a
+        # sanitizer failure must skip this candidate rather than leak original bytes.
+        # Log only the exception class, never filename/document content/provider data.
+        logger.warning("IMAP PDF rejected before external OCR: %s", type(exc).__name__)
+        return None
 
 
 def _source_id(message, filename: str, payload: bytes) -> str:
@@ -182,10 +209,13 @@ async def scrape_vivo_email(
             for filename, pdf_bytes in _pdf_attachments(message):
                 if _looks_encrypted_pdf(pdf_bytes):
                     encrypted_attachment_seen = True
+
+                provider_pdf = _prepare_pdf_for_external_ocr(pdf_bytes)
+                if provider_pdf is None:
                     continue
 
                 try:
-                    ocr_result = ocr_extract(pdf_bytes, "application/pdf")
+                    ocr_result = ocr_extract(provider_pdf, "application/pdf")
                     if ocr_result.get("status") != "success":
                         continue
                     extracted = ocr_result.get("extracted_data") or {}
@@ -200,6 +230,8 @@ async def scrape_vivo_email(
 
                 candidates.append(
                     {
+                        # Stable identity deliberately hashes the original *validated*
+                        # source attachment rather than a regenerated provider copy.
                         "source_id": _source_id(message, filename, pdf_bytes),
                         "candidate": candidate.model_dump(mode="json"),
                     }
