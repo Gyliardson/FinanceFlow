@@ -82,6 +82,19 @@ for (const name of ['EXPO_PUBLIC_API_URL', 'EXPO_PUBLIC_SUPABASE_URL']) {
   }
 }
 
+expectRejected(
+  'EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+  'sb_secret_never_expose_this_value',
+  'EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY must not contain a server-only Supabase key',
+);
+
+const serviceRolePayload = Buffer.from(JSON.stringify({ role: 'service_role' })).toString('base64url');
+expectRejected(
+  'EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+  `eyJhbGciOiJIUzI1NiJ9.${serviceRolePayload}.signature`,
+  'EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY must not contain a server-only Supabase key',
+);
+
 const workflow = readFileSync('../.github/workflows/deploy-frontend.yml', 'utf8');
 if (!workflow.includes("eas env:exec production 'node scripts/validate-release-env.mjs' --non-interactive")) {
   throw new Error('Deploy workflow does not validate the EAS production environment before publishing');
