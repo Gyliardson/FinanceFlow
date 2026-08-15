@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
-  Image,
   TouchableOpacity,
   Linking,
 } from 'react-native';
@@ -21,9 +20,10 @@ interface BillDetail {
   barcode: string | null;
   status: string;
   payment_date: string | null;
-  receipt_url: string | null;
   is_recurring: boolean;
   parent_bill_id: string | null;
+  has_receipt: boolean;
+  legacy_receipt_requires_reconciliation: boolean;
 }
 
 type LoadFailure = 'not-found' | 'unavailable' | null;
@@ -45,12 +45,13 @@ export default function BillHistoryScreen({ route, navigation }: any) {
   const [history, setHistory] = useState<BillDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState<LoadFailure>(null);
-  const [imageError, setImageError] = useState(false);
+  const [receiptOpening, setReceiptOpening] = useState(false);
+  const [receiptFailure, setReceiptFailure] = useState<string | null>(null);
 
   const fetchDetail = async () => {
     setLoading(true);
     setFailure(null);
-    setImageError(false);
+    setReceiptFailure(null);
     try {
       const response = await api.get(`/bills/${billId}/detail`);
       if (!response.data?.bill) {
@@ -73,6 +74,24 @@ export default function BillHistoryScreen({ route, navigation }: any) {
   useEffect(() => {
     fetchDetail();
   }, [billId]);
+
+  const openPrivateReceipt = async () => {
+    if (!bill?.has_receipt || receiptOpening) return;
+    setReceiptOpening(true);
+    setReceiptFailure(null);
+    try {
+      const response = await api.get(`/bills/${bill.id}/receipt`);
+      const signedUrl = response.data?.url;
+      if (typeof signedUrl !== 'string' || !signedUrl.trim()) {
+        throw new Error('Missing signed receipt URL');
+      }
+      await Linking.openURL(signedUrl);
+    } catch {
+      setReceiptFailure('Não foi possível abrir o comprovante agora. Solicite um novo acesso e tente novamente.');
+    } finally {
+      setReceiptOpening(false);
+    }
+  };
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return '-';
@@ -202,37 +221,48 @@ export default function BillHistoryScreen({ route, navigation }: any) {
         )}
       </View>
 
-      {isPaid && bill.receipt_url && (
+      {isPaid && bill.has_receipt && (
         <View style={styles.receiptSection}>
           <View style={styles.sectionHeader}>
             <Ionicons name="document-attach" size={18} color="#6366f1" />
             <Text style={styles.sectionTitle} accessibilityRole="header">Comprovante de pagamento</Text>
           </View>
-          {!imageError ? (
-            <TouchableOpacity
-              activeOpacity={0.9}
-              onPress={() => bill.receipt_url && Linking.openURL(bill.receipt_url)}
-              accessibilityRole="button"
-              accessibilityLabel="Abrir comprovante de pagamento"
-              accessibilityHint="Abre o comprovante em visualização externa"
-            >
-              <Image source={{ uri: bill.receipt_url }} style={styles.receiptImage} resizeMode="contain" onError={() => setImageError(true)} accessibilityIgnoresInvertColors />
-              <View style={styles.receiptOverlay}>
-                <Ionicons name="expand-outline" size={16} color="#fff" />
-                <Text style={styles.receiptOverlayText}>Abrir comprovante</Text>
-              </View>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={styles.receiptFallback}
-              onPress={() => bill.receipt_url && Linking.openURL(bill.receipt_url)}
-              accessibilityRole="button"
-              accessibilityLabel="Abrir comprovante de pagamento no navegador"
-            >
-              <Ionicons name="link-outline" size={20} color="#6366f1" />
-              <Text style={styles.receiptFallbackText}>Abrir comprovante</Text>
-            </TouchableOpacity>
+          <Text style={styles.receiptPrivacyText}>
+            O comprovante é privado. Um acesso temporário é solicitado somente quando você decide abri-lo.
+          </Text>
+          <TouchableOpacity
+            style={[styles.receiptButton, receiptOpening && styles.receiptButtonDisabled]}
+            onPress={openPrivateReceipt}
+            disabled={receiptOpening}
+            accessibilityRole="button"
+            accessibilityLabel={receiptOpening ? 'Solicitando acesso ao comprovante' : 'Abrir comprovante de pagamento'}
+            accessibilityHint="Solicita um link temporário e abre o comprovante em visualização externa"
+          >
+            {receiptOpening ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="open-outline" size={19} color="#fff" />
+            )}
+            <Text style={styles.receiptButtonText}>{receiptOpening ? 'Solicitando acesso…' : 'Abrir comprovante'}</Text>
+          </TouchableOpacity>
+          {receiptFailure && (
+            <View style={styles.receiptFailure} accessibilityLiveRegion="assertive">
+              <Ionicons name="alert-circle-outline" size={17} color="#b91c1c" />
+              <Text style={styles.receiptFailureText}>{receiptFailure}</Text>
+            </View>
           )}
+        </View>
+      )}
+
+      {isPaid && bill.legacy_receipt_requires_reconciliation && (
+        <View style={styles.receiptSection} accessibilityLiveRegion="polite">
+          <View style={styles.sectionHeader}>
+            <Ionicons name="shield-outline" size={18} color="#a16207" />
+            <Text style={styles.sectionTitle} accessibilityRole="header">Comprovante legado</Text>
+          </View>
+          <Text style={styles.legacyReceiptText}>
+            Este registro usa o formato antigo de comprovante e precisa ser reconciliado antes de poder gerar acesso privado temporário.
+          </Text>
         </View>
       )}
 
@@ -283,7 +313,8 @@ export default function BillHistoryScreen({ route, navigation }: any) {
                 <View style={[styles.historyBadge, { backgroundColor: itemStatus.bg }]}>
                   <Text style={[styles.historyBadgeText, { color: itemStatus.color }]}>{itemStatus.label}</Text>
                 </View>
-                {itemIsPaid && item.receipt_url && <Ionicons name="attach" size={14} color="#047857" style={styles.attachmentIcon} />}
+                {itemIsPaid && item.has_receipt && <Ionicons name="attach" size={14} color="#047857" style={styles.attachmentIcon} />}
+                {itemIsPaid && item.legacy_receipt_requires_reconciliation && <Ionicons name="warning-outline" size={14} color="#a16207" style={styles.attachmentIcon} />}
               </TouchableOpacity>
             );
           })
@@ -320,11 +351,13 @@ const styles = StyleSheet.create({
   receiptSection: { marginHorizontal: 16, marginBottom: 16, backgroundColor: '#fff', borderRadius: 16, padding: 16, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   sectionTitle: { flexShrink: 1, fontSize: 15, fontWeight: '700', color: '#1e293b' },
-  receiptImage: { width: '100%', height: 250, borderRadius: 12, backgroundColor: '#f1f5f9' },
-  receiptOverlay: { position: 'absolute', bottom: 8, right: 8, flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(0,0,0,0.68)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20 },
-  receiptOverlayText: { fontSize: 11, color: '#fff', fontWeight: '600' },
-  receiptFallback: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, paddingHorizontal: 12, backgroundColor: '#eef2ff', borderRadius: 12 },
-  receiptFallbackText: { fontSize: 13, color: '#4f46e5', fontWeight: '700' },
+  receiptPrivacyText: { fontSize: 13, lineHeight: 19, color: '#64748b', marginBottom: 14 },
+  receiptButton: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 13, paddingHorizontal: 14, backgroundColor: '#4f46e5', borderRadius: 12 },
+  receiptButtonDisabled: { opacity: 0.72 },
+  receiptButtonText: { fontSize: 14, color: '#fff', fontWeight: '800' },
+  receiptFailure: { marginTop: 12, flexDirection: 'row', alignItems: 'flex-start', gap: 7, padding: 10, borderRadius: 10, backgroundColor: '#fef2f2' },
+  receiptFailureText: { flex: 1, fontSize: 12, lineHeight: 18, color: '#991b1b' },
+  legacyReceiptText: { fontSize: 13, lineHeight: 19, color: '#854d0e', backgroundColor: '#fffbeb', borderRadius: 10, padding: 12 },
   actionSection: { marginHorizontal: 16, marginBottom: 16 },
   payButton: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#047857', paddingVertical: 16, paddingHorizontal: 16, borderRadius: 14, elevation: 3 },
   payButtonText: { fontSize: 16, fontWeight: '800', color: '#fff' },

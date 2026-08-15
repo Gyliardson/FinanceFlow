@@ -5,11 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api_handlers import (
-    get_bill_detail,
-    get_bills,
     get_incomes,
-    get_pending_bills,
-    get_recurring_bills,
     get_settings,
     health_check,
     healthz_check,
@@ -19,6 +15,7 @@ from api_handlers import (
 )
 from api_models import HealthResponse
 from auth_middleware import SupabaseAuthMiddleware
+from bill_read_routes import get_bill_detail, get_bills, get_pending_bills, get_recurring_bills
 from idempotent_routes import (
     add_bill_idempotent,
     add_income_idempotent,
