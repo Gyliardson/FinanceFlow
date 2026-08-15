@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import File, HTTPException, UploadFile
 
 from ai_service import extract_invoice_data
@@ -18,7 +20,14 @@ async def upload_receipt_for_ocr(file: UploadFile = File(...)):
     except ReceiptValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    result = extract_invoice_data(provider_content, mime_type=validated.mime_type)
+    # The production GenAI SDK adapter is synchronous. Keep its bounded external
+    # network I/O off the FastAPI event-loop thread so an OCR request cannot stall
+    # unrelated async handlers in the same Uvicorn process.
+    result = await asyncio.to_thread(
+        extract_invoice_data,
+        provider_content,
+        validated.mime_type,
+    )
     if result.get("status") == "success":
         return {
             "message": "Documento processado. Revise os dados extraídos antes de confirmar.",
