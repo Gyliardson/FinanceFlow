@@ -317,8 +317,8 @@ async function testDashboardKeepsNetworkReadAuthoritativeAndShowsFreshness() {
   const networkStatus = fs.readFileSync(path.join(mobileRoot, 'src/components/NetworkStatus.tsx'), 'utf8');
 
   assert.match(home, /getUserCacheSnapshot/);
-  assert.match(home, /void trySetUserCache\(userId, 'bills', bills\)/);
-  assert.match(home, /void trySetUserCache\(userId, 'settings', settings\)/);
+  assert.match(home, /void trySetUserCache\(userId, 'bills', billsResult\.data\)/);
+  assert.match(home, /void trySetUserCache\(userId, 'settings', settingsResult\.data\)/);
   assert.doesNotMatch(home, /await setUserCache\(/, 'cache persistence must not downgrade a successful API read');
   assert.match(
     home,
