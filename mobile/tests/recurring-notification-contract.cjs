@@ -7,7 +7,11 @@ const path = require('node:path');
 const buildDir = process.env.FINANCEFLOW_AUTH_CONTRACT_BUILD;
 assert.ok(buildDir, 'FINANCEFLOW_AUTH_CONTRACT_BUILD must point to compiled production modules');
 
-const Notifications = require('expo-notifications');
+// The production module compiled into buildDir resolves the deterministic
+// expo-notifications stub from buildDir/node_modules. Require that exact module
+// here too; using bare require() would prefer mobile/node_modules and accidentally
+// exercise the real Expo package instead of the CI harness state.
+const Notifications = require(path.join(buildDir, 'node_modules/expo-notifications'));
 const { scheduleNotificationsForBill, cancelNotificationsForBill } = require(path.join(buildDir, 'NotificationService.js'));
 const { recurringReminderTargetsFromResponse } = require(path.join(buildDir, 'recurringReminderTargets.js'));
 
