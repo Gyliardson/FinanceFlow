@@ -36,3 +36,9 @@ jobs:
           echo "$entrypoint"
           echo "$entrypoint" | grep -F 'runtime:create_app'
           echo "$entrypoint" | grep -F -- '--factory'
+      - name: Verify unprivileged runtime identity
+        run: |
+          configured_user=$(docker inspect --format '{{.Config.User}}' financeflow-backend:ci)
+          test "$configured_user" = 'financeflow'
+          docker run --rm --entrypoint sh financeflow-backend:ci -c \
+            'test "$(id -u)" -ne 0 && test "$(id -un)" = financeflow'
