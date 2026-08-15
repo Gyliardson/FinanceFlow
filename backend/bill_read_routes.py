@@ -8,6 +8,7 @@ available or a legacy row still requires reconciliation.
 
 from fastapi import HTTPException
 
+from api_models import CanonicalBillId
 from database import get_supabase_client
 
 _RECEIPT_INTERNAL_FIELDS = {"receipt_path", "receipt_url"}
@@ -74,7 +75,7 @@ async def get_recurring_bills():
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-async def get_bill_detail(bill_id: str):
+async def get_bill_detail(bill_id: CanonicalBillId):
     """Return a bill and only structurally linked recurring history.
 
     Ordinary one-off bills do not have a stored relationship to other rows, so
