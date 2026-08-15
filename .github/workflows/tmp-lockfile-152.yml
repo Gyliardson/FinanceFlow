@@ -1,0 +1,37 @@
+name: Temporary lockfile generator 152
+
+on:
+  push:
+    branches:
+      - work/152-mobile-production-branding
+    paths:
+      - 'mobile/package.json'
+      - '.github/workflows/tmp-lockfile-152.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: work/152-mobile-production-branding
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.13.0
+      - name: Generate lockfile only
+        working-directory: mobile
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Commit generated lockfile when needed
+        run: |
+          if git diff --quiet -- mobile/package-lock.json; then
+            echo 'LOCKFILE_ALREADY_CURRENT=1'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mobile/package-lock.json
+          git commit -m 'chore(mobile): sync splash plugin lockfile (#152)'
+          git push origin HEAD:work/152-mobile-production-branding
