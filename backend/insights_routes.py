@@ -23,6 +23,15 @@ def _load_settings(supabase):
     return response.data[0]
 
 
+def _rpc_payload(response):
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        return data[0]
+    return None
+
+
 async def get_insights():
     """Return local aggregates plus the latest stored insight without calling AI."""
     try:
@@ -62,9 +71,17 @@ async def refresh_insights():
             raise HTTPException(status_code=502, detail="AI provider returned an invalid insight.")
 
         today = financial_today()
-        supabase.table("finance_user_settings").update(
-            {"latest_insight_text": new_text, "latest_insight_date": today.isoformat()}
-        ).eq("id", settings["id"]).execute()
+        try:
+            persistence = supabase.rpc(
+                "finance_store_insight",
+                {"p_insight_text": new_text, "p_insight_date": today.isoformat()},
+            ).execute()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Unable to confirm insight persistence.") from exc
+
+        payload = _rpc_payload(persistence)
+        if not payload or payload.get("status") != "success":
+            raise HTTPException(status_code=503, detail="Unable to confirm insight persistence.")
         return {"status": "success", "data": {**fin_data, "insight": new_text}}
     except HTTPException:
         raise
