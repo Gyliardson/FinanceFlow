@@ -1,5 +1,6 @@
 import axios, { AxiosRequestConfig } from 'axios';
-import { isAuthenticationRejected, StaleAuthSessionError } from './apiFailure';
+import { assertCurrentAuthenticatedResponse } from './authResponse';
+import { isAuthenticationRejected } from './apiFailure';
 import {
   clearPendingOperation,
   IdempotentOperation,
@@ -142,16 +143,10 @@ api.interceptors.response.use(
 
     const snapshot = (response.config as FinancialRequestConfig)
       .financeflowSessionSnapshot;
-    if (
-      snapshot
-      && authSessionSnapshotValidator
-      && !(await authSessionSnapshotValidator(snapshot))
-    ) {
-      // Do not let callers consume/cache data obtained for an obsolete owner/session.
-      // The explicit error classification also prevents offline-cache fallback from
-      // turning this account-boundary event into stale local hydration.
-      throw new StaleAuthSessionError();
-    }
+    // Do not let callers consume/cache data obtained for an obsolete owner/session.
+    // The helper's explicit error classification also prevents offline-cache fallback
+    // from turning this account-boundary event into stale local hydration.
+    await assertCurrentAuthenticatedResponse(snapshot, authSessionSnapshotValidator);
     return response;
   },
   async (error) => {
