@@ -46,6 +46,8 @@ jobs:
         run: node mobile/tests/home-refresh-generation-contract.cjs
       - name: Run Home paid period contract
         run: node mobile/tests/home-paid-period-contract.cjs
+      - name: Run recurring generation recovery contract
+        run: node mobile/tests/recurring-generation-recovery-contract.cjs
       - name: Run offline resume reconciliation contract
         run: node mobile/tests/offline-resume-reconciliation-contract.cjs
       - name: Run income refresh generation contract
