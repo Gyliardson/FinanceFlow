@@ -12,13 +12,13 @@ The passive route must never call `generate_financial_insights` or any other ext
 
 The external provider is contacted only by the explicit `POST /insights/refresh` action initiated from the mobile “Atualizar análise” button.
 
-The provider prompt is deliberately minimized to these aggregate categories:
+The provider prompt is deliberately minimized to exactly these aggregate categories:
 
 - current balance;
 - estimated monthly surplus after commitments;
-- emergency-fund goal and related reserve context required by the existing prompt.
+- emergency-fund goal.
 
-The inspected Insights prompt does not send raw receipts, bill descriptions, filenames or transaction rows. The mobile UI discloses this boundary before the refresh action is available.
+The inspected Insights prompt does not send raw receipts, bill descriptions, filenames, individual transaction rows or the reserve's saved-balance value. The mobile UI discloses the categories sent externally before the refresh action is available.
 
 ## Logging and failures
 
