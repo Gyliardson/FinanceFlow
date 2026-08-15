@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../services/AuthContext';
+import { canUseOfflineCacheForApiFailure } from '../services/apiFailure';
 import { getUserCacheSnapshot, trySetUserCache } from '../services/userCache';
 import {
   financialDateOnly,
@@ -104,7 +105,11 @@ export default function HomeScreen({ navigation }: any) {
       setAllBills(bills);
       if (userId) void trySetUserCache(userId, 'bills', bills);
       return { online: true, hasData: true, cachedAt: null as number | null };
-    } catch {
+    } catch (error) {
+      if (!canUseOfflineCacheForApiFailure(error)) {
+        setAllBills([]);
+        return { online: false, hasData: false, cachedAt: null as number | null };
+      }
       const cached = userId ? await getUserCacheSnapshot<Bill[]>(userId, 'bills') : null;
       if (cached) {
         setAllBills(cached.data);
@@ -126,7 +131,10 @@ export default function HomeScreen({ navigation }: any) {
         setConfigModalVisible(true);
       }
       return { online: true, hasData: Boolean(settings) };
-    } catch {
+    } catch (error) {
+      if (!canUseOfflineCacheForApiFailure(error)) {
+        return { online: false, hasData: false };
+      }
       const cached = userId ? await getUserCacheSnapshot<SettingsCache>(userId, 'settings') : null;
       if (cached) {
         hydrateSettings(cached.data);
@@ -497,7 +505,6 @@ export default function HomeScreen({ navigation }: any) {
       >
         <Ionicons accessibilityElementsHidden name="add" size={28} color="#fff" />
       </TouchableOpacity>
-
       <Modal visible={configModalVisible} animationType="slide" transparent onRequestClose={() => !savingSettings && setConfigModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
           <View style={styles.modalContainer} accessibilityViewIsModal>
