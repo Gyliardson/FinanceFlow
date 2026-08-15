@@ -16,42 +16,43 @@ Notifications.setNotificationHandler({
 });
 
 // ===========================================================================
-// Mensagens Persuasivas
+// Conteúdo de notificações
 // ===========================================================================
+// Notification previews can be rendered on a locked device. Keep visible copy
+// generic by default: bill names and other financial details belong inside the
+// authenticated app, not in title/body previews. The opaque billId remains in
+// notification data only so the app can identify/cancel the correct reminder.
 
 const MESSAGES_BEFORE = [
   {
-    title: '📅 Lembrete de Conta',
-    body: (name: string, days: number) =>
-      `A conta "${name}" vence em ${days} dia${days > 1 ? 's' : ''}. Organize-se para pagar no prazo!`,
+    title: 'Lembrete de vencimento',
+    body: (days: number) =>
+      `Você tem uma conta com vencimento em ${days} dia${days > 1 ? 's' : ''}. Abra o FinanceFlow para conferir os detalhes.`,
   },
   {
-    title: '⏰ Conta se Aproximando',
-    body: (name: string, days: number) =>
-      `Faltam apenas ${days} dia${days > 1 ? 's' : ''} para o vencimento de "${name}". Não deixe para a última hora!`,
+    title: 'Lembrete de vencimento',
+    body: (days: number) =>
+      `Uma conta vence em ${days} dia${days > 1 ? 's' : ''}. Consulte o FinanceFlow para revisar o pagamento.`,
   },
   {
-    title: '🔔 Atenção com a Conta',
-    body: (name: string, days: number) =>
-      `"${name}" vence em ${days} dia${days > 1 ? 's' : ''}. Separar o dinheiro agora evita dor de cabeça depois.`,
+    title: 'Vencimento próximo',
+    body: (days: number) =>
+      `Há uma conta com vencimento em ${days} dia${days > 1 ? 's' : ''}. Abra o app para ver as informações com segurança.`,
   },
 ];
 
 const MESSAGES_DUE_DAY = {
   morning: {
-    title: '🚨 VENCE HOJE!',
-    body: (name: string) =>
-      `A conta "${name}" vence HOJE! Pague agora e evite juros. Depois não diga que não avisamos. 💸`,
+    title: 'Vencimento hoje',
+    body: 'Você tem uma conta com vencimento hoje. Abra o FinanceFlow para conferir os detalhes.',
   },
   afternoon: {
-    title: '⚠️ URGENTE - Último dia!',
-    body: (name: string) =>
-      `AINDA NÃO PAGOU "${name}"?! O prazo acaba HOJE. Juros começam amanhã. Não vacile! 🔥`,
+    title: 'Lembrete de vencimento',
+    body: 'Uma conta vence hoje. Consulte o FinanceFlow para revisar o status do pagamento.',
   },
   night: {
-    title: '🔴 ÚLTIMA CHANCE HOJE!',
-    body: (name: string) =>
-      `"${name}" vence HOJE e você AINDA não registrou o pagamento! Pague AGORA antes que vire dívida com multa! 💀`,
+    title: 'Vencimento hoje',
+    body: 'Há uma conta com vencimento hoje. Abra o app para conferir as informações com segurança.',
   },
 };
 
@@ -98,10 +99,13 @@ export async function requestNotificationPermissions(): Promise<boolean> {
  * Lógica:
  * - T-3, T-2, T-1: Uma notificação por dia (9h da manhã)
  * - Dia T (vencimento): 3 notificações (9h, 14h, 20h)
+ *
+ * `billName` is retained in the public function contract for current callers but
+ * intentionally never enters visible notification content.
  */
 export async function scheduleNotificationsForBill(
   billId: string,
-  billName: string,
+  _billName: string,
   dueDate: string
 ): Promise<string[]> {
   if (Platform.OS === 'web') return [];
@@ -123,7 +127,7 @@ export async function scheduleNotificationsForBill(
     const promise = Notifications.scheduleNotificationAsync({
       content: {
         title: msg.title,
-        body: msg.body(billName, daysBefore),
+        body: msg.body(daysBefore),
         data: { billId, type: 'reminder' },
         sound: 'default',
       },
@@ -155,7 +159,7 @@ export async function scheduleNotificationsForBill(
     const promise = Notifications.scheduleNotificationAsync({
       content: {
         title: msg.title,
-        body: msg.body(billName),
+        body: msg.body,
         data: { billId, type: 'urgent' },
         sound: 'default',
       },
