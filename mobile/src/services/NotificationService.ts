@@ -90,6 +90,49 @@ const cancelScheduledForBill = async (billId: string): Promise<number> => {
 };
 
 /**
+ * Retire only FinanceFlow bill reminders that contradict an authoritative payable set.
+ *
+ * This must be called only after a successful online bill fetch. Offline cache is not
+ * evidence that a reminder is stale. Unrelated scheduled notifications are preserved.
+ * Device API failures are intentionally contained so financial UI reconciliation can
+ * still complete even when notification cleanup is temporarily unavailable.
+ */
+export async function reconcileScheduledBillNotifications(
+  authoritativePayableBillIds: readonly string[],
+): Promise<number> {
+  if (Platform.OS === 'web') return 0;
+
+  const payableIds = new Set(authoritativePayableBillIds);
+  try {
+    const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
+    const staleIdentifiers = allScheduled
+      .filter((notification) => {
+        const data = notification.content.data;
+        const type = data?.type;
+        const billId = data?.billId;
+        const isFinanceFlowBillReminder = type === 'reminder' || type === 'urgent';
+        return isFinanceFlowBillReminder
+          && typeof billId === 'string'
+          && billId.length > 0
+          && !payableIds.has(billId);
+      })
+      .map((notification) => notification.identifier);
+
+    const results = await Promise.allSettled(
+      staleIdentifiers.map((identifier) => Notifications.cancelScheduledNotificationAsync(identifier)),
+    );
+    const cancelled = results.filter((result) => result.status === 'fulfilled').length;
+    if (cancelled !== staleIdentifiers.length) {
+      console.warn('[Notificações] Alguns lembretes obsoletos não puderam ser removidos.');
+    }
+    return cancelled;
+  } catch {
+    console.warn('[Notificações] Não foi possível reconciliar lembretes com o estado autoritativo.');
+    return 0;
+  }
+}
+
+/**
  * Replace all pending reminders for one payable bill instance.
  *
  * Replacement is deliberate: retries/reconciliation can safely call this function
