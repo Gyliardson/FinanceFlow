@@ -14,11 +14,14 @@ const secureStore = require(path.join(compiledRoot, 'node_modules', 'expo-secure
 const auth = require(path.join(compiledRoot, 'authSession.js'));
 const cache = require(path.join(compiledRoot, 'userCache.js'));
 
-const SECURE_SESSION_KEY = 'financeflow.auth-session.v2';
+const SECURE_SESSION_MANIFEST_KEY = 'financeflow.auth-session.v3.manifest';
+const SECURE_SESSION_PREFIX = 'financeflow.auth-session.v3';
+const LEGACY_SECURE_SESSION_KEY = 'financeflow.auth-session.v2';
 const LEGACY_SESSION_KEY = '@financeflow:auth-session:v1';
 const LEGACY_BILLS = '@bills_cache';
 const LEGACY_SETTINGS = '@settings_cache';
 const LEGACY_OWNER = '@financeflow:legacy-cache-owner:v1';
+const SESSION_CHUNK_SIZE = 1800;
 
 function makeSession(userId, overrides = {}) {
   return {
@@ -50,6 +53,10 @@ function response(status, payload) {
   };
 }
 
+function chunkKey(generation, index) {
+  return `${SECURE_SESSION_PREFIX}.${generation}.${index}`;
+}
+
 async function resetStorage() {
   asyncStorage.__reset();
   secureStore.__reset();
@@ -60,12 +67,48 @@ async function resetStorage() {
 }
 
 async function writeSecureSession(session) {
-  await secureStore.setItemAsync(SECURE_SESSION_KEY, JSON.stringify(session));
+  const raw = JSON.stringify(session);
+  const generation = `gtest${Math.random().toString(36).slice(2, 10)}`;
+  const chunks = raw.match(new RegExp(`.{1,${SESSION_CHUNK_SIZE}}`, 'gs')) ?? [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    await secureStore.setItemAsync(chunkKey(generation, index), chunks[index]);
+  }
+  await secureStore.setItemAsync(SECURE_SESSION_MANIFEST_KEY, JSON.stringify({
+    version: 3,
+    generation,
+    chunks: chunks.length,
+    totalLength: raw.length,
+  }));
 }
 
 async function readSecureSession() {
-  const value = await secureStore.getItemAsync(SECURE_SESSION_KEY);
-  return value ? JSON.parse(value) : null;
+  const manifestRaw = await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY);
+  if (!manifestRaw) return null;
+  const manifest = JSON.parse(manifestRaw);
+  const chunks = [];
+  for (let index = 0; index < manifest.chunks; index += 1) {
+    const value = await secureStore.getItemAsync(chunkKey(manifest.generation, index));
+    if (value === null) return null;
+    chunks.push(value);
+  }
+  return JSON.parse(chunks.join(''));
+}
+
+async function withFailingSecureStoreSet(failAtCall, task) {
+  const original = secureStore.setItemAsync;
+  let calls = 0;
+  secureStore.setItemAsync = async (...args) => {
+    calls += 1;
+    if (calls === failAtCall) {
+      throw new Error(`synthetic SecureStore write failure at call ${calls}`);
+    }
+    return original(...args);
+  };
+  try {
+    return await task();
+  } finally {
+    secureStore.setItemAsync = original;
+  }
 }
 
 async function assertLegacyFinancialCacheCleared() {
@@ -103,6 +146,17 @@ async function testLegacySessionAndTaggedFinancialCacheMigrateOnce() {
   await assertLegacyFinancialCacheCleared();
 }
 
+async function testLegacySecureV2SessionMigratesOnce() {
+  await resetStorage();
+  const session = makeSession('user-v2');
+  await secureStore.setItemAsync(LEGACY_SECURE_SESSION_KEY, JSON.stringify(session));
+
+  const restored = await auth.initializeAuthSession();
+  assert.equal(restored.user.id, 'user-v2');
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null);
+  assert.equal((await readSecureSession()).user.id, 'user-v2');
+}
+
 async function testMismatchedLegacyFinancialCacheFailsClosed() {
   await resetStorage();
   await writeSecureSession(makeSession('user-a'));
@@ -117,18 +171,34 @@ async function testMismatchedLegacyFinancialCacheFailsClosed() {
   await assertLegacyFinancialCacheCleared();
 }
 
-async function testMalformedSecureSessionFailsClosedWithoutLegacyFallback() {
+async function testMalformedChunkedSessionFailsClosedWithoutLegacyFallback() {
   await resetStorage();
-  await secureStore.setItemAsync(SECURE_SESSION_KEY, '{not-json');
+  await secureStore.setItemAsync(SECURE_SESSION_MANIFEST_KEY, '{not-json');
   await asyncStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(makeSession('user-a')));
   await cache.setUserCache('user-a', 'bills', [{ id: 'sensitive-a' }]);
 
   const restored = await auth.initializeAuthSession();
   assert.equal(restored, null);
-  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_KEY), null);
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY), null);
   assert.equal(await asyncStorage.getItem(LEGACY_SESSION_KEY), null);
   assert.deepEqual(await cache.getUserCache('user-a', 'bills'), [{ id: 'sensitive-a' }]);
   await assertLegacyFinancialCacheCleared();
+}
+
+async function testMissingSecureChunkFailsClosedWithoutLegacyFallback() {
+  await resetStorage();
+  await writeSecureSession(makeSession('user-a', {
+    accessToken: 'a'.repeat(2500),
+    refreshToken: 'r'.repeat(2500),
+  }));
+  const manifest = JSON.parse(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY));
+  await secureStore.deleteItemAsync(chunkKey(manifest.generation, 1));
+  await secureStore.setItemAsync(LEGACY_SECURE_SESSION_KEY, JSON.stringify(makeSession('legacy-user')));
+
+  const restored = await auth.initializeAuthSession();
+  assert.equal(restored, null);
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY), null);
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null);
 }
 
 async function testExpiredSessionInvalidRefreshFailsClosed() {
@@ -140,7 +210,7 @@ async function testExpiredSessionInvalidRefreshFailsClosed() {
 
   const restored = await auth.initializeAuthSession();
   assert.equal(restored, null);
-  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_KEY), null);
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY), null);
   assert.equal(await cache.getUserCache('user-a', 'bills'), null);
   await assertLegacyFinancialCacheCleared();
 }
@@ -171,8 +241,70 @@ async function testSuccessfulRefreshRotatesTokensOnlyInSecureStore() {
   const restored = await auth.initializeAuthSession();
   assert.equal(restored.accessToken, 'new-access-user-a');
   assert.equal((await readSecureSession()).refreshToken, 'new-refresh-user-a');
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null);
   assert.equal(await asyncStorage.getItem(LEGACY_SESSION_KEY), null);
   await assertLegacyFinancialCacheCleared();
+}
+
+async function testLargeSessionPersistsInBoundedSecureChunks() {
+  await resetStorage();
+  const largeAccessToken = `header.${'a'.repeat(2800)}.signature`;
+  const largeRefreshToken = `refresh.${'r'.repeat(2600)}`;
+  global.fetch = async () => response(200, tokenPayload('user-large', {
+    access_token: largeAccessToken,
+    refresh_token: largeRefreshToken,
+  }));
+
+  const session = await auth.signInWithPassword('large@example.test', 'secret');
+  assert.equal(session.accessToken, largeAccessToken);
+  assert.equal(auth.getCurrentAuthSession().refreshToken, largeRefreshToken);
+  assert.equal((await readSecureSession()).refreshToken, largeRefreshToken);
+
+  const manifest = JSON.parse(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY));
+  assert.ok(manifest.chunks >= 3);
+  for (let index = 0; index < manifest.chunks; index += 1) {
+    const chunk = await secureStore.getItemAsync(chunkKey(manifest.generation, index));
+    assert.ok(chunk.length <= SESSION_CHUNK_SIZE);
+  }
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null);
+}
+
+async function testChunkWriteFailureKeepsPreviousMemoryAndDurableSession() {
+  await resetStorage();
+  global.fetch = async () => response(200, tokenPayload('user-a'));
+  await auth.signInWithPassword('a@example.test', 'secret');
+  const before = await readSecureSession();
+
+  global.fetch = async () => response(200, tokenPayload('user-b', {
+    access_token: 'b'.repeat(2800),
+    refresh_token: 'c'.repeat(2600),
+  }));
+
+  await assert.rejects(
+    withFailingSecureStoreSet(2, () => auth.signInWithPassword('b@example.test', 'secret')),
+    /synthetic SecureStore write failure/,
+  );
+  assert.equal(auth.getCurrentAuthSession().user.id, 'user-a');
+  assert.deepEqual(await readSecureSession(), before);
+}
+
+async function testManifestWriteFailureKeepsPreviousMemoryAndDurableSession() {
+  await resetStorage();
+  global.fetch = async () => response(200, tokenPayload('user-a'));
+  await auth.signInWithPassword('a@example.test', 'secret');
+  const before = await readSecureSession();
+
+  global.fetch = async () => response(200, tokenPayload('user-b', {
+    access_token: 'b'.repeat(2800),
+    refresh_token: 'c'.repeat(2600),
+  }));
+
+  await assert.rejects(
+    withFailingSecureStoreSet(4, () => auth.signInWithPassword('b@example.test', 'secret')),
+    /synthetic SecureStore write failure/,
+  );
+  assert.equal(auth.getCurrentAuthSession().user.id, 'user-a');
+  assert.deepEqual(await readSecureSession(), before);
 }
 
 async function testConcurrentAccessTokenRefreshIsSingleFlight() {
@@ -263,7 +395,8 @@ async function testLogoutPurgesOnlyCurrentOwnersFinancialStateAndSession() {
   global.fetch = async () => response(204);
 
   await auth.signOutAuthSession();
-  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_KEY), null);
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY), null);
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null);
   assert.equal(await asyncStorage.getItem(LEGACY_SESSION_KEY), null);
   assert.equal(await cache.getUserCache('user-a', 'bills'), null);
   assert.deepEqual(await cache.getUserCache('user-b', 'bills'), [{ id: 'bill-b' }]);
@@ -294,11 +427,16 @@ async function main() {
   const tests = [
     testOwnerScopedCacheNeverCrossesUsers,
     testLegacySessionAndTaggedFinancialCacheMigrateOnce,
+    testLegacySecureV2SessionMigratesOnce,
     testMismatchedLegacyFinancialCacheFailsClosed,
-    testMalformedSecureSessionFailsClosedWithoutLegacyFallback,
+    testMalformedChunkedSessionFailsClosedWithoutLegacyFallback,
+    testMissingSecureChunkFailsClosedWithoutLegacyFallback,
     testExpiredSessionInvalidRefreshFailsClosed,
     testTransientRefreshFailurePreservesOfflineOwnerStateWithoutGlobals,
     testSuccessfulRefreshRotatesTokensOnlyInSecureStore,
+    testLargeSessionPersistsInBoundedSecureChunks,
+    testChunkWriteFailureKeepsPreviousMemoryAndDurableSession,
+    testManifestWriteFailureKeepsPreviousMemoryAndDurableSession,
     testConcurrentAccessTokenRefreshIsSingleFlight,
     testStaleRefreshFailureCannotClearNewLogin,
     testLogoutPurgesOnlyCurrentOwnersFinancialStateAndSession,
