@@ -37,22 +37,14 @@ jobs:
             --expected-initial-pip 26.2.1 \
             --expected-pip 26.2.1 \
             --label SUPPLY_CHAIN_PARSER
-          python - <<'PY'
-          import sys
-          import yaml
-          print(f"SUPPLY_CHAIN_PYTHON={sys.version.split()[0]}")
-          print(f"SUPPLY_CHAIN_PIP={__import__('pip').__version__}")
-          print(f"SUPPLY_CHAIN_PARSER_BOOTSTRAP=PyYAML {yaml.__version__}")
-          if sys.version.split()[0] != "3.12.13":
-              raise SystemExit("unexpected parser Python runtime")
-          if yaml.__version__ != "6.0.3":
-              raise SystemExit("unexpected semantic parser version")
-          PY
-      - name: Compile production checker, helper and mutation suites
-        run: python -m py_compile backend/hermetic_python.py .github/scripts/check_supply_chain.py .github/scripts/test_supply_chain.py .github/scripts/test_hermetic_python.py
-      - name: Verify workflow supply-chain policy
-        run: python .github/scripts/check_supply_chain.py
-      - name: Test the supply-chain policy
+          python .github/scripts/report_supply_chain_runtime.py
+      - name: Compile production checker and mutation suites
+        run: python -m py_compile backend/hermetic_python.py .github/scripts/check_supply_chain.py .github/scripts/production_executable_tooling.py .github/scripts/report_supply_chain_runtime.py .github/scripts/test_supply_chain.py .github/scripts/test_production_executable_tooling.py .github/scripts/test_hermetic_python.py
+      - name: Verify semantic YAML and closed-world executable tooling policy
+        run: python .github/scripts/production_executable_tooling.py
+      - name: Test semantic YAML policy regressions
         run: python .github/scripts/test_supply_chain.py
+      - name: Test production closed-world executable tooling mutations
+        run: python .github/scripts/test_production_executable_tooling.py
       - name: Test hash-locked Python bootstrap integrity
         run: python .github/scripts/test_hermetic_python.py
