@@ -4,7 +4,7 @@
 
 The required `Secret scan` status proves one precise property:
 
-> Every Git commit reachable from the exact release-candidate HEAD is presented to the pinned Gitleaks scanner, including commits reachable only through merged/second-parent ancestry.
+> Every Git commit reachable from the exact release-candidate HEAD is presented to the pinned Gitleaks scanner, including commits reachable only through merged/second-parent ancestry and changes introduced by merge commits themselves.
 
 This is intentionally stronger than checking out a repository with `fetch-depth: 0`. History availability is a prerequisite, not evidence that the scanner consumed that history.
 
@@ -20,9 +20,9 @@ using Go `1.23.4`. The workflow verifies the source checkout SHA and the built s
 
 The production invocation is owned by `.github/scripts/secret_scan_history.sh`. Its Git boundary is:
 
-`--log-opts="--full-history <exact-candidate-head>"`
+`--log-opts="--full-history -m <exact-candidate-head>"`
 
-It deliberately does not add `--first-parent` or `--no-merges` and does not use event-derived base/head pairs.
+`--full-history` walks the ancestry reachable from that exact commit and `-m` asks Git to emit merge-commit diffs as well. The invocation deliberately does not add `--first-parent` or `--no-merges` and does not use event-derived base/head pairs.
 
 Before invoking Gitleaks, the helper fails closed unless all of the following hold:
 
@@ -34,7 +34,7 @@ Before invoking Gitleaks, the helper fails closed unless all of the following ho
 - the scanner is executable and reports exactly the expected version;
 - `.gitleaksignore` contains exactly the single approved historical fingerprint.
 
-The raw job log emits the scanner version/source SHA, exact candidate HEAD, declared scope, merged-ancestry flag, reachable commit count, merge count, first-parent count, a SHA-256 digest of the reachable commit list, effective log options, scanner exit code, SARIF size/result count, and final scan result.
+The raw job log emits the scanner version/source SHA, exact candidate HEAD, declared scope, merged-ancestry flag, merge-diff flag, reachable commit count, merge count, first-parent count, a SHA-256 digest of the reachable commit list, effective log options, scanner exit code, SARIF size/result count, and final scan result.
 
 ## Fail-closed evidence
 
@@ -82,6 +82,6 @@ must map to:
 
 - gate: `Secret scan` in `FinanceFlow CI`;
 - exact run: a workflow run whose head SHA is the candidate SHA being certified;
-- raw evidence: exact candidate HEAD, `SECRET_SCAN_SCOPE=all-commits-reachable-from-exact-candidate-head`, `SECRET_SCAN_INCLUDE_MERGED_ANCESTRY=true`, reachable commit count/digest, effective Gitleaks command/log options, validated SARIF metadata, and successful regression proof.
+- raw evidence: exact candidate HEAD, `SECRET_SCAN_SCOPE=all-commits-reachable-from-exact-candidate-head`, `SECRET_SCAN_INCLUDE_MERGED_ANCESTRY=true`, `SECRET_SCAN_INCLUDE_MERGE_COMMIT_DIFFS=true`, reachable commit count/digest, effective Gitleaks command/log options, validated SARIF metadata, and successful regression proof.
 
 If those artifacts cannot be tied to the same exact candidate SHA, release readiness must not be declared.
