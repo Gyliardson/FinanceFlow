@@ -322,18 +322,33 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     env:
-      GITLEAKS_BIN: ${{ runner.temp }}/gitleaks
+      GITLEAKS_BIN: /tmp/financeflow-gitleaks
       GITLEAKS_EXPECTED_VERSION: '8.24.3'
       GITLEAKS_SOURCE_SHA: 107a41827bb6698dbbff756b2300537774a1d84c
       SECRET_SCAN_REQUIRED_IGNORE_FINGERPRINT: 68bc951e2c0c4017983bded88fc92186258154bd:mobile/tests/idempotent-mutation-contract.cjs:generic-api-key:213
-      CANDIDATE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - name: Checkout exact candidate with complete history
+      - name: Checkout exact PR candidate with complete history
+        if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Record exact PR candidate HEAD
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: echo "CANDIDATE_HEAD=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_ENV"
+      - name: Checkout exact push candidate with complete history
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record exact push candidate HEAD
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: echo "CANDIDATE_HEAD=${GITHUB_SHA}" >> "$GITHUB_ENV"
       - name: Setup pinned Go toolchain
         uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
