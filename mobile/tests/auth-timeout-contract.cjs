@@ -10,7 +10,9 @@ const asyncStorage = require(path.join(compiledRoot, 'node_modules', '@react-nat
 const secureStore = require(path.join(compiledRoot, 'node_modules', 'expo-secure-store'));
 const auth = require(path.join(compiledRoot, 'authSession.js'));
 
-const SECURE_SESSION_KEY = 'financeflow.auth-session.v2';
+const SECURE_SESSION_MANIFEST_KEY = 'financeflow.auth-session.v3.manifest';
+const SECURE_SESSION_PREFIX = 'financeflow.auth-session.v3';
+const LEGACY_SECURE_SESSION_KEY = 'financeflow.auth-session.v2';
 
 const makeSession = (userId, expiresAt) => ({
   accessToken: `access-${userId}`,
@@ -19,6 +21,23 @@ const makeSession = (userId, expiresAt) => ({
   user: { id: userId, email: `${userId}@example.test` },
 });
 
+function chunkKey(generation, index) {
+  return `${SECURE_SESSION_PREFIX}.${generation}.${index}`;
+}
+
+async function readSecureSession() {
+  const manifestRaw = await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY);
+  if (!manifestRaw) return null;
+  const manifest = JSON.parse(manifestRaw);
+  const chunks = [];
+  for (let index = 0; index < manifest.chunks; index += 1) {
+    const chunk = await secureStore.getItemAsync(chunkKey(manifest.generation, index));
+    if (chunk === null) return null;
+    chunks.push(chunk);
+  }
+  return JSON.parse(chunks.join(''));
+}
+
 async function reset() {
   asyncStorage.__reset();
   secureStore.__reset();
@@ -26,6 +45,11 @@ async function reset() {
   process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'publishable-test-key';
   auth.configureAuthLocalSessionCleanup(null);
   await auth.initializeAuthSession();
+}
+
+async function installSession(session) {
+  await secureStore.setItemAsync(LEGACY_SECURE_SESSION_KEY, JSON.stringify(session));
+  return auth.initializeAuthSession();
 }
 
 async function withImmediateAuthTimeout(task) {
@@ -74,32 +98,34 @@ async function testPasswordSignInTimeoutIsServiceUnavailable() {
     /Authentication service is unavailable/,
   );
   assert.equal(auth.getCurrentAuthSession(), null);
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY), null);
 }
 
 async function testRefreshTimeoutPreservesExistingSession() {
   await reset();
   const expired = makeSession('user-refresh', Date.now() - 1);
-  await secureStore.setItemAsync(SECURE_SESSION_KEY, JSON.stringify(expired));
+  await secureStore.setItemAsync(LEGACY_SECURE_SESSION_KEY, JSON.stringify(expired));
 
   const restored = await withImmediateAuthTimeout(() => auth.initializeAuthSession());
   assert.ok(restored, 'transient refresh timeout must preserve the previously valid cached session');
   assert.equal(restored.user.id, 'user-refresh');
   assert.equal(auth.getCurrentAuthSession().user.id, 'user-refresh');
-  assert.ok(await secureStore.getItemAsync(SECURE_SESSION_KEY), 'refresh timeout must not delete persisted session');
+  assert.equal((await readSecureSession()).user.id, 'user-refresh', 'refresh timeout must preserve the migrated durable session');
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null, 'v2 session must migrate one-way before refresh');
 }
 
 async function testRemoteLogoutTimeoutStillCompletesLocalLogout() {
   await reset();
   const active = makeSession('user-logout', Date.now() + 10 * 60_000);
-  await secureStore.setItemAsync(SECURE_SESSION_KEY, JSON.stringify(active));
-  await auth.initializeAuthSession();
+  await installSession(active);
 
   let cleanupCalls = 0;
   auth.configureAuthLocalSessionCleanup(async () => { cleanupCalls += 1; });
 
   await withImmediateAuthTimeout(() => auth.signOutAuthSession());
   assert.equal(auth.getCurrentAuthSession(), null, 'remote timeout must not retain local auth session');
-  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_KEY), null, 'remote timeout must remove persisted session');
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY), null, 'remote timeout must remove durable v3 session');
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null, 'remote timeout must not restore legacy v2 session');
   assert.equal(cleanupCalls, 1, 'remote timeout must still run auth-bound device cleanup');
 }
 

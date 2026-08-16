@@ -6,7 +6,12 @@ import {
   migrateLegacyFinancialCacheToUser,
 } from './userCache';
 
-const SESSION_STORAGE_KEY = 'financeflow.auth-session.v2';
+const LEGACY_SECURE_SESSION_STORAGE_KEY = 'financeflow.auth-session.v2';
+const SESSION_MANIFEST_KEY = 'financeflow.auth-session.v3.manifest';
+const SESSION_CHUNK_PREFIX = 'financeflow.auth-session.v3';
+const SESSION_PROTOCOL_VERSION = 3;
+const SESSION_CHUNK_SIZE = 1800;
+const MAX_SESSION_CHUNKS = 64;
 const LEGACY_SESSION_STORAGE_KEY = '@financeflow:auth-session:v1';
 const REFRESH_SKEW_MS = 60_000;
 export const AUTH_REQUEST_TIMEOUT_MS = 15_000;
@@ -38,6 +43,18 @@ interface SupabaseTokenResponse {
     email?: string;
   };
 }
+
+interface SecureSessionManifest {
+  version: typeof SESSION_PROTOCOL_VERSION;
+  generation: string;
+  chunks: number;
+  totalLength: number;
+}
+
+type PersistedSessionRead =
+  | { state: 'missing' }
+  | { state: 'corrupt' }
+  | { state: 'ok'; raw: string; legacy: boolean };
 
 class InvalidCredentialsError extends Error {}
 class AuthServiceUnavailableError extends Error {}
@@ -156,14 +173,153 @@ async function cleanupLocalSessionArtifactsUnlocked(): Promise<void> {
   }
 }
 
+function sessionChunkKey(generation: string, index: number): string {
+  return `${SESSION_CHUNK_PREFIX}.${generation}.${index}`;
+}
+
+function newSessionGeneration(): string {
+  return `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function parseSessionManifest(raw: string): SecureSessionManifest | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<SecureSessionManifest>;
+    if (
+      parsed.version !== SESSION_PROTOCOL_VERSION
+      || typeof parsed.generation !== 'string'
+      || !/^[A-Za-z0-9._-]+$/.test(parsed.generation)
+      || typeof parsed.chunks !== 'number'
+      || !Number.isInteger(parsed.chunks)
+      || parsed.chunks < 1
+      || parsed.chunks > MAX_SESSION_CHUNKS
+      || typeof parsed.totalLength !== 'number'
+      || !Number.isInteger(parsed.totalLength)
+      || parsed.totalLength < 1
+      || parsed.totalLength > SESSION_CHUNK_SIZE * MAX_SESSION_CHUNKS
+    ) {
+      return null;
+    }
+    return {
+      version: SESSION_PROTOCOL_VERSION,
+      generation: parsed.generation,
+      chunks: parsed.chunks,
+      totalLength: parsed.totalLength,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function cleanupSessionGeneration(manifest: SecureSessionManifest | null): Promise<void> {
+  if (!manifest) return;
+  for (let index = 0; index < manifest.chunks; index += 1) {
+    await SecureStore.deleteItemAsync(
+      sessionChunkKey(manifest.generation, index),
+    ).catch(() => undefined);
+  }
+}
+
+async function readChunkedSessionRawUnlocked(): Promise<PersistedSessionRead> {
+  let manifestRaw: string | null;
+  try {
+    manifestRaw = await SecureStore.getItemAsync(SESSION_MANIFEST_KEY);
+  } catch {
+    return { state: 'corrupt' };
+  }
+  if (manifestRaw === null) return { state: 'missing' };
+
+  const manifest = parseSessionManifest(manifestRaw);
+  if (!manifest) {
+    await SecureStore.deleteItemAsync(SESSION_MANIFEST_KEY).catch(() => undefined);
+    return { state: 'corrupt' };
+  }
+
+  const chunks: string[] = [];
+  try {
+    for (let index = 0; index < manifest.chunks; index += 1) {
+      const chunk = await SecureStore.getItemAsync(sessionChunkKey(manifest.generation, index));
+      if (chunk === null) {
+        await cleanupSessionGeneration(manifest);
+        await SecureStore.deleteItemAsync(SESSION_MANIFEST_KEY).catch(() => undefined);
+        return { state: 'corrupt' };
+      }
+      chunks.push(chunk);
+    }
+  } catch {
+    return { state: 'corrupt' };
+  }
+
+  const raw = chunks.join('');
+  if (raw.length !== manifest.totalLength) {
+    await cleanupSessionGeneration(manifest);
+    await SecureStore.deleteItemAsync(SESSION_MANIFEST_KEY).catch(() => undefined);
+    return { state: 'corrupt' };
+  }
+  return { state: 'ok', raw, legacy: false };
+}
+
+async function writeChunkedSessionRawUnlocked(raw: string): Promise<void> {
+  if (!raw) throw new Error('Authentication session payload cannot be empty');
+  if (raw.length > SESSION_CHUNK_SIZE * MAX_SESSION_CHUNKS) {
+    throw new Error('Authentication session payload exceeds the supported secure storage budget');
+  }
+
+  const oldManifestRaw = await SecureStore.getItemAsync(SESSION_MANIFEST_KEY).catch(() => null);
+  const oldManifest = oldManifestRaw ? parseSessionManifest(oldManifestRaw) : null;
+  const generation = newSessionGeneration();
+  const chunks = raw.match(new RegExp(`.{1,${SESSION_CHUNK_SIZE}}`, 'gs')) ?? [];
+  if (!chunks.length || chunks.length > MAX_SESSION_CHUNKS) {
+    throw new Error('Authentication session payload cannot be represented securely');
+  }
+
+  const manifest: SecureSessionManifest = {
+    version: SESSION_PROTOCOL_VERSION,
+    generation,
+    chunks: chunks.length,
+    totalLength: raw.length,
+  };
+
+  let written = 0;
+  try {
+    for (let index = 0; index < chunks.length; index += 1) {
+      await SecureStore.setItemAsync(sessionChunkKey(generation, index), chunks[index]);
+      written += 1;
+    }
+    // The manifest is the commit point: readers cannot observe the new generation before this write.
+    await SecureStore.setItemAsync(SESSION_MANIFEST_KEY, JSON.stringify(manifest));
+  } catch (error) {
+    for (let index = 0; index < written; index += 1) {
+      await SecureStore.deleteItemAsync(sessionChunkKey(generation, index)).catch(() => undefined);
+    }
+    throw error;
+  }
+
+  if (oldManifest && oldManifest.generation !== generation) {
+    await cleanupSessionGeneration(oldManifest);
+  }
+}
+
+async function clearPersistedSessionUnlocked(): Promise<void> {
+  const manifestRaw = await SecureStore.getItemAsync(SESSION_MANIFEST_KEY).catch(() => null);
+  const manifest = manifestRaw ? parseSessionManifest(manifestRaw) : null;
+
+  // Legacy stores are removed before the v3 commit marker so logout cannot fall back to old plaintext/v2 state.
+  await SecureStore.deleteItemAsync(LEGACY_SECURE_SESSION_STORAGE_KEY);
+  await clearLegacySessionStorage();
+  await SecureStore.deleteItemAsync(SESSION_MANIFEST_KEY);
+  await cleanupSessionGeneration(manifest);
+}
+
 async function persistSessionUnlocked(session: AuthSession | null): Promise<void> {
-  setCurrentSession(session);
   if (session) {
-    await SecureStore.setItemAsync(SESSION_STORAGE_KEY, JSON.stringify(session));
+    await writeChunkedSessionRawUnlocked(JSON.stringify(session));
+    await SecureStore.deleteItemAsync(LEGACY_SECURE_SESSION_STORAGE_KEY);
     await clearLegacySessionStorage();
+    // Memory is published only after the durable session commit and legacy cleanup succeed.
+    setCurrentSession(session);
   } else {
-    await SecureStore.deleteItemAsync(SESSION_STORAGE_KEY);
-    await clearLegacySessionStorage();
+    await clearPersistedSessionUnlocked();
+    setCurrentSession(null);
     await cleanupLocalSessionArtifactsUnlocked();
   }
 }
@@ -172,14 +328,19 @@ async function persistSession(session: AuthSession | null): Promise<void> {
   await withSessionPersistenceLock(() => persistSessionUnlocked(session));
 }
 
-async function readPersistedSession(): Promise<{ raw: string; legacy: boolean } | null> {
-  const secured = await SecureStore.getItemAsync(SESSION_STORAGE_KEY);
-  if (secured !== null) {
-    return { raw: secured, legacy: false };
+async function readPersistedSession(): Promise<PersistedSessionRead> {
+  const chunked = await readChunkedSessionRawUnlocked();
+  if (chunked.state !== 'missing') return chunked;
+
+  const legacySecure = await SecureStore.getItemAsync(LEGACY_SECURE_SESSION_STORAGE_KEY);
+  if (legacySecure !== null) {
+    return { state: 'ok', raw: legacySecure, legacy: true };
   }
 
   const legacy = await AsyncStorage.getItem(LEGACY_SESSION_STORAGE_KEY);
-  return legacy === null ? null : { raw: legacy, legacy: true };
+  return legacy === null
+    ? { state: 'missing' }
+    : { state: 'ok', raw: legacy, legacy: true };
 }
 
 async function authRequest<T>(
@@ -273,7 +434,12 @@ async function commitRefreshedSession(
 
 export async function initializeAuthSession(): Promise<AuthSession | null> {
   const stored = await readPersistedSession();
-  if (!stored) {
+  if (stored.state === 'missing') {
+    await persistSession(null);
+    await clearLegacyGlobalFinancialCache();
+    return null;
+  }
+  if (stored.state === 'corrupt') {
     await persistSession(null);
     await clearLegacyGlobalFinancialCache();
     return null;
@@ -298,6 +464,7 @@ export async function initializeAuthSession(): Promise<AuthSession | null> {
     await persistSession(parsed);
   } else {
     setCurrentSession(parsed);
+    await SecureStore.deleteItemAsync(LEGACY_SECURE_SESSION_STORAGE_KEY).catch(() => undefined);
     await clearLegacySessionStorage();
   }
 

@@ -9,7 +9,10 @@ const auth = require(path.join(compiledRoot, 'authSession.js'));
 const cache = require(path.join(compiledRoot, 'userCache.js'));
 const failures = require(path.join(compiledRoot, 'apiFailure.js'));
 
-const SECURE_SESSION_KEY = 'financeflow.auth-session.v2';
+const SECURE_SESSION_MANIFEST_KEY = 'financeflow.auth-session.v3.manifest';
+const SECURE_SESSION_PREFIX = 'financeflow.auth-session.v3';
+const LEGACY_SECURE_SESSION_KEY = 'financeflow.auth-session.v2';
+const SESSION_CHUNK_SIZE = 1800;
 
 function makeSession(userId, overrides = {}) {
   return {
@@ -41,6 +44,10 @@ function response(status, payload) {
   };
 }
 
+function chunkKey(generation, index) {
+  return `${SECURE_SESSION_PREFIX}.${generation}.${index}`;
+}
+
 async function reset() {
   secureStore.__reset();
   global.fetch = undefined;
@@ -50,8 +57,23 @@ async function reset() {
 }
 
 async function installSession(session) {
-  await secureStore.setItemAsync(SECURE_SESSION_KEY, JSON.stringify(session));
+  // Exercise the supported one-way v2 migration as a compact setup primitive.
+  await secureStore.setItemAsync(LEGACY_SECURE_SESSION_KEY, JSON.stringify(session));
   return auth.initializeAuthSession();
+}
+
+async function readSecureSession() {
+  const manifestRaw = await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY);
+  if (!manifestRaw) return null;
+  const manifest = JSON.parse(manifestRaw);
+  const chunks = [];
+  for (let index = 0; index < manifest.chunks; index += 1) {
+    const chunk = await secureStore.getItemAsync(chunkKey(manifest.generation, index));
+    if (chunk === null) return null;
+    assert.ok(chunk.length <= SESSION_CHUNK_SIZE);
+    chunks.push(chunk);
+  }
+  return JSON.parse(chunks.join(''));
 }
 
 async function testFailureClassificationDoesNotMaskAuthoritative4xx() {
@@ -79,7 +101,8 @@ async function testCurrentRejectedSnapshotClearsOnlyItsOwnerAndSession() {
 
   assert.equal(await auth.invalidateRejectedAuthSessionSnapshot(snapshot), true);
   assert.equal(auth.getCurrentAuthSession(), null);
-  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_KEY), null);
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY), null);
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null);
   assert.equal(await cache.getUserCache('user-a', 'bills'), null);
   assert.deepEqual(await cache.getUserCache('user-b', 'bills'), [{ id: 'bill-b' }]);
 }
@@ -101,7 +124,8 @@ async function testStaleRejectedSnapshotCannotClearNewerSameOwnerLogin() {
 
   assert.equal(await auth.invalidateRejectedAuthSessionSnapshot(staleSnapshot), false);
   assert.equal(auth.getCurrentAuthSession().accessToken, 'newer-access-user-a');
-  assert.equal(JSON.parse(await secureStore.getItemAsync(SECURE_SESSION_KEY)).accessToken, 'newer-access-user-a');
+  assert.equal((await readSecureSession()).accessToken, 'newer-access-user-a');
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null);
   assert.deepEqual(
     await cache.getUserCache('user-a', 'bills'),
     [{ id: 'preserve-for-new-session' }],
