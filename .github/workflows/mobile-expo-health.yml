@@ -1,6 +1,7 @@
 name: Mobile Expo health
 
 on:
+  workflow_dispatch:
   pull_request:
     branches:
       - portfolio/revamp-2026
