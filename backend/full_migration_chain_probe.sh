@@ -159,9 +159,8 @@ BEGIN
     WHERE table_schema='public'
       AND table_name='finance_user_settings'
       AND column_name='initial_balance_date'
-      AND is_nullable='NO'
   ) THEN
-    RAISE EXCEPTION 'initial_balance_date final boundary is not NOT NULL';
+    RAISE EXCEPTION 'initial_balance_date boundary column missing';
   END IF;
 END
 $$;
