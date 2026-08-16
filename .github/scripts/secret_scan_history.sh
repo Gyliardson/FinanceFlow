@@ -61,7 +61,7 @@ commit_list_sha256=$(
 
 ignore_file="$repo/.gitleaksignore"
 [[ -f "$ignore_file" ]] || fail_closed 'gitleaksignore-missing'
-mapfile -t active_ignores < <(sed -e 's/[[:space:]]*$//' "$ignore_file" | grep -Ev '^[[:space:]]*(#|$)' || true)
+mapfile -t active_ignores < <(awk '{ sub(/[[:space:]]+$/, ""); if ($0 !~ /^[[:space:]]*(#|$)/) print }' "$ignore_file")
 if [[ ${#active_ignores[@]} -ne 1 || "${active_ignores[0]:-}" != "$expected_ignore" ]]; then
   fail_closed 'gitleaksignore-is-not-the-single-approved-fingerprint'
 fi
