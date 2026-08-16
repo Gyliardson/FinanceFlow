@@ -14,7 +14,7 @@ readonly sentinel_prefix='ghp'
 readonly sentinel_body='A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'
 readonly sentinel="${sentinel_prefix}_${sentinel_body}"
 
-mapfile -t source_ignores < <(sed -e 's/[[:space:]]*$//' "$source_root/.gitleaksignore" | grep -Ev '^[[:space:]]*(#|$)' || true)
+mapfile -t source_ignores < <(awk '{ sub(/[[:space:]]+$/, ""); if ($0 !~ /^[[:space:]]*(#|$)/) print }' "$source_root/.gitleaksignore")
 [[ ${#source_ignores[@]} -eq 1 ]] || { echo 'production .gitleaksignore has unexpected active entries' >&2; exit 1; }
 [[ "${source_ignores[0]}" == "$expected_ignore" ]] || { echo 'production .gitleaksignore is broader/different than the approved fingerprint' >&2; exit 1; }
 [[ "$expected_ignore" != *"$sentinel"* ]] || { echo 'test sentinel unexpectedly appears in approved ignore' >&2; exit 1; }
