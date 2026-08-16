@@ -322,3 +322,21 @@ jobs:
           SELECT public.finance_replace_settings('1.00',DATE '2026-01-01','1.00');
           SQL
           then exit 1; fi
+
+      - name: Replay bootstrap and all migrations on a clean database
+        shell: bash
+        run: bash backend/full_migration_chain_probe.sh
+
+      - name: Full migration chain test-the-test
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe_root="$(mktemp -d)"
+          trap 'rm -rf "$probe_root"' EXIT
+          cp -R backend/migrations "$probe_root/migrations"
+          rm "$probe_root/migrations/010_initial_balance_date_boundary.sql"
+          if MIGRATION_DIR="$probe_root/migrations" INVENTORY_ONLY=1 bash backend/full_migration_chain_probe.sh; then
+            echo 'Migration-chain probe unexpectedly accepted an omitted migration' >&2
+            exit 1
+          fi
+          echo 'FULL_MIGRATION_REGRESSION_OMITTED_MIGRATION=detected'
