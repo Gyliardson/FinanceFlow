@@ -18,6 +18,7 @@ Changes should be merged into `portfolio/revamp-2026` only after the applicable 
 - PostgreSQL recurring idempotency;
 - PostgreSQL ownership and RLS;
 - Financial idempotency / PostgreSQL mutation idempotency;
+- Authenticated data plane / PostgreSQL authenticated write boundary;
 - Mobile auth session, cache and mutation identity;
 - Mobile UX state and accessibility contract;
 - Mobile Expo health / Expo Doctor and build smoke;
@@ -30,9 +31,9 @@ A green wrapper is not sufficient if a required inner test was skipped or did no
 
 ## GitHub branch protection / rulesets
 
-The effective GitHub repository policy was re-read non-destructively on 2026-08-14 after maintainer configuration.
+The effective GitHub repository policy was re-read non-destructively on 2026-08-15 after maintainer configuration.
 
-`main` now reports `protected: true`. The repository contains one active branch ruleset named `Protect main`, targeted at `~DEFAULT_BRANCH` with no bypass actors; the current authenticated user reports `current_user_can_bypass: never`.
+`main` reports `protected: true`. The repository contains one active branch ruleset named `Protect main`, targeted at `~DEFAULT_BRANCH` with no bypass actors; the current authenticated user reports `current_user_can_bypass: never`.
 
 The active ruleset enforces:
 
@@ -54,13 +55,20 @@ The effective globally required checks are exactly:
 - `Secret scan`;
 - `PostgreSQL mutation idempotency`;
 - `Auth session, cache and mutation identity`;
-- `UX state and accessibility contract`.
+- `UX state and accessibility contract`;
+- `PostgreSQL authenticated write boundary`.
 
-These are intentionally the always-on PR checks. Path-filtered release jobs are not configured as global required checks because an unrelated PR could otherwise be blocked by a check that never reports. In particular, `Backend container`, `Expo Doctor and build smoke`, and `Immutable Actions and reproducible tooling` remain valuable release gates but are not global required checks.
+These are intentionally the always-on PR checks. The authenticated write-boundary context is emitted by `.github/workflows/authenticated-data-plane.yml` for every pull request targeting `main` or `portfolio/revamp-2026`, without a path filter. Path-filtered release jobs are not configured as global required checks because an unrelated PR could otherwise be blocked by a check that never reports. In particular, `Backend container`, `Expo Doctor and build smoke`, and `Immutable Actions and reproducible tooling` remain valuable release gates but are not global required checks.
 
 The ruleset permits GitHub merge, squash, and rebase methods, but the project-level promotion rule is stricter: automation must never merge the final `portfolio/revamp-2026 -> main` PR. That final promotion remains a maintainer decision after the required independent audit.
 
 The same controls may be applied to `portfolio/revamp-2026` proportionally. Internal automation can merge an issue PR only after its required evidence is green, but that program convention is not a substitute for GitHub-side protection.
+
+### Required-check drift contract
+
+Repository-side tests cannot mutate or authoritatively query GitHub settings during normal CI, so the remote ruleset remains the source of truth. A lightweight repository contract nevertheless guards the invariant that the authenticated write-boundary workflow remains always-on for PRs to both protected promotion branches and that the documented required-check inventory includes its exact context name.
+
+If a future always-on security or financial gate is added or renamed, maintainers must update the GitHub ruleset, this document and the corresponding repository contract together. A passing repository test is not a substitute for re-reading the effective remote ruleset after any settings change.
 
 ## GitHub Actions supply-chain policy
 
@@ -116,7 +124,7 @@ A work-branch/PR validation must not publish an EAS production update merely to 
 
 ## Residual/manual governance items
 
-The repository-level `main` protection required by issue #30 is now verified as active. Remaining platform-level items are outside that issue's repository-policy Definition of Done and should be reviewed as operational governance when relevant:
+The repository-level `main` protection required by issue #30 is verified as active. Remaining platform-level items are outside that issue's repository-policy Definition of Done and should be reviewed as operational governance when relevant:
 
 - organization/account-level Actions restrictions and allowed-actions policy;
 - secret/environment protection rules in GitHub/Expo;
