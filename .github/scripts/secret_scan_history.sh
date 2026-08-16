@@ -3,8 +3,8 @@ set -u -o pipefail
 
 # Shared production/regression entry point for the required Secret scan gate.
 # Contract: scan every commit reachable from the exact candidate HEAD, including
-# second-parent/merged ancestry. Never derive the boundary from PR event commit
-# lists and never reduce it to first-parent history.
+# second-parent/merged ancestry and merge-commit diffs. Never derive the boundary
+# from PR event commit lists and never reduce it to first-parent history.
 
 readonly EXPECTED_IGNORE_FINGERPRINT_DEFAULT='68bc951e2c0c4017983bded88fc92186258154bd:mobile/tests/idempotent-mutation-contract.cjs:generic-api-key:213'
 readonly CONTRACT='all-commits-reachable-from-exact-candidate-head'
@@ -82,6 +82,7 @@ printf 'SECRET_SCAN_SCANNER_SOURCE_SHA=%s\n' "$scanner_source_sha"
 printf 'SECRET_SCAN_CANDIDATE_HEAD=%s\n' "$candidate"
 printf 'SECRET_SCAN_SCOPE=%s\n' "$CONTRACT"
 printf 'SECRET_SCAN_INCLUDE_MERGED_ANCESTRY=true\n'
+printf 'SECRET_SCAN_INCLUDE_MERGE_COMMIT_DIFFS=true\n'
 printf 'SECRET_SCAN_PR_EVENT_RANGE_DERIVATION=false\n'
 printf 'SECRET_SCAN_FIRST_PARENT_ONLY=false\n'
 printf 'SECRET_SCAN_REACHABLE_COMMITS=%s\n' "$reachable_count"
@@ -89,9 +90,9 @@ printf 'SECRET_SCAN_MERGE_COMMITS=%s\n' "$merge_count"
 printf 'SECRET_SCAN_FIRST_PARENT_COMMITS=%s\n' "$first_parent_count"
 printf 'SECRET_SCAN_REACHABLE_SET_SHA256=%s\n' "$commit_list_sha256"
 printf 'SECRET_SCAN_IGNORE_ENTRIES=%s\n' "${#active_ignores[@]}"
-printf 'SECRET_SCAN_LOG_OPTS=--full-history %s\n' "$candidate"
+printf 'SECRET_SCAN_LOG_OPTS=--full-history -m %s\n' "$candidate"
 printf 'SECRET_SCAN_COMMAND=%q detect --redact --verbose --exit-code=2 --report-format=sarif --report-path=%q --log-level=debug --log-opts=%q\n' \
-  "$scanner" "$report" "--full-history $candidate"
+  "$scanner" "$report" "--full-history -m $candidate"
 
 # Capture the scanner status only so we can validate the SARIF before returning
 # it. No successful fallback exists: a finding returns 2, any scanner/evidence
@@ -107,7 +108,7 @@ set +e
     --report-format=sarif \
     --report-path="$report" \
     --log-level=debug \
-    --log-opts="--full-history $candidate"
+    --log-opts="--full-history -m $candidate"
 )
 scanner_status=$?
 set -e
