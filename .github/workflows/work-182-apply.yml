@@ -1,0 +1,76 @@
+name: Work 182 bounded pin applicator
+
+on:
+  push:
+    branches:
+      - work/182-supply-chain-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: work/182-supply-chain-hardening
+      - name: Apply exact fail-closed replacements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          POSTGRES = 'postgres:16@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5'
+          PYTHON = 'python:3.12-slim@sha256:dd29372629eeba2dd003fd9e9d35a5b8236c44727875a0364254b5127af88e65'
+
+          def replace(path, old, new, expected=None):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if expected is not None and count != expected:
+                  raise SystemExit(f'{path}: expected {expected} occurrences of {old!r}, found {count}')
+              if expected is None and count < 1:
+                  raise SystemExit(f'{path}: expected at least one occurrence of {old!r}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+              print(f'PIN_REPLACEMENT={path}:{count}')
+
+          for workflow in (
+              '.github/workflows/ci.yml',
+              '.github/workflows/financial-idempotency.yml',
+              '.github/workflows/authenticated-data-plane.yml',
+          ):
+              replace(workflow, 'image: postgres:16', f'image: {POSTGRES}')
+
+          replace('backend/Dockerfile', 'FROM python:3.12-slim', f'FROM {PYTHON}', expected=1)
+          replace('.github/workflows/mobile-expo-health.yml', 'run: npx expo-doctor', 'run: npx --yes expo-doctor@1.20.2', expected=1)
+          replace(
+              '.github/workflows/ci.yml',
+              'python -m pip install --upgrade pip pip-audit',
+              "python -m pip install --upgrade pip 'pip-audit==2.10.1'",
+              expected=1,
+          )
+          replace('docs/CLEAN_ROOM.md', 'npx expo-doctor', 'npx --yes expo-doctor@1.20.2', expected=1)
+          replace('docs/CLEAN_ROOM.md', 'python -m pip install pip-audit', "python -m pip install 'pip-audit==2.10.1'", expected=1)
+
+          expo = Path('.github/workflows/mobile-expo-health.yml')
+          text = expo.read_text(encoding='utf-8')
+          path_block = "    paths:\n      - 'mobile/**'\n      - '.github/workflows/mobile-expo-health.yml'\n      - '.github/workflows/deploy-frontend.yml'\n"
+          if text.count(path_block) != 2:
+              raise SystemExit(f'mobile-expo-health.yml: expected two path-filter blocks, found {text.count(path_block)}')
+          expo.write_text(text.replace(path_block, ''), encoding='utf-8')
+          print('EXPO_PATH_FILTERS_REMOVED=2')
+          PY
+          git diff --check
+          git diff
+      - name: Commit bounded replacements
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'financeflow-audit-bot'
+          git config user.email '100867910+Gyliardson@users.noreply.github.com'
+          git add .github/workflows/ci.yml .github/workflows/financial-idempotency.yml .github/workflows/authenticated-data-plane.yml .github/workflows/mobile-expo-health.yml backend/Dockerfile docs/CLEAN_ROOM.md
+          git diff --cached --quiet && { echo 'No replacements produced' >&2; exit 1; }
+          git commit -m 'build: pin release supply-chain inputs'
+          git push origin HEAD:work/182-supply-chain-hardening
