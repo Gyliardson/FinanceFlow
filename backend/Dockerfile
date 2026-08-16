@@ -30,6 +30,7 @@ EXPOSE 8000
 # Reduz o blast radius de qualquer comprometimento do processo da aplicação.
 USER financeflow
 
-# Production composition root removes the legacy shared API-key middleware and
-# installs verified Supabase Bearer auth + explicit CORS before the app starts.
-CMD uvicorn runtime:create_app --factory --host 0.0.0.0 --port ${PORT:-8000}
+# Keep JSON/exec-form container metadata while still expanding Render's runtime
+# PORT. The shell immediately execs Uvicorn, so Uvicorn becomes PID 1 and receives
+# normal container lifecycle signals directly.
+CMD ["sh", "-c", "exec uvicorn runtime:create_app --factory --host 0.0.0.0 --port \"${PORT:-8000}\""]
