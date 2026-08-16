@@ -10,7 +10,7 @@ import sys
 
 FULL_SHA = re.compile(r'^[0-9a-f]{40}$')
 SHA256_IMAGE = re.compile(r'^.+@sha256:[0-9a-f]{64}$')
-USES_RE = re.compile(r'^\s*uses:\s*([^\s#]+)(?:\s+#\s*(.+))?\s*$')
+USES_RE = re.compile(r'^\s*(?:-\s*)?uses:\s*([^\s#]+)(?:\s+#\s*(.+))?\s*$')
 EAS_RE = re.compile(r'^\s*eas-version:\s*([^\s#]+)')
 IMAGE_RE = re.compile(r'^\s*image:\s*([^\s#]+)')
 FROM_RE = re.compile(r'^\s*FROM(?:\s+--platform=[^\s]+)?\s+([^\s]+)', re.IGNORECASE)
