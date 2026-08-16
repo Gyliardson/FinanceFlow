@@ -41,7 +41,7 @@ docker run --rm --name financeflow-pg \
   -e POSTGRES_PASSWORD=financeflow \
   -e POSTGRES_DB=financeflow_test \
   -p 5432:5432 \
-  -d postgres:16
+  -d postgres:16@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5
 ```
 
 Wait for readiness:
@@ -54,7 +54,7 @@ FinanceFlow stores repository-owned schema evolution as `backend/supabase_schema
 
 The required `PostgreSQL authenticated write boundary` job now includes `backend/full_migration_chain_probe.sh`. That probe creates a second clean disposable database, provisions only the minimal Supabase platform primitives that repository SQL legitimately depends on (`auth.uid()`, `auth.users`, `anon`/`authenticated` roles, and the Storage buckets relation), applies `backend/supabase_schema.sql`, then applies **every expected numbered migration in exact order with `ON_ERROR_STOP=1`**. It fails closed on a missing/extra/reordered numbered migration and asserts representative final ownership/RLS, authenticated-DML revocation, idempotency RPC/table, recurring uniqueness, private receipt bucket/path, and initial-balance boundary state.
 
-This is a repository migration-chain convergence proof under explicit Supabase-compatible platform shims. It is **not** a claim that a generic PostgreSQL database is equivalent to a provisioned Supabase project, nor does it replace external validation of the managed Auth/Storage/Data API platform. Focused PostgreSQL fixtures remain alongside the chain probe because they exercise adversarial RLS, concurrency and negative behavior more precisely than a bootstrap smoke alone.
+This is a repository migration-chain convergence proof under explicit Supabase-compatible platform shims. It is **not** equivalent to provisioning a production Supabase project, nor does it replace external validation of the managed Auth/Storage/Data API platform. Focused PostgreSQL fixtures remain alongside the chain probe because they exercise adversarial RLS, concurrency and negative behavior more precisely than a bootstrap smoke alone.
 
 The authoritative disposable-PostgreSQL procedures live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), [`.github/workflows/financial-idempotency.yml`](../.github/workflows/financial-idempotency.yml), and [`.github/workflows/authenticated-data-plane.yml`](../.github/workflows/authenticated-data-plane.yml). Together they prove or are required to prove:
 
@@ -109,7 +109,7 @@ Current baseline: Node.js 22.13+.
 cd mobile
 npm ci
 npx tsc --noEmit
-npx expo-doctor
+npx --yes expo-doctor@1.20.2
 node scripts/test-release-env-contract.mjs
 npx expo export --platform web
 ```
@@ -132,7 +132,7 @@ Backend dependency consistency:
 ```bash
 cd backend
 python -m pip check
-python -m pip install pip-audit
+python -m pip install 'pip-audit==2.10.1'
 python -m pip_audit -r requirements.txt
 ```
 

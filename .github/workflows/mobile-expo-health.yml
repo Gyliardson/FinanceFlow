@@ -6,18 +6,10 @@ on:
     branches:
       - portfolio/revamp-2026
       - main
-    paths:
-      - 'mobile/**'
-      - '.github/workflows/mobile-expo-health.yml'
-      - '.github/workflows/deploy-frontend.yml'
   push:
     branches:
       - portfolio/revamp-2026
       - 'work/**'
-    paths:
-      - 'mobile/**'
-      - '.github/workflows/mobile-expo-health.yml'
-      - '.github/workflows/deploy-frontend.yml'
 
 permissions:
   contents: read
@@ -45,7 +37,7 @@ jobs:
       - name: Validate production branding assets
         run: node scripts/test-branding-assets-contract.mjs
       - name: Expo Doctor
-        run: npx expo-doctor
+        run: npx --yes expo-doctor@1.20.2
       - name: Validate mobile release environment contract
         run: node scripts/test-release-env-contract.mjs
       - name: Validate public Expo config
