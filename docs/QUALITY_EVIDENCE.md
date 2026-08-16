@@ -8,6 +8,7 @@ FinanceFlow treats green CI as evidence for specific properties, not as a blanke
 | --- | --- | --- |
 | `FinanceFlow CI` | Backend dependency installation, `pip check`, Python compile/tests, PostgreSQL recurring-child uniqueness, PostgreSQL ownership/RLS, mobile TypeScript, dependency-audit evidence and Gitleaks | Live production credentials, native-device behavior, third-party portal availability |
 | `Financial idempotency` | PostgreSQL 16 durable replay contract for reserve addition, bill creation, income creation and recurring-template creation, including same-key concurrency, payload mismatch and owner isolation | Mobile logical-intent lifecycle by itself; live production database configuration |
+| `Authenticated data plane` | PostgreSQL 16 enforcement of authenticated direct-table DML denial plus sanctioned owner-derived RPC writes, including payment/date/ownership constraints, settings scope, recurring convergence and anonymous denial | Live production database provisioning or external Supabase configuration |
 | `Mobile auth contract` | Session restore/refresh/logout/account-switch isolation, owner-scoped offline cache, durable mobile logical-intent identity/original-payload replay, coherent session snapshots and the `America/Sao_Paulo` financial date-only contract | Real Supabase service uptime or every OS keychain implementation |
 | `Mobile UX contract` | Source-level regression contracts for critical financial screen states, accessibility semantics, upload guards and fail-closed dashboard behavior | Pixel-perfect visual approval or native assistive-technology behavior on physical devices |
 | `Mobile Expo health` | Clean mobile install, TypeScript, Expo Doctor, public config checks, release-env contract and web-export smoke | Signed Android/iOS store builds unless external EAS credentials are supplied |
@@ -68,6 +69,8 @@ Evidence includes:
 - PostgreSQL RLS tests under a non-owner role;
 - cross-user read/update denial and forged-owner rejection;
 - anonymous financial-table denial;
+- authenticated direct-table INSERT/UPDATE/DELETE denial;
+- sanctioned owner-derived financial/settings/payment RPC boundaries;
 - private receipt-path authorization and bounded signed access;
 - mobile session restore, refresh, logout and account-switch isolation;
 - coherent mutation preparation preventing owner-A/token-B or owner-B/token-A combinations;
@@ -122,7 +125,9 @@ Canonical offline model: [`docs/OFFLINE_RESILIENCE.md`](./OFFLINE_RESILIENCE.md)
 
 ### Repository governance and supply chain
 
-The active `Protect main` ruleset is verified through GitHub rather than inferred from documentation. It requires PR promotion, conversation resolution, strict required checks, blocks deletion/non-fast-forward changes, has no bypass actors, and deliberately requires only always-on PR checks. Path-filtered release jobs remain release evidence without becoming global required checks that could deadlock unrelated PRs.
+The active `Protect main` ruleset is verified through GitHub rather than inferred from documentation. It requires PR promotion, conversation resolution, strict required checks, blocks deletion/non-fast-forward changes and has no bypass actors. Its globally required list includes the always-on `PostgreSQL authenticated write boundary` context in addition to the existing backend, PostgreSQL, mobile auth/UX, dependency and secret gates. Path-filtered release jobs remain release evidence without becoming global required checks that could deadlock unrelated PRs.
+
+A repository-side governance contract verifies that `.github/workflows/authenticated-data-plane.yml` continues to run for pull requests to both `main` and `portfolio/revamp-2026` without a path filter and that governance documentation retains the exact required context name. This contract detects repository drift but does not replace re-reading the remote GitHub ruleset after settings changes.
 
 Permanent external Actions are pinned to reviewed full commit SHAs with version comments. EAS CLI is exact-version pinned. Details and the current required-check set are recorded in [`docs/GOVERNANCE.md`](./GOVERNANCE.md).
 
