@@ -1,0 +1,9 @@
+{
+  "name": "financeflow-release-tools",
+  "private": true,
+  "version": "1.0.0",
+  "devDependencies": {
+    "eas-cli": "21.8.0",
+    "expo-doctor": "1.20.2"
+  }
+}

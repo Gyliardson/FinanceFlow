@@ -26,24 +26,33 @@ jobs:
         with:
           python-version: '3.12.13'
           check-latest: false
-      - name: Install hash-pinned semantic YAML parser
+      - name: Bootstrap hash-locked semantic parser
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes -r .github/scripts/requirements-supply-chain.txt
+          python backend/hermetic_python.py \
+            --pip-lock backend/requirements-pip-bootstrap.lock \
+            --requirements-lock .github/scripts/requirements-supply-chain.txt \
+            --expected-python 3.12.13 \
+            --expected-initial-pip 26.2.1 \
+            --expected-pip 26.2.1 \
+            --label SUPPLY_CHAIN_PARSER
           python - <<'PY'
           import sys
           import yaml
           print(f"SUPPLY_CHAIN_PYTHON={sys.version.split()[0]}")
+          print(f"SUPPLY_CHAIN_PIP={__import__('pip').__version__}")
           print(f"SUPPLY_CHAIN_PARSER_BOOTSTRAP=PyYAML {yaml.__version__}")
           if sys.version.split()[0] != "3.12.13":
               raise SystemExit("unexpected parser Python runtime")
           if yaml.__version__ != "6.0.3":
               raise SystemExit("unexpected semantic parser version")
           PY
-      - name: Compile production checker and mutation suite
-        run: python -m py_compile .github/scripts/check_supply_chain.py .github/scripts/test_supply_chain.py
+      - name: Compile production checker, helper and mutation suites
+        run: python -m py_compile backend/hermetic_python.py .github/scripts/check_supply_chain.py .github/scripts/test_supply_chain.py .github/scripts/test_hermetic_python.py
       - name: Verify workflow supply-chain policy
         run: python .github/scripts/check_supply_chain.py
       - name: Test the supply-chain policy
         run: python .github/scripts/test_supply_chain.py
+      - name: Test hash-locked Python bootstrap integrity
+        run: python .github/scripts/test_hermetic_python.py

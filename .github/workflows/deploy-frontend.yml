@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'mobile/**'
+      - '.github/npm-tools/**'
 
 permissions:
   contents: read
@@ -21,25 +22,33 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.13.0
-          cache: 'npm'
-          cache-dependency-path: 'mobile/package-lock.json'
+          node-version: '22.13.0'
+          cache: npm
+          cache-dependency-path: |
+            mobile/package-lock.json
+            .github/npm-tools/package-lock.json
 
-      - name: Install dependencies
+      - name: Install mobile dependencies from committed lock
         working-directory: ./mobile
-        run: npm ci
+        run: npm ci --ignore-scripts
 
-      - name: Setup EAS
-        uses: expo/expo-github-action@eab7a230208c952974db8c3245cfd78402c7b385 # 9.0.0
-        with:
-          eas-version: 21.8.0
-          packager: npm
-          token: ${{ secrets.EXPO_TOKEN }}
+      - name: Install EAS tooling from committed integrity lock
+        run: npm ci --ignore-scripts --legacy-peer-deps --prefix .github/npm-tools
+
+      - name: Verify exact EAS CLI package
+        run: |
+          version=$(node -p "require('./.github/npm-tools/node_modules/eas-cli/package.json').version")
+          test "$version" = '21.8.0'
+          echo "EAS_LOCKED_VERSION=$version"
 
       - name: Validate production runtime configuration
         working-directory: ./mobile
-        run: eas env:exec production 'node scripts/validate-release-env.mjs' --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: ../.github/npm-tools/node_modules/.bin/eas env:exec production 'node scripts/validate-release-env.mjs' --non-interactive
 
       - name: Publish Update
         working-directory: ./mobile
-        run: eas update --branch production --environment production --message "Auto-deploy via GitHub Actions"
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: ../.github/npm-tools/node_modules/.bin/eas update --branch production --environment production --message "Auto-deploy via GitHub Actions"

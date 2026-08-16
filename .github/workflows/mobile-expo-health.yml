@@ -27,20 +27,25 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.13.0
+          node-version: '22.13.0'
           cache: npm
-          cache-dependency-path: mobile/package-lock.json
-      - name: Clean install
-        run: npm ci
+          cache-dependency-path: |
+            mobile/package-lock.json
+            .github/npm-tools/package-lock.json
+      - name: Clean install mobile closure
+        run: npm ci --ignore-scripts
+      - name: Install integrity-locked release tooling
+        working-directory: .
+        run: npm ci --ignore-scripts --legacy-peer-deps --prefix .github/npm-tools
       - name: TypeScript
-        run: npx tsc --noEmit
+        run: ./node_modules/.bin/tsc --noEmit
       - name: Validate production branding assets
         run: node scripts/test-branding-assets-contract.mjs
       - name: Expo Doctor
-        run: npx --yes expo-doctor@1.20.2
+        run: ../.github/npm-tools/node_modules/.bin/expo-doctor
       - name: Validate mobile release environment contract
         run: node scripts/test-release-env-contract.mjs
       - name: Validate public Expo config
-        run: npx expo config --type public > /tmp/expo-public-config.txt
+        run: ./node_modules/.bin/expo config --type public > /tmp/expo-public-config.txt
       - name: Web export smoke
-        run: npx expo export --platform web --output-dir dist-ci
+        run: ./node_modules/.bin/expo export --platform web --output-dir dist-ci

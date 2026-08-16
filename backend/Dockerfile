@@ -1,36 +1,29 @@
-# Use the same Python minor validated by canonical backend CI / clean-room checks
-FROM python:3.12-slim@sha256:dd29372629eeba2dd003fd9e9d35a5b8236c44727875a0364254b5127af88e65
+# Exact CPython patch + immutable multi-platform index digest.
+FROM python:3.12.13-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28
 
-# Define o diretório de trabalho no container
 WORKDIR /app
 
-# Instala dependências do sistema necessárias para algumas libs Python (ex: multipart, cryptography)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# All runtime Python artifacts are selected by checked-in SHA256 locks. No compiler,
+# apt package bootstrap, dependency resolution, or source distribution build is needed.
+COPY requirements.txt requirements.lock requirements-pip-bootstrap.lock hermetic_python.py ./
+RUN python hermetic_python.py \
+    --pip-lock requirements-pip-bootstrap.lock \
+    --requirements-lock requirements.lock \
+    --direct-requirements requirements.txt \
+    --expected-python 3.12.13 \
+    --expected-initial-pip 25.0.1 \
+    --expected-pip 26.2.1 \
+    --label BACKEND_IMAGE
 
-# Copia o arquivo de requisitos para o diretório de trabalho
-COPY requirements.txt .
-
-# Instala as dependências Python
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Cria uma identidade fixa e sem privilégios para o runtime. A porta 8000 não
-# exige root e o processo não precisa escrever em diretórios do sistema.
+# Fixed unprivileged runtime identity; the application does not require root.
 RUN groupadd --gid 10001 financeflow \
     && useradd --uid 10001 --gid financeflow --create-home --shell /usr/sbin/nologin financeflow
 
-# Copia o restante dos arquivos do backend para o diretório de trabalho e mantém
-# o código legível/pertencente ao usuário que executará o servidor.
 COPY --chown=financeflow:financeflow . .
 
-# Expõe a porta que o Render vai usar (será sobrescrita pela env PORT no runtime)
 EXPOSE 8000
-
-# Reduz o blast radius de qualquer comprometimento do processo da aplicação.
 USER financeflow
 
-# Keep JSON/exec-form container metadata while still expanding Render's runtime
-# PORT. The shell immediately execs Uvicorn, so Uvicorn becomes PID 1 and receives
-# normal container lifecycle signals directly.
+# Shell is used only for runtime PORT expansion and immediately execs Uvicorn, so
+# Uvicorn is PID 1 and receives normal container lifecycle signals directly.
 CMD ["sh", "-c", "exec uvicorn runtime:create_app --factory --host 0.0.0.0 --port \"${PORT:-8000}\""]
