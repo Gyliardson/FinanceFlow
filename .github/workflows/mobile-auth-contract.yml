@@ -30,9 +30,9 @@ jobs:
           cache: npm
           cache-dependency-path: mobile/package-lock.json
       - name: Install mobile dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Resolve Expo native config
-        run: npx expo config --type public > "$RUNNER_TEMP/expo-public-config.json"
+        run: ./node_modules/.bin/expo config --type public > "$RUNNER_TEMP/expo-public-config.json"
       - name: Compile production auth/cache/idempotency/date/upload/notification modules for Node harness
         shell: bash
         run: |
@@ -131,7 +131,7 @@ jobs:
             env: Record<string, string | undefined>;
           };
           TS
-          npx tsc \
+          ./node_modules/.bin/tsc \
             "$build_dir/process-env.d.ts" \
             src/services/userCache.ts \
             src/services/authSession.ts \
