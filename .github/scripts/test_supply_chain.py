@@ -140,7 +140,6 @@ def assert_case(root: Path, case: Case) -> None:
         )
     print(f"SUPPLY_CHAIN_CASE={case.name}:detected")
 
-
 def main() -> int:
     pinned_step = f"- uses: actions/checkout@{ACTION_SHA} # v7.0.1"
     mutable_step = "- uses: actions/checkout@main"
@@ -154,28 +153,96 @@ def main() -> int:
     )
 
     cases = [
-        Case("01-canonical-pinned-step", workflow(target_steps(pinned_step)), True),
-        Case("02-canonical-mutable-step", workflow(target_steps(mutable_step)), False, "full 40-char commit SHA"),
-        Case("03-flow-mutable-step", workflow(target_steps(flow_mutable_step)), False, "full 40-char commit SHA"),
-        Case("04-flow-pinned-step", workflow(target_steps(flow_pinned_step)), True),
-        Case("05-quoted-flow-mutable-step", workflow(target_steps(quoted_flow_mutable)), False, "full 40-char commit SHA"),
-        Case("05b-quoted-flow-pinned-step", workflow(target_steps(quoted_flow_pinned)), True),
-        Case("06-external-reusable-mutable", workflow("""
+        # 1-5: step uses and representation equivalence
+        Case(
+            "01-canonical-pinned-step",
+            workflow(target_steps(pinned_step)),
+            True,
+        ),
+        Case(
+            "02-canonical-mutable-step",
+            workflow(target_steps(mutable_step)),
+            False,
+            "full 40-char commit SHA",
+        ),
+        Case(
+            "03-flow-mutable-step",
+            workflow(target_steps(flow_mutable_step)),
+            False,
+            "full 40-char commit SHA",
+        ),
+        Case(
+            "04-flow-pinned-step",
+            workflow(target_steps(flow_pinned_step)),
+            True,
+        ),
+        Case(
+            "05-quoted-flow-mutable-step",
+            workflow(target_steps(quoted_flow_mutable)),
+            False,
+            "full 40-char commit SHA",
+        ),
+        Case(
+            "05b-quoted-flow-pinned-step",
+            workflow(target_steps(quoted_flow_pinned)),
+            True,
+        ),
+        # 6-8: reusable workflows and local references
+        Case(
+            "06-external-reusable-mutable",
+            workflow(
+                """
   target:
     uses: owner/repo/.github/workflows/test.yml@main
-"""), False, "full 40-char commit SHA"),
-        Case("07-external-reusable-pinned", workflow(f"""
+"""
+            ),
+            False,
+            "full 40-char commit SHA",
+        ),
+        Case(
+            "07-external-reusable-pinned",
+            workflow(
+                f"""
   target:
     uses: owner/repo/.github/workflows/test.yml@{ACTION_SHA} # v1.2.3
-"""), True),
-        Case("08-local-action", workflow(target_steps("- uses: ./local/action")), True),
-        Case("08b-local-reusable", workflow("""
+"""
+            ),
+            True,
+        ),
+        Case(
+            "08-local-action",
+            workflow(target_steps("- uses: ./local/action")),
+            True,
+        ),
+        Case(
+            "08b-local-reusable",
+            workflow(
+                """
   target:
     uses: ./.github/workflows/local.yml
-"""), True),
-        Case("09-docker-action-mutable", workflow(target_steps("- uses: docker://alpine:3.20")), False, "docker action image must be digest-pinned"),
-        Case("10-docker-action-digest", workflow(target_steps(f"- uses: docker://alpine@sha256:{IMAGE_SHA}")), True),
-        Case("11-service-canonical-mutable", workflow("""
+"""
+            ),
+            True,
+        ),
+        # 9-10: docker actions
+        Case(
+            "09-docker-action-mutable",
+            workflow(target_steps("- uses: docker://alpine:3.20")),
+            False,
+            "docker action image must be digest-pinned",
+        ),
+        Case(
+            "10-docker-action-digest",
+            workflow(
+                target_steps(f"- uses: docker://alpine@sha256:{IMAGE_SHA}")
+            ),
+            True,
+        ),
+        # 11-14: service mapping block/flow equivalence
+        Case(
+            "11-service-canonical-mutable",
+            workflow(
+                """
   target:
     runs-on: ubuntu-latest
     services:
@@ -183,8 +250,15 @@ def main() -> int:
         image: postgres:16
     steps:
       - run: echo ok
-"""), False, "must be digest-pinned"),
-        Case("12-service-canonical-digest", workflow(f"""
+"""
+            ),
+            False,
+            "must be digest-pinned",
+        ),
+        Case(
+            "12-service-canonical-digest",
+            workflow(
+                f"""
   target:
     runs-on: ubuntu-latest
     services:
@@ -192,62 +266,125 @@ def main() -> int:
         image: postgres@sha256:{IMAGE_SHA}
     steps:
       - run: echo ok
-"""), True),
-        Case("13-service-flow-mutable", workflow("""
+"""
+            ),
+            True,
+        ),
+        Case(
+            "13-service-flow-mutable",
+            workflow(
+                """
   target:
     runs-on: ubuntu-latest
     services:
       db: { image: postgres:16 }
     steps:
       - run: echo ok
-"""), False, "must be digest-pinned"),
-        Case("14-service-flow-digest", workflow(f"""
+"""
+            ),
+            False,
+            "must be digest-pinned",
+        ),
+        Case(
+            "14-service-flow-digest",
+            workflow(
+                f"""
   target:
     runs-on: ubuntu-latest
     services:
       db: {{ image: postgres@sha256:{IMAGE_SHA} }}
     steps:
       - run: echo ok
-"""), True),
-        Case("15-job-container-shorthand-mutable", workflow("""
+"""
+            ),
+            True,
+        ),
+        # 15-18: job container shorthand/mapping representations
+        Case(
+            "15-job-container-shorthand-mutable",
+            workflow(
+                """
   target:
     runs-on: ubuntu-latest
     container: node:latest
     steps:
       - run: node --version
-"""), False, "must be digest-pinned"),
-        Case("16-job-container-shorthand-digest", workflow(f"""
+"""
+            ),
+            False,
+            "must be digest-pinned",
+        ),
+        Case(
+            "16-job-container-shorthand-digest",
+            workflow(
+                f"""
   target:
     runs-on: ubuntu-latest
     container: node@sha256:{IMAGE_SHA}
     steps:
       - run: node --version
-"""), True),
-        Case("17-job-container-mapping-mutable", workflow("""
+"""
+            ),
+            True,
+        ),
+        Case(
+            "17-job-container-mapping-mutable",
+            workflow(
+                """
   target:
     runs-on: ubuntu-latest
     container:
       image: node:latest
     steps:
       - run: node --version
-"""), False, "must be digest-pinned"),
-        Case("18-job-container-flow-mapping-mutable", workflow("""
+"""
+            ),
+            False,
+            "must be digest-pinned",
+        ),
+        Case(
+            "18-job-container-flow-mapping-mutable",
+            workflow(
+                """
   target:
     runs-on: ubuntu-latest
     container: { image: node:latest }
     steps:
       - run: node --version
-"""), False, "must be digest-pinned"),
-        Case("18b-job-container-flow-mapping-digest", workflow(f"""
+"""
+            ),
+            False,
+            "must be digest-pinned",
+        ),
+        Case(
+            "18b-job-container-flow-mapping-digest",
+            workflow(
+                f"""
   target:
     runs-on: ubuntu-latest
     container: {{ image: node@sha256:{IMAGE_SHA} }}
     steps:
       - run: node --version
-"""), True),
-        Case("19-malformed-yaml", "name: fixture\njobs:\n  x: [\n", False, "workflow YAML parse failed closed"),
-        Case("20-non-string-uses", workflow(target_steps("- uses: true")), False, "must be a literal YAML string"),
-        Case("21-non-string-image", workflow("""
+"""
+            ),
+            True,
+        ),
+        Case(
+            "19-malformed-yaml",
+            "name: fixture\njobs:\n  x: [\n",
+            False,
+            "workflow YAML parse failed closed",
+        ),
+        Case(
+            "20-non-string-uses",
+            workflow(target_steps("- uses: true")),
+            False,
+            "must be a literal YAML string",
+        ),
+        Case(
+            "21-non-string-image",
+            workflow(
+                """
   target:
     runs-on: ubuntu-latest
     services:
@@ -255,71 +392,249 @@ def main() -> int:
         image: 123
     steps:
       - run: echo ok
-"""), False, "must be a literal YAML string"),
-        Case("22-dynamic-external-ref", workflow(target_steps('- uses: "actions/checkout@${{ github.ref }}"')), False, "dynamic expression"),
-        Case("23-no-workflows", None, False, "no workflow files were discovered"),
-        Case("24-pinned-control-cannot-hide-flow-mutable", workflow(target_steps(pinned_step, flow_mutable_step), with_control=False), False, "full 40-char commit SHA"),
-        Case("25-mutable-dockerfile-base", workflow(target_steps(pinned_step)), False, "Dockerfile base image must be digest-pinned", dockerfile="FROM python:3.12-slim\n"),
-        Case("26-unversioned-expo-doctor", workflow(target_steps(pinned_step, "- run: npx --yes expo-doctor")), False, "expo-doctor execution must use an exact package version"),
-        Case("27-exact-expo-doctor", workflow(target_steps(pinned_step, "- run: npx --yes expo-doctor@1.20.2")), True),
-        Case("28-unversioned-pip-audit", workflow(target_steps(pinned_step, "- run: python -m pip install pip-audit")), False, "pip-audit installation must use an exact package version"),
-        Case("29-exact-pip-audit", workflow(target_steps(pinned_step, "- run: python -m pip install 'pip-audit==2.10.1'")), True),
-        Case("30-mutable-eas-version", workflow(f"""
+"""
+            ),
+            False,
+            "must be a literal YAML string",
+        ),
+        Case(
+            "22-dynamic-external-ref",
+            workflow(target_steps('- uses: "actions/checkout@${{ github.ref }}"')),
+            False,
+            "dynamic expression",
+        ),
+        Case(
+            "23-no-workflows",
+            None,
+            False,
+            "no workflow files were discovered",
+        ),
+        Case(
+            "24-pinned-control-cannot-hide-flow-mutable",
+            workflow(target_steps(pinned_step, flow_mutable_step), with_control=False),
+            False,
+            "full 40-char commit SHA",
+        ),
+        # Preserve pre-existing policies
+        Case(
+            "25-mutable-dockerfile-base",
+            workflow(target_steps(pinned_step)),
+            False,
+            "Dockerfile base image must be digest-pinned",
+            dockerfile="FROM python:3.12-slim\n",
+        ),
+        Case(
+            "26-unversioned-expo-doctor",
+            workflow(
+                target_steps(
+                    pinned_step,
+                    "- run: npx --yes expo-doctor",
+                )
+            ),
+            False,
+            "expo-doctor execution must use an exact package version",
+        ),
+        Case(
+            "27-exact-expo-doctor",
+            workflow(
+                target_steps(
+                    pinned_step,
+                    "- run: npx --yes expo-doctor@1.20.2",
+                )
+            ),
+            True,
+        ),
+        Case(
+            "28-unversioned-pip-audit",
+            workflow(
+                target_steps(
+                    pinned_step,
+                    "- run: python -m pip install pip-audit",
+                )
+            ),
+            False,
+            "pip-audit installation must use an exact package version",
+        ),
+        Case(
+            "29-exact-pip-audit",
+            workflow(
+                target_steps(
+                    pinned_step,
+                    "- run: python -m pip install 'pip-audit==2.10.1'",
+                )
+            ),
+            True,
+        ),
+        Case(
+            "30-mutable-eas-version",
+            workflow(
+                f"""
   target:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@{ACTION_SHA} # v7.0.1
       - uses: expo/expo-github-action@{ACTION_SHA} # v9.0.0
         with: {{ eas-version: latest }}
-"""), False, "eas-version must be an exact semver"),
-        Case("31-exact-eas-version", workflow(f"""
+"""
+            ),
+            False,
+            "eas-version must be an exact semver",
+        ),
+        Case(
+            "31-exact-eas-version",
+            workflow(
+                f"""
   target:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@{ACTION_SHA} # v7.0.1
       - uses: expo/expo-github-action@{ACTION_SHA} # v9.0.0
         with: {{ eas-version: 21.8.0 }}
-"""), True),
-        Case("32-duplicate-security-key", workflow(target_steps(f"""- uses: actions/checkout@{ACTION_SHA} # v7.0.1
-  uses: actions/checkout@main""")), False, "duplicate YAML key"),
-        Case("33-null-uses", workflow(target_steps("- uses: null")), False, "must be a literal YAML string"),
-        Case("34-boolean-container-image", workflow("""
+"""
+            ),
+            True,
+        ),
+        # Parser/YAML adversarial edge cases
+        Case(
+            "32-duplicate-security-key",
+            workflow(
+                target_steps(
+                    f"""- uses: actions/checkout@{ACTION_SHA} # v7.0.1
+  uses: actions/checkout@main"""
+                )
+            ),
+            False,
+            "duplicate YAML key",
+        ),
+        Case(
+            "33-null-uses",
+            workflow(target_steps("- uses: null")),
+            False,
+            "must be a literal YAML string",
+        ),
+        Case(
+            "34-boolean-container-image",
+            workflow(
+                """
   target:
     runs-on: ubuntu-latest
     container: false
     steps:
       - run: echo ok
-"""), False, "must be a literal YAML string"),
-        Case("35-anchored-mutable-step", workflow(target_steps("- &shared { uses: actions/checkout@main }", "- *shared")), False, "full 40-char commit SHA"),
-        Case("36-anchored-pinned-step", workflow(target_steps(f"- &shared {{ uses: actions/checkout@{ACTION_SHA} }} # v7.0.1", "- *shared")), True),
-        Case("37-yaml-merge-key-fails-closed", workflow(f"""
+"""
+            ),
+            False,
+            "must be a literal YAML string",
+        ),
+        Case(
+            "35-anchored-mutable-step",
+            workflow(
+                target_steps(
+                    "- &shared { uses: actions/checkout@main }",
+                    "- *shared",
+                )
+            ),
+            False,
+            "full 40-char commit SHA",
+        ),
+        Case(
+            "36-anchored-pinned-step",
+            workflow(
+                target_steps(
+                    f"- &shared {{ uses: actions/checkout@{ACTION_SHA} }} # v7.0.1",
+                    "- *shared",
+                )
+            ),
+            True,
+        ),
+        Case(
+            "37-yaml-merge-key-fails-closed",
+            workflow(
+                f"""
   target:
     runs-on: ubuntu-latest
     steps:
       - &base {{ uses: actions/checkout@{ACTION_SHA} }} # v7.0.1
       - {{ <<: *base }}
-"""), False, "YAML merge keys are not accepted"),
-        Case("38-human-version-comment-required", workflow(target_steps(f"- uses: actions/checkout@{ACTION_SHA}")), False, "human-readable version comment"),
-        Case("39-colon-hash-inside-quoted-noncritical-values", workflow(f"""
+"""
+            ),
+            False,
+            "YAML merge keys are not accepted",
+        ),
+        Case(
+            "38-human-version-comment-required",
+            workflow(
+                target_steps(f"- uses: actions/checkout@{ACTION_SHA}")
+            ),
+            False,
+            "human-readable version comment",
+        ),
+        Case(
+            "39-colon-hash-inside-quoted-noncritical-values",
+            workflow(
+                f"""
   target:
     runs-on: ubuntu-latest
     steps:
       - name: "literal: value # is not a YAML comment"
         uses: actions/checkout@{ACTION_SHA} # v7.0.1
       - run: 'echo "literal: # data"'
-"""), True),
-        Case("40-flow-service-expression", workflow("""
+"""
+            ),
+            True,
+        ),
+        Case(
+            "40-flow-service-expression",
+            workflow(
+                """
   target:
     runs-on: ubuntu-latest
     services:
       db: { image: "${{ matrix.image }}" }
     steps:
       - run: echo ok
-"""), False, "dynamic expression"),
-        Case("41-job-reusable-non-string", workflow("""
+"""
+            ),
+            False,
+            "dynamic expression",
+        ),
+        Case(
+            "41-job-reusable-non-string",
+            workflow(
+                """
   target:
     uses: 42
-"""), False, "must be a literal YAML string"),
+"""
+            ),
+            False,
+            "must be a literal YAML string",
+        ),
+        Case(
+            "41b-run-expression-is-not-structural-ref",
+            workflow(
+                target_steps(
+                    pinned_step,
+                    '- run: echo "CANDIDATE=${{ github.sha }}"',
+                )
+            ),
+            True,
+        ),
+        Case(
+            "41c-defaults-run-mapping-is-not-a-step-command",
+            workflow(
+                f"""
+  target:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@{ACTION_SHA} # v7.0.1
+      - run: echo ok
+"""
+            ),
+            True,
+        ),
     ]
 
     with tempfile.TemporaryDirectory(prefix="financeflow-supply-policy-") as tmp:
@@ -327,33 +642,44 @@ def main() -> int:
         for case in cases:
             assert_case(root, case)
 
+        # Parser dependency unavailable must turn the production checker red.
         reset_fixture(root, workflow_text=workflow(target_steps(pinned_step)))
         shadow = Path(tmp) / "shadow-missing"
         shadow.mkdir()
-        (shadow / "yaml.py").write_text("raise ImportError('synthetic missing PyYAML')\n", encoding="utf-8")
+        (shadow / "yaml.py").write_text(
+            "raise ImportError('synthetic missing PyYAML')\n", encoding="utf-8"
+        )
         result = run_checker_subprocess(root, extra_env={"PYTHONPATH": str(shadow)})
         output = result.stdout + result.stderr
         if result.returncode == 0 or "semantic YAML parser unavailable" not in output:
-            raise AssertionError(f"42-parser-unavailable: checker did not fail closed:\n{output}")
+            raise AssertionError(f"42-parser-unavailable: checker did not fail closed:\n{output}"
+            )
         print("SUPPLY_CHAIN_CASE=42-parser-unavailable:detected")
 
+        # Wrong parser version must also be red before any workflow can be trusted.
         shadow = Path(tmp) / "shadow-version"
         shadow.mkdir()
         (shadow / "yaml.py").write_text("__version__ = '0.0.0'\n", encoding="utf-8")
         result = run_checker_subprocess(root, extra_env={"PYTHONPATH": str(shadow)})
         output = result.stdout + result.stderr
         if result.returncode == 0 or "parser version mismatch" not in output:
-            raise AssertionError(f"43-parser-version-mismatch: checker did not fail closed:\n{output}")
+            raise AssertionError(
+                f"43-parser-version-mismatch: checker did not fail closed:\n{output}"
+            )
         print("SUPPLY_CHAIN_CASE=43-parser-version-mismatch:detected")
 
+        # Parser bootstrap requirements are themselves part of the policy.
         reset_fixture(root, workflow_text=workflow(target_steps(pinned_step)))
         req = root / ".github" / "scripts" / "requirements-supply-chain.txt"
         req.write_text("PyYAML==6.0.3\n", encoding="utf-8")
         returncode, output = evaluate_with_production_checker(root)
         if returncode == 0 or "parser bootstrap must contain exactly" not in output:
-            raise AssertionError(f"44-parser-bootstrap-hash: checker did not fail closed:\n{output}")
+            raise AssertionError(
+                f"44-parser-bootstrap-hash: checker did not fail closed:\n{output}"
+            )
         print("SUPPLY_CHAIN_CASE=44-parser-bootstrap-hash:detected")
 
+        # One end-to-end subprocess proves the CLI uses the same inspect() path.
         reset_fixture(root, workflow_text=workflow(target_steps(pinned_step)))
         result = run_checker_subprocess(root)
         output = result.stdout + result.stderr

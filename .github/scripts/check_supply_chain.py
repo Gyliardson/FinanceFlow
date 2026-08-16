@@ -112,7 +112,7 @@ def mapping_items(path: Path, node: Any, ctx: Context, where: str) -> dict[str, 
     """Return mapping entries while failing closed on duplicate/merge/non-scalar keys."""
     try:
         from yaml.nodes import MappingNode, ScalarNode  # type: ignore
-    except Exception as exc:
+    except Exception as exc:  # dependency failure is a policy failure, never a skip
         ctx.errors.append(f"semantic YAML parser node API unavailable: {type(exc).__name__}: {exc}")
         return {}
 
@@ -150,7 +150,14 @@ def mapping_items(path: Path, node: Any, ctx: Context, where: str) -> dict[str, 
     return result
 
 
-def scalar_string(path: Path, node: Any, ctx: Context, where: str) -> str | None:
+def scalar_string(
+    path: Path,
+    node: Any,
+    ctx: Context,
+    where: str,
+    *,
+    allow_expressions: bool = False,
+) -> str | None:
     try:
         from yaml.nodes import ScalarNode  # type: ignore
     except Exception as exc:
@@ -163,7 +170,7 @@ def scalar_string(path: Path, node: Any, ctx: Context, where: str) -> str | None
         )
         return None
     value = node.value
-    if "${{" in value:
+    if not allow_expressions and "${{" in value:
         ctx.errors.append(
             f"{location(path, node)}: {where} uses a dynamic expression that cannot be proven immutable"
         )
@@ -295,7 +302,7 @@ def scan_tooling(
     *,
     active: set[int] | None = None,
     visited: set[int] | None = None,
-) -> None:
+)] -> None:
     """Preserve existing exact tooling-pin policy while traversing YAML semantically."""
     try:
         from yaml.nodes import MappingNode, ScalarNode, SequenceNode  # type: ignore
@@ -331,30 +338,6 @@ def scan_tooling(
                             ctx.errors.append(
                                 f"{location(path, value_node)}: eas-version must be an exact semver, got {value!r}"
                             )
-                if key == "run":
-                    value = scalar_string(path, value_node, ctx, "run")
-                    if value is not None:
-                        for run_line in value.splitlines():
-                            if "expo-doctor" in run_line:
-                                match = EXPO_DOCTOR_PIN_RE.search(run_line)
-                                if match is None:
-                                    ctx.errors.append(
-                                        f"{location(path, value_node)}: expo-doctor execution must use an exact package version"
-                                    )
-                                else:
-                                    ctx.inventory.expo_doctor_pins.append(
-                                        f"{path}:expo-doctor@{match.group(1)}"
-                                    )
-                            if "pip install" in run_line and "pip-audit" in run_line:
-                                match = PIP_AUDIT_PIN_RE.search(run_line)
-                                if match is None:
-                                    ctx.errors.append(
-                                        f"{location(path, value_node)}: pip-audit installation must use an exact package version"
-                                    )
-                                else:
-                                    ctx.inventory.pip_audit_pins.append(
-                                        f"{path}:pip-audit=={match.group(1)}"
-                                    )
                 scan_tooling(path, value_node, ctx, active=active, visited=visited)
         elif isinstance(node, SequenceNode):
             for child in node.value:
@@ -449,7 +432,7 @@ def inspect_workflow(path: Path, ctx: Context, yaml_module: Any) -> None:
                     )
             else:
                 ctx.errors.append(
-                    f"{location(path, container_node)}: job {job_name!r} container must be a literal image string or mapping"
+                    f"{location(path, container_nod)}: job {job_name!r} container must be a literal image string or mapping"
                 )
 
         services_node = job.get("services")
@@ -509,12 +492,35 @@ def inspect_workflow(path: Path, ctx: Context, yaml_module: Any) -> None:
                         )
                     run_node = step.get("run")
                     if run_node is not None:
-                        scalar_string(
+                        run_value = scalar_string(
                             path,
                             run_node,
                             ctx,
                             f"job {job_name!r} step {index} run",
+                            allow_expressions=True,
                         )
+                        if run_value is not None:
+                            for run_line in run_value.splitlines():
+                                if "expo-doctor" in run_line:
+                                    match = EXPO_DOCTOR_PIN_RE.search(run_line)
+                                    if match is None:
+                                        ctx.errors.append(
+                                            f"{location(path, run_node)}: expo-doctor execution must use an exact package version"
+                                        )
+                                    else:
+                                        ctx.inventory.expo_doctor_pins.append(
+                                            f"{path}:expo-doctor@{match.group(1)}"
+                                        )
+                                if "pip install" in run_line and "pip-audit" in run_line:
+                                    match = PIP_AUDIT_PIN_RE.search(run_line)
+                                    if match is None:
+                                        ctx.errors.append(
+                                            f"{location(path, run_node)}: pip-audit installation must use an exact package version"
+                                        )
+                                    else:
+                                        ctx.inventory.pip_audit_pins.append(
+                                            f"{path}:pip-audit=={match.group(1)}"
+                                        )
 
     scan_tooling(path, root_node, ctx)
 
