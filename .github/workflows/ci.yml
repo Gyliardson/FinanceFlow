@@ -321,12 +321,53 @@ jobs:
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
+    env:
+      GITLEAKS_BIN: ${{ runner.temp }}/gitleaks
+      GITLEAKS_EXPECTED_VERSION: '8.24.3'
+      GITLEAKS_SOURCE_SHA: 107a41827bb6698dbbff756b2300537774a1d84c
+      SECRET_SCAN_REQUIRED_IGNORE_FINGERPRINT: 68bc951e2c0c4017983bded88fc92186258154bd:mobile/tests/idempotent-mutation-contract.cjs:generic-api-key:213
+      CANDIDATE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - name: Checkout full history
+      - name: Checkout exact candidate with complete history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-      - name: Scan repository history for secrets
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+      - name: Setup pinned Go toolchain
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.23.4'
+          cache: false
+      - name: Checkout immutable Gitleaks 8.24.3 source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gitleaks/gitleaks
+          ref: 107a41827bb6698dbbff756b2300537774a1d84c
+          path: .tools/gitleaks-src
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Build and verify pinned scanner
+        working-directory: .tools/gitleaks-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITLEAKS_SOURCE_SHA"
+          printf 'GITLEAKS_BUILD_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
+          printf 'GITLEAKS_BUILD_GO_VERSION=%s\n' "$(go version)"
+          go build -trimpath -ldflags "-X github.com/zricethezav/gitleaks/v8/cmd.Version=$GITLEAKS_EXPECTED_VERSION" -o "$GITLEAKS_BIN" .
+          test "$($GITLEAKS_BIN version)" = "$GITLEAKS_EXPECTED_VERSION"
+          printf 'GITLEAKS_BUILD_VERSION=%s\n' "$($GITLEAKS_BIN version)"
+      - name: Test the secret-scan gate against stale-range regression
+        shell: bash
+        run: bash .github/scripts/test_secret_scan_history.sh
+      - name: Scan all commits reachable from exact candidate HEAD
+        shell: bash
+        run: bash .github/scripts/secret_scan_history.sh "$GITHUB_WORKSPACE" "$CANDIDATE_HEAD" "$GITHUB_WORKSPACE/gitleaks-results.sarif"
+      - name: Upload Gitleaks SARIF evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitleaks-results.sarif
+          path: gitleaks-results.sarif
+          if-no-files-found: error
