@@ -5,6 +5,7 @@ const LEGACY_CACHE_PREFIX = '@financeflow:user:';
 const SECURE_CACHE_PREFIX = 'financeflow.cache.v2';
 const CACHE_VERSION = 1;
 const SECURE_CHUNK_SIZE = 1800;
+const MAX_SECURE_CHUNKS = 4096;
 const LEGACY_BILLS_KEY = '@bills_cache';
 const LEGACY_SETTINGS_KEY = '@settings_cache';
 const LEGACY_OWNER_KEY = '@financeflow:legacy-cache-owner:v1';
@@ -170,7 +171,7 @@ function parseManifest(raw: string): SecureCacheManifest | null {
       || typeof parsed.chunks !== 'number'
       || !Number.isInteger(parsed.chunks)
       || parsed.chunks < 1
-      || parsed.chunks > 4096
+      || parsed.chunks > MAX_SECURE_CHUNKS
       || typeof parsed.totalLength !== 'number'
       || !Number.isInteger(parsed.totalLength)
       || parsed.totalLength < 1
@@ -256,6 +257,9 @@ async function writeSecureCacheRawUnlocked(
   const generation = newGeneration();
   const chunks = raw.match(new RegExp(`.{1,${SECURE_CHUNK_SIZE}}`, 'gs')) ?? [];
   if (!chunks.length) throw new Error('Financial cache payload cannot be empty');
+  if (chunks.length > MAX_SECURE_CHUNKS) {
+    throw new Error('Financial cache payload exceeds the SecureStore protocol limit');
+  }
 
   const newManifest: SecureCacheManifest = {
     version: 1,
