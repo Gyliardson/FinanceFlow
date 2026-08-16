@@ -1,6 +1,7 @@
 name: Backend container
 
 on:
+  workflow_dispatch:
   pull_request:
     branches:
       - portfolio/revamp-2026
