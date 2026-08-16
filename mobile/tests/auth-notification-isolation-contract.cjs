@@ -11,7 +11,8 @@ const asyncStorage = require(path.join(compiledRoot, 'node_modules', '@react-nat
 const secureStore = require(path.join(compiledRoot, 'node_modules', 'expo-secure-store'));
 const auth = require(path.join(compiledRoot, 'authSession.js'));
 
-const SECURE_SESSION_KEY = 'financeflow.auth-session.v2';
+const SECURE_SESSION_MANIFEST_KEY = 'financeflow.auth-session.v3.manifest';
+const LEGACY_SECURE_SESSION_KEY = 'financeflow.auth-session.v2';
 let cleanupCalls = 0;
 
 const makeSession = (userId, overrides = {}) => ({
@@ -49,8 +50,17 @@ async function reset() {
 }
 
 async function installSession(session) {
-  await secureStore.setItemAsync(SECURE_SESSION_KEY, JSON.stringify(session));
-  return auth.initializeAuthSession();
+  // Use legacy v2 only as setup to continuously prove one-way migration.
+  await secureStore.setItemAsync(LEGACY_SECURE_SESSION_KEY, JSON.stringify(session));
+  const restored = await auth.initializeAuthSession();
+  assert.ok(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY));
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null);
+  return restored;
+}
+
+async function assertNoDurableSession() {
+  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY), null);
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null);
 }
 
 async function testUnauthenticatedStartupPurgesOrphanReminders() {
@@ -68,6 +78,7 @@ async function testAuthoritativeRejectionPurgesCurrentSessionReminders() {
   assert.equal(await auth.invalidateRejectedAuthSessionSnapshot(snapshot), true);
   assert.equal(cleanupCalls, 1);
   assert.equal(auth.getCurrentAuthSession(), null);
+  await assertNoDurableSession();
 }
 
 async function testStaleRejectionCannotPurgeNewSessionReminders() {
@@ -87,6 +98,7 @@ async function testStaleRejectionCannotPurgeNewSessionReminders() {
   assert.equal(await auth.invalidateRejectedAuthSessionSnapshot(staleSnapshot), false);
   assert.equal(cleanupCalls, 0, 'stale rejection must not run global device cleanup after newer login');
   assert.equal(auth.getCurrentAuthSession().accessToken, 'newer-access');
+  assert.ok(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY));
 }
 
 async function testOfflineLogoutStillPurgesReminders() {
@@ -97,7 +109,7 @@ async function testOfflineLogoutStillPurgesReminders() {
   await auth.signOutAuthSession();
   assert.equal(cleanupCalls, 1);
   assert.equal(auth.getCurrentAuthSession(), null);
-  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_KEY), null);
+  await assertNoDurableSession();
 }
 
 async function testConcurrentNewLoginPreventsOldLogoutCleanup() {
@@ -129,6 +141,7 @@ async function testConcurrentNewLoginPreventsOldLogoutCleanup() {
 
   assert.equal(cleanupCalls, 0, 'old logout must not clear global reminders after a newer account is current');
   assert.equal(auth.getCurrentAuthSession().user.id, 'user-new');
+  assert.ok(await secureStore.getItemAsync(SECURE_SESSION_MANIFEST_KEY));
 }
 
 async function testCleanupFailureCannotBlockLocalLogout() {
@@ -139,7 +152,7 @@ async function testCleanupFailureCannotBlockLocalLogout() {
 
   await auth.signOutAuthSession();
   assert.equal(auth.getCurrentAuthSession(), null);
-  assert.equal(await secureStore.getItemAsync(SECURE_SESSION_KEY), null);
+  await assertNoDurableSession();
 }
 
 function testAuthProviderWiresNotificationCleanup() {
