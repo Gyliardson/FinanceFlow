@@ -41,6 +41,7 @@ type PendingManifest = {
 };
 
 const SECURE_CHUNK_SIZE = 1800;
+const MAX_SECURE_CHUNKS = 4096;
 const INTENT_ID_RE = /^fi_[A-Za-z0-9_-]{12,96}$/;
 export const IDEMPOTENT_OPERATIONS: IdempotentOperation[] = [
   'reserve_add',
@@ -147,7 +148,7 @@ const parsePendingManifest = (raw: string): PendingManifest | null => {
       || typeof parsed.chunks !== 'number'
       || !Number.isInteger(parsed.chunks)
       || parsed.chunks < 1
-      || parsed.chunks > 4096
+      || parsed.chunks > MAX_SECURE_CHUNKS
       || typeof parsed.totalLength !== 'number'
       || !Number.isInteger(parsed.totalLength)
       || parsed.totalLength < 1
@@ -219,6 +220,9 @@ const writeSecurePendingRaw = async (
   const generation = newGeneration();
   const chunks = raw.match(new RegExp(`.{1,${SECURE_CHUNK_SIZE}}`, 'gs')) ?? [];
   if (!chunks.length) throw new Error('Pending financial state cannot be empty');
+  if (chunks.length > MAX_SECURE_CHUNKS) {
+    throw new Error('Pending financial state exceeds the SecureStore protocol limit');
+  }
 
   const manifest: PendingManifest = {
     version: 1,

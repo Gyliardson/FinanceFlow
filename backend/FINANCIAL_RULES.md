@@ -128,7 +128,7 @@ If the authenticated session changes before preparation finishes, the mutation f
 
 Normal logout intentionally does not destroy an **ambiguous** pending financial mutation: the record remains encrypted and scoped to its original owner so that owner can reconcile it after a later login. A different account cannot select, replay or reuse the first owner's key/payload. An explicit purge helper exists for a deliberate destructive lifecycle policy, but ordinary account switching relies on strict owner namespace isolation rather than making an unresolved financial outcome unrecoverable.
 
-The mobile pending-operation retention window is currently 90 days. Server replay records are not automatically deleted by migration 006; they remain durable until an explicit operator-managed lifecycle policy is introduced. The server therefore does not expire a key while a supported mobile pending record can still legitimately retry it.
+A structurally valid ambiguous pending mutation has **no wall-clock TTL**. Age alone cannot prove whether the server committed an operation whose response was lost, so the mobile record remains durable until authoritative success, a definitive client rejection, or an explicit reconciliation/lifecycle decision closes it. Server replay records are likewise not automatically deleted by migration 006; they remain durable until an explicit operator-managed lifecycle policy is introduced. The server therefore does not expire a key while a supported mobile pending record can still legitimately retry it.
 
 ## Payment convergence and ambiguous receipt commits
 
