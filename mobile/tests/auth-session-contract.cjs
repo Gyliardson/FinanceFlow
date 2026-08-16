@@ -300,7 +300,7 @@ async function testManifestWriteFailureKeepsPreviousMemoryAndDurableSession() {
   }));
 
   await assert.rejects(
-    withFailingSecureStoreSet(4, () => auth.signInWithPassword('b@example.test', 'secret')),
+    withFailingSecureStoreSet(5, () => auth.signInWithPassword('b@example.test', 'secret')),
     /synthetic SecureStore write failure/,
   );
   assert.equal(auth.getCurrentAuthSession().user.id, 'user-a');
