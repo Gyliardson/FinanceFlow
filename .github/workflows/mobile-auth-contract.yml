@@ -1,0 +1,241 @@
+name: Mobile auth contract
+
+on:
+  pull_request:
+    branches:
+      - portfolio/revamp-2026
+      - main
+  push:
+    branches:
+      - portfolio/revamp-2026
+      - 'work/**'
+
+permissions:
+  contents: read
+
+jobs:
+  auth-cache-contract:
+    name: Auth session, cache and mutation identity
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.13.0'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install mobile dependencies
+        run: npm ci --ignore-scripts
+      - name: Resolve Expo native config
+        run: ./node_modules/.bin/expo config --type public > "$RUNNER_TEMP/expo-public-config.json"
+      - name: Compile production auth/cache/idempotency/date/upload/notification modules for Node harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_dir="$RUNNER_TEMP/financeflow-auth-contract"
+          rm -rf "$build_dir"
+          mkdir -p "$build_dir/node_modules/@react-native-async-storage/async-storage"
+          mkdir -p "$build_dir/node_modules/expo-secure-store"
+          mkdir -p "$build_dir/node_modules/expo-notifications"
+          mkdir -p "$build_dir/node_modules/react-native"
+          ln -s "$PWD/node_modules/axios" "$build_dir/node_modules/axios"
+          cat > "$build_dir/node_modules/@react-native-async-storage/async-storage/index.js" <<'JS'
+          const store = new Map();
+          const api = {
+            async getItem(key) { return store.has(key) ? store.get(key) : null; },
+            async setItem(key, value) { store.set(key, String(value)); },
+            async removeItem(key) { store.delete(key); },
+            async multiGet(keys) { return keys.map((key) => [key, store.has(key) ? store.get(key) : null]); },
+            async multiSet(entries) { for (const [key, value] of entries) store.set(key, String(value)); },
+            async multiRemove(keys) { for (const key of keys) store.delete(key); },
+            __reset() { store.clear(); },
+            __store: store,
+          };
+          module.exports = api;
+          module.exports.default = api;
+          JS
+          cat > "$build_dir/node_modules/expo-secure-store/index.js" <<'JS'
+          const store = new Map();
+          const KEY_RE = /^[A-Za-z0-9._-]+$/;
+          const MAX_TEST_VALUE_LENGTH = 2048;
+          const validateKey = (key) => {
+            if (typeof key !== 'string' || !KEY_RE.test(key)) {
+              throw new Error(`Invalid SecureStore key: ${key}`);
+            }
+          };
+          module.exports = {
+            async getItemAsync(key) {
+              validateKey(key);
+              return store.has(key) ? store.get(key) : null;
+            },
+            async setItemAsync(key, value) {
+              validateKey(key);
+              const serialized = String(value);
+              if (serialized.length > MAX_TEST_VALUE_LENGTH) {
+                throw new Error(`SecureStore test value exceeds ${MAX_TEST_VALUE_LENGTH} characters`);
+              }
+              store.set(key, serialized);
+            },
+            async deleteItemAsync(key) {
+              validateKey(key);
+              store.delete(key);
+            },
+            __reset() { store.clear(); },
+            __store: store,
+          };
+          JS
+          cat > "$build_dir/node_modules/react-native/index.js" <<'JS'
+          module.exports = { Platform: { OS: 'android' } };
+          JS
+          cat > "$build_dir/node_modules/expo-notifications/index.js" <<'JS'
+          let scheduled = [];
+          let sequence = 0;
+          let failNextList = false;
+          let scheduleCalls = 0;
+          module.exports = {
+            SchedulableTriggerInputTypes: { DATE: 'date' },
+            AndroidImportance: { HIGH: 4 },
+            setNotificationHandler() {},
+            async getPermissionsAsync() { return { status: 'granted' }; },
+            async requestPermissionsAsync() { return { status: 'granted' }; },
+            async setNotificationChannelAsync() {},
+            async getAllScheduledNotificationsAsync() {
+              if (failNextList) { failNextList = false; throw new Error('synthetic list failure'); }
+              return scheduled.map((item) => ({ ...item, content: { ...item.content, data: { ...item.content.data } } }));
+            },
+            async cancelScheduledNotificationAsync(identifier) {
+              scheduled = scheduled.filter((item) => item.identifier !== identifier);
+            },
+            async scheduleNotificationAsync(request) {
+              scheduleCalls += 1;
+              const identifier = `scheduled-${++sequence}`;
+              scheduled.push({ identifier, content: request.content, trigger: request.trigger });
+              return identifier;
+            },
+            async cancelAllScheduledNotificationsAsync() { scheduled = []; },
+            __reset() { scheduled = []; sequence = 0; failNextList = false; scheduleCalls = 0; },
+            __seed(items) { scheduled.push(...items); },
+            __scheduledFor(billId) { return scheduled.filter((item) => item.content.data?.billId === billId); },
+            __identifiers() { return scheduled.map((item) => item.identifier); },
+            __failNextList() { failNextList = true; },
+            __scheduleCallCount() { return scheduleCalls; },
+          };
+          JS
+          cat > "$build_dir/process-env.d.ts" <<'TS'
+          declare const process: {
+            env: Record<string, string | undefined>;
+          };
+          TS
+          ./node_modules/.bin/tsc \
+            "$build_dir/process-env.d.ts" \
+            src/services/userCache.ts \
+            src/services/authSession.ts \
+            src/services/apiFailure.ts \
+            src/services/authResponse.ts \
+            src/services/idempotentMutation.ts \
+            src/services/api.ts \
+            src/services/financialDate.ts \
+            src/services/ocrUploadFile.ts \
+            src/services/recurringReminderTargets.ts \
+            src/services/NotificationService.ts \
+            --ignoreConfig \
+            --ignoreDeprecations 6.0 \
+            --outDir "$build_dir" \
+            --module commonjs \
+            --moduleResolution node \
+            --target ES2022 \
+            --lib ES2022,DOM \
+            --esModuleInterop \
+            --skipLibCheck
+          echo "FINANCEFLOW_AUTH_CONTRACT_BUILD=$build_dir" >> "$GITHUB_ENV"
+          echo "NODE_PATH=$build_dir/node_modules" >> "$GITHUB_ENV"
+      - name: Run restart, expiry, logout and account-switch contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/auth-session-contract.cjs 2>&1 | tee auth-session-contract.log
+      - name: Run API auth rejection and offline classification contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/auth-rejection-contract.cjs 2>&1 | tee auth-rejection-contract.log
+      - name: Run stale successful-response session contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/auth-response-contract.cjs 2>&1 | tee auth-response-contract.log
+      - name: Run auth notification isolation contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/auth-notification-isolation-contract.cjs 2>&1 | tee auth-notification-isolation-contract.log
+      - name: Run bounded Supabase auth timeout contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/auth-timeout-contract.cjs 2>&1 | tee auth-timeout-contract.log
+      - name: Run offline cache corruption and persistence contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/offline-cache-contract.cjs 2>&1 | tee offline-cache-contract.log
+      - name: Run SecureStore writer-reader chunk-bound contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/securestore-chunk-bound-contract.cjs 2>&1 | tee securestore-chunk-bound-contract.log
+      - name: Run unresolved financial mutation identity contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/idempotent-mutation-contract.cjs 2>&1 | tee idempotent-mutation-contract.log
+      - name: Run pending financial state auth isolation contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/pending-auth-isolation-contract.cjs 2>&1 | tee pending-auth-isolation-contract.log
+      - name: Run pending reconciliation account-switch queue contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/pending-reconciliation-queue-contract.cjs 2>&1 | tee pending-reconciliation-queue-contract.log
+      - name: Run financial date-only calendar contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/financial-date-contract.cjs 2>&1 | tee financial-date-contract.log
+      - name: Run OCR upload MIME contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/ocr-upload-file-contract.cjs 2>&1 | tee ocr-upload-file-contract.log
+      - name: Run recurring notification identity and replacement contract
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/recurring-notification-contract.cjs 2>&1 | tee recurring-notification-contract.log
+      - name: Upload auth, cache, idempotency, date, upload and notification contract diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mobile-auth-contract-log
+          path: |
+            mobile/auth-session-contract.log
+            mobile/auth-rejection-contract.log
+            mobile/auth-response-contract.log
+            mobile/auth-notification-isolation-contract.log
+            mobile/auth-timeout-contract.log
+            mobile/offline-cache-contract.log
+            mobile/securestore-chunk-bound-contract.log
+            mobile/idempotent-mutation-contract.log
+            mobile/pending-auth-isolation-contract.log
+            mobile/pending-reconciliation-queue-contract.log
+            mobile/financial-date-contract.log
+            mobile/ocr-upload-file-contract.log
+            mobile/recurring-notification-contract.log
+          if-no-files-found: warn

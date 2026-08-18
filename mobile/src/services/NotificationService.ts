@@ -1,10 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
-// ===========================================================================
-// Configuração Global de Notificações
-// ===========================================================================
-
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -15,121 +11,201 @@ Notifications.setNotificationHandler({
   }),
 });
 
-// ===========================================================================
-// Mensagens Persuasivas
-// ===========================================================================
-
+// Notification previews can be rendered on a locked device. Keep visible copy
+// generic by default: bill names and other financial details belong inside the
+// authenticated app, not in title/body previews. The opaque billId remains in
+// notification data only so the app can identify/cancel the correct reminder.
 const MESSAGES_BEFORE = [
   {
-    title: '📅 Lembrete de Conta',
-    body: (name: string, days: number) =>
-      `A conta "${name}" vence em ${days} dia${days > 1 ? 's' : ''}. Organize-se para pagar no prazo!`,
+    title: 'Lembrete de vencimento',
+    body: (days: number) =>
+      `Você tem uma conta com vencimento em ${days} dia${days > 1 ? 's' : ''}. Abra o FinanceFlow para conferir os detalhes.`,
   },
   {
-    title: '⏰ Conta se Aproximando',
-    body: (name: string, days: number) =>
-      `Faltam apenas ${days} dia${days > 1 ? 's' : ''} para o vencimento de "${name}". Não deixe para a última hora!`,
+    title: 'Lembrete de vencimento',
+    body: (days: number) =>
+      `Uma conta vence em ${days} dia${days > 1 ? 's' : ''}. Consulte o FinanceFlow para revisar o pagamento.`,
   },
   {
-    title: '🔔 Atenção com a Conta',
-    body: (name: string, days: number) =>
-      `"${name}" vence em ${days} dia${days > 1 ? 's' : ''}. Separar o dinheiro agora evita dor de cabeça depois.`,
+    title: 'Vencimento próximo',
+    body: (days: number) =>
+      `Há uma conta com vencimento em ${days} dia${days > 1 ? 's' : ''}. Abra o app para ver as informações com segurança.`,
   },
 ];
 
 const MESSAGES_DUE_DAY = {
   morning: {
-    title: '🚨 VENCE HOJE!',
-    body: (name: string) =>
-      `A conta "${name}" vence HOJE! Pague agora e evite juros. Depois não diga que não avisamos. 💸`,
+    title: 'Vencimento hoje',
+    body: 'Você tem uma conta com vencimento hoje. Abra o FinanceFlow para conferir os detalhes.',
   },
   afternoon: {
-    title: '⚠️ URGENTE - Último dia!',
-    body: (name: string) =>
-      `AINDA NÃO PAGOU "${name}"?! O prazo acaba HOJE. Juros começam amanhã. Não vacile! 🔥`,
+    title: 'Lembrete de vencimento',
+    body: 'Uma conta vence hoje. Consulte o FinanceFlow para revisar o status do pagamento.',
   },
   night: {
-    title: '🔴 ÚLTIMA CHANCE HOJE!',
-    body: (name: string) =>
-      `"${name}" vence HOJE e você AINDA não registrou o pagamento! Pague AGORA antes que vire dívida com multa! 💀`,
+    title: 'Vencimento hoje',
+    body: 'Há uma conta com vencimento hoje. Abra o app para conferir as informações com segurança.',
   },
 };
 
-// ===========================================================================
-// Funções Principais
-// ===========================================================================
+let notificationPermissionInFlight: Promise<boolean> | null = null;
 
 /**
- * Solicita permissão de notificações ao usuário.
- * Deve ser chamada na inicialização do app.
+ * Reconcile current OS permission and Android channel state before local scheduling.
+ *
+ * Every independent attempt re-reads device permission so changes made in system
+ * Settings become observable without restarting the JS process. Concurrent callers
+ * share one in-flight reconciliation; only an actually requestable permission state
+ * can invoke the OS prompt. A known denial fails closed without re-prompting.
  */
 export async function requestNotificationPermissions(): Promise<boolean> {
   if (Platform.OS === 'web') return false;
+  if (notificationPermissionInFlight) return notificationPermissionInFlight;
 
-  const { status: existingStatus } = await Notifications.getPermissionsAsync();
-  let finalStatus = existingStatus;
+  const permissionRequest = (async (): Promise<boolean> => {
+    try {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
 
-  if (existingStatus !== 'granted') {
-    const { status } = await Notifications.requestPermissionsAsync();
-    finalStatus = status;
+      if (existingStatus !== 'granted' && existingStatus !== 'denied') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+
+      if (finalStatus !== 'granted') {
+        console.warn('Permissão de notificações não concedida.');
+        return false;
+      }
+
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('bills', {
+          name: 'Contas a Pagar',
+          importance: Notifications.AndroidImportance.HIGH,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#FF231F7C',
+          sound: 'default',
+        });
+      }
+
+      return true;
+    } catch {
+      console.warn('[Notificações] Não foi possível preparar permissão/canal para lembretes.');
+      return false;
+    }
+  })();
+
+  notificationPermissionInFlight = permissionRequest;
+  try {
+    return await permissionRequest;
+  } finally {
+    if (notificationPermissionInFlight === permissionRequest) {
+      notificationPermissionInFlight = null;
+    }
   }
+}
 
-  if (finalStatus !== 'granted') {
-    console.warn('Permissão de notificações negada pelo usuário.');
-    return false;
+const cancelScheduledForBill = async (billId: string): Promise<number> => {
+  const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
+  const identifiers = allScheduled
+    .filter((notification) => notification.content.data?.billId === billId)
+    .map((notification) => notification.identifier);
+
+  await Promise.all(
+    identifiers.map((identifier) => Notifications.cancelScheduledNotificationAsync(identifier)),
+  );
+  return identifiers.length;
+};
+
+/**
+ * Retire only FinanceFlow bill reminders that contradict an authoritative payable set.
+ *
+ * This must be called only after a successful online bill fetch. Offline cache is not
+ * evidence that a reminder is stale. Unrelated scheduled notifications are preserved.
+ * Device API failures are intentionally contained so financial UI reconciliation can
+ * still complete even when notification cleanup is temporarily unavailable.
+ */
+export async function reconcileScheduledBillNotifications(
+  authoritativePayableBillIds: readonly string[],
+): Promise<number> {
+  if (Platform.OS === 'web') return 0;
+
+  const payableIds = new Set(authoritativePayableBillIds);
+  try {
+    const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
+    const staleIdentifiers = allScheduled
+      .filter((notification) => {
+        const data = notification.content.data;
+        const type = data?.type;
+        const billId = data?.billId;
+        const isFinanceFlowBillReminder = type === 'reminder' || type === 'urgent';
+        return isFinanceFlowBillReminder
+          && typeof billId === 'string'
+          && billId.length > 0
+          && !payableIds.has(billId);
+      })
+      .map((notification) => notification.identifier);
+
+    const results = await Promise.allSettled(
+      staleIdentifiers.map((identifier) => Notifications.cancelScheduledNotificationAsync(identifier)),
+    );
+    const cancelled = results.filter((result) => result.status === 'fulfilled').length;
+    if (cancelled !== staleIdentifiers.length) {
+      console.warn('[Notificações] Alguns lembretes obsoletos não puderam ser removidos.');
+    }
+    return cancelled;
+  } catch {
+    console.warn('[Notificações] Não foi possível reconciliar lembretes com o estado autoritativo.');
+    return 0;
   }
-
-  // Canal Android (obrigatório para Android 8+)
-  if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('bills', {
-      name: 'Contas a Pagar',
-      importance: Notifications.AndroidImportance.HIGH,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: '#FF231F7C',
-      sound: 'default',
-    });
-  }
-
-  return true;
 }
 
 /**
- * Agenda todas as notificações para uma fatura específica.
- * 
- * Lógica:
- * - T-3, T-2, T-1: Uma notificação por dia (9h da manhã)
- * - Dia T (vencimento): 3 notificações (9h, 14h, 20h) com tom persuasivo
- * 
- * @param billId - ID da fatura no banco
- * @param billName - Nome/descrição da fatura
- * @param dueDate - Data de vencimento (string YYYY-MM-DD)
+ * Replace all pending reminders for one payable bill instance.
+ *
+ * Scheduling first reconciles permission/channel readiness. Replacement is deliberate:
+ * retries/reconciliation can safely call this function again for the same child bill
+ * without multiplying OS notifications. If permission/channel setup or the existing
+ * reminder set cannot be reconciled, scheduling fails closed rather than adding an
+ * unknown duplicate set.
  */
 export async function scheduleNotificationsForBill(
   billId: string,
-  billName: string,
+  _billName: string,
   dueDate: string
 ): Promise<string[]> {
   if (Platform.OS === 'web') return [];
+
+  const notificationsReady = await requestNotificationPermissions();
+  if (!notificationsReady) {
+    console.warn('[Notificações] Lembretes não agendados: permissão/canal indisponível.');
+    return [];
+  }
+
+  try {
+    await cancelScheduledForBill(billId);
+  } catch {
+    console.warn('[Notificações] Falha ao reconciliar lembretes existentes; novo agendamento ignorado.');
+    return [];
+  }
 
   const promises: Promise<string | void>[] = [];
   const due = new Date(dueDate + 'T00:00:00');
   const now = new Date();
 
-  // --- Notificações T-3, T-2, T-1 ---
   for (let daysBefore = 3; daysBefore >= 1; daysBefore--) {
     const triggerDate = new Date(due);
     triggerDate.setDate(triggerDate.getDate() - daysBefore);
-    triggerDate.setHours(9, 0, 0, 0); // 9h da manhã
+    triggerDate.setHours(9, 0, 0, 0);
 
-    if (triggerDate <= now) continue; // Já passou
+    if (triggerDate <= now) continue;
 
-    const msgIndex = 3 - daysBefore; // 0, 1, 2
+    const msgIndex = 3 - daysBefore;
     const msg = MESSAGES_BEFORE[msgIndex];
 
     const promise = Notifications.scheduleNotificationAsync({
       content: {
         title: msg.title,
-        body: msg.body(billName, daysBefore),
+        body: msg.body(daysBefore),
         data: { billId, type: 'reminder' },
         sound: 'default',
       },
@@ -138,13 +214,12 @@ export async function scheduleNotificationsForBill(
         date: triggerDate,
         channelId: 'bills',
       },
-    }).catch(err => {
-      console.warn(`Erro ao agendar notificação T-${daysBefore}:`, err);
+    }).catch(() => {
+      console.warn('[Notificações] Falha ao agendar lembrete.');
     });
     promises.push(promise);
   }
 
-  // --- Notificações no dia do vencimento ---
   const dueDayHours = [
     { hour: 9, period: 'morning' as const },
     { hour: 14, period: 'afternoon' as const },
@@ -158,11 +233,10 @@ export async function scheduleNotificationsForBill(
     if (triggerDate <= now) continue;
 
     const msg = MESSAGES_DUE_DAY[period];
-
     const promise = Notifications.scheduleNotificationAsync({
       content: {
         title: msg.title,
-        body: msg.body(billName),
+        body: msg.body,
         data: { billId, type: 'urgent' },
         sound: 'default',
       },
@@ -171,53 +245,32 @@ export async function scheduleNotificationsForBill(
         date: triggerDate,
         channelId: 'bills',
       },
-    }).catch(err => {
-      console.warn(`Erro ao agendar notificação ${period}:`, err);
+    }).catch(() => {
+      console.warn('[Notificações] Falha ao agendar lembrete de vencimento.');
     });
     promises.push(promise);
   }
 
   const results = await Promise.all(promises);
   const scheduledIds = results.filter((id): id is string => typeof id === 'string');
-
-  console.log(`[Notificações] Agendadas ${scheduledIds.length} para "${billName}" (venc: ${dueDate})`);
+  console.log(`[Notificações] ${scheduledIds.length} lembrete(s) agendado(s).`);
   return scheduledIds;
 }
 
-/**
- * Cancela todas as notificações pendentes de uma fatura específica.
- * Usado quando o pagamento é registrado.
- */
+/** Cancel all pending reminders associated with a payable bill instance. */
 export async function cancelNotificationsForBill(billId: string): Promise<void> {
   if (Platform.OS === 'web') return;
 
   try {
-    const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
-    const cancelPromises: Promise<void>[] = [];
-    
-    for (const notification of allScheduled) {
-      if (notification.content.data?.billId === billId) {
-        cancelPromises.push(
-          Notifications.cancelScheduledNotificationAsync(notification.identifier)
-        );
-      }
-    }
-    
-    if (cancelPromises.length > 0) {
-      await Promise.all(cancelPromises);
-    }
-    
-    console.log(`[Notificações] Canceladas (${cancelPromises.length}) para billId: ${billId}`);
-  } catch (err) {
-    console.warn('Erro ao cancelar notificações:', err);
+    const cancelled = await cancelScheduledForBill(billId);
+    console.log(`[Notificações] ${cancelled} lembrete(s) cancelado(s).`);
+  } catch {
+    console.warn('[Notificações] Falha ao cancelar lembretes.');
   }
 }
 
-/**
- * Cancela TODAS as notificações agendadas (útil para debug/reset).
- */
 export async function cancelAllNotifications(): Promise<void> {
   if (Platform.OS === 'web') return;
   await Notifications.cancelAllScheduledNotificationsAsync();
-  console.log('[Notificações] Todas canceladas.');
+  console.log('[Notificações] Todos os lembretes foram cancelados.');
 }

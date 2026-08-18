@@ -1,12 +1,31 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, FlatList,
-  ActivityIndicator, RefreshControl, Animated, Modal, TextInput, Alert, ScrollView
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Ionicons } from '@expo/vector-icons';
+import { useAuth } from '../services/AuthContext';
+import { canUseOfflineCacheForApiFailure } from '../services/apiFailure';
+import { getUserCacheSnapshot, trySetUserCache } from '../services/userCache';
+import {
+  financialDateOnly,
+  financialDateParts,
+  financialDaysBetween,
+  formatFinancialDatePtBr,
+  parseFinancialDateOnly,
+} from '../services/financialDate';
 import NetworkStatus from '../components/NetworkStatus';
 import api from '../services/api';
-import { Ionicons } from '@expo/vector-icons';
 
 interface Bill {
   id: string;
@@ -20,492 +39,570 @@ interface Bill {
   receipt_url: string | null;
 }
 
+interface SettingsCache {
+  initial_balance?: number | null;
+  emergency_fund_goal?: number | null;
+  initial_balance_date?: string | null;
+}
+
 type TabKey = 'pending' | 'paid' | 'all';
+type LoadState = 'ready' | 'offline-cache' | 'unavailable';
+
+type BillsLoadResult = {
+  online: boolean;
+  hasData: boolean;
+  cachedAt: number | null;
+  authoritativeFailure: boolean;
+  data: Bill[] | null;
+};
+
+type SettingsLoadResult = {
+  online: boolean;
+  hasData: boolean;
+  authoritativeFailure: boolean;
+  data: SettingsCache | null;
+  shouldOpenConfig: boolean;
+};
 
 const MONTH_NAMES = [
   'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
-  'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'
+  'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez',
 ];
 
+const formatBRL = (value: number | string | null | undefined) => {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) return 'R$ 0,00';
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(numeric);
+};
+
+const formatDate = (value: string | null | undefined) => {
+  if (!value) return 'Data não informada';
+  try {
+    return formatFinancialDatePtBr(value);
+  } catch {
+    return value;
+  }
+};
+
 export default function HomeScreen({ navigation }: any) {
+  const { session } = useAuth();
+  const userId = session?.user.id;
+  const financialNow = financialDateParts();
+  const refreshGeneration = useRef(0);
+
   const [allBills, setAllBills] = useState<Bill[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('pending');
-  const [isOffline, setIsOffline] = useState(false);
+  const [loadState, setLoadState] = useState<LoadState>('ready');
+  const [offlineCachedAt, setOfflineCachedAt] = useState<number | null>(null);
+  const [configModalVisible, setConfigModalVisible] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [initialBalance, setInitialBalance] = useState('');
+  const [initialBalanceNegative, setInitialBalanceNegative] = useState(false);
+  const [emergencyGoal, setEmergencyGoal] = useState('');
+  const [initialDate, setInitialDate] = useState('');
+  const [selectedMonth, setSelectedMonth] = useState(financialNow.month - 1);
+  const [selectedYear, setSelectedYear] = useState(financialNow.year);
 
-  const fetchBills = async () => {
+  const hydrateSettings = (settings: SettingsCache) => {
+    setInitialBalanceNegative(Number(settings.initial_balance ?? 0) < 0);
+    setInitialBalance(settings.initial_balance == null ? '' : Math.abs(Number(settings.initial_balance)).toFixed(2).replace('.', ','));
+    setEmergencyGoal(settings.emergency_fund_goal?.toFixed(2).replace('.', ',') || '');
+    setInitialDate(settings.initial_balance_date || '');
+  };
+
+  const fetchBills = async (): Promise<BillsLoadResult> => {
     try {
       const response = await api.get('/bills');
-      setAllBills(response.data.data || []);
-      await AsyncStorage.setItem('@bills_cache', JSON.stringify(response.data.data || []));
-      setIsOffline(false);
+      const bills = response.data?.data || [];
+      return { online: true, hasData: true, cachedAt: null, authoritativeFailure: false, data: bills };
     } catch (error) {
-      console.error("Erro ao buscar boletos:", error);
-      setIsOffline(true);
-      const cached = await AsyncStorage.getItem('@bills_cache');
-      if (cached) setAllBills(JSON.parse(cached));
+      if (!canUseOfflineCacheForApiFailure(error)) {
+        return { online: false, hasData: false, cachedAt: null, authoritativeFailure: true, data: null };
+      }
+      const cached = userId ? await getUserCacheSnapshot<Bill[]>(userId, 'bills') : null;
+      if (cached) {
+        return { online: false, hasData: true, cachedAt: cached.cachedAt, authoritativeFailure: false, data: cached.data };
+      }
+      return { online: false, hasData: false, cachedAt: null, authoritativeFailure: false, data: null };
     }
   };
 
-  const fetchSettings = async () => {
+  const fetchSettings = async (): Promise<SettingsLoadResult> => {
     try {
-      const resp = await api.get('/settings');
-      if (resp.data && resp.data.data) {
-        const s = resp.data.data;
-        setInitialBalance(s.initial_balance?.toFixed(2).replace('.', ',') || '');
-        setEmergencyGoal(s.emergency_fund_goal?.toFixed(2).replace('.', ',') || '');
-        setInitialDate(s.initial_balance_date || '');
-        await AsyncStorage.setItem('@settings_cache', JSON.stringify(s));
-      } else {
-        setConfigModalVisible(true);
+      const response = await api.get('/settings');
+      const settings = response.data?.data as SettingsCache | undefined;
+      return {
+        online: true,
+        hasData: Boolean(settings),
+        authoritativeFailure: false,
+        data: settings ?? null,
+        shouldOpenConfig: !settings,
+      };
+    } catch (error) {
+      if (!canUseOfflineCacheForApiFailure(error)) {
+        return { online: false, hasData: false, authoritativeFailure: true, data: null, shouldOpenConfig: false };
       }
-      setIsOffline(false);
-    } catch (e) {
-      console.error(e);
-      setIsOffline(true);
-      const cached = await AsyncStorage.getItem('@settings_cache');
+      const cached = userId ? await getUserCacheSnapshot<SettingsCache>(userId, 'settings') : null;
       if (cached) {
-        const s = JSON.parse(cached);
-        setInitialBalance(s.initial_balance?.toFixed(2).replace('.', ',') || '');
-        setEmergencyGoal(s.emergency_fund_goal?.toFixed(2).replace('.', ',') || '');
-        setInitialDate(s.initial_balance_date || '');
+        return { online: false, hasData: true, authoritativeFailure: false, data: cached.data, shouldOpenConfig: false };
       }
+      return { online: false, hasData: false, authoritativeFailure: false, data: null, shouldOpenConfig: false };
     }
   };
 
   const loadAllData = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
     setLoading(true);
-    await Promise.all([fetchBills(), fetchSettings()]);
-    setLoading(false);
-    setRefreshing(false);
-  }, []);
+    try {
+      const [billsResult, settingsResult] = await Promise.all([fetchBills(), fetchSettings()]);
+      if (generation !== refreshGeneration.current) return;
 
-  // Config State
-  const [configModalVisible, setConfigModalVisible] = useState(false);
-  const [initialBalance, setInitialBalance] = useState('');
-  const [emergencyGoal, setEmergencyGoal] = useState('');
-  const [initialDate, setInitialDate] = useState('');
+      setAllBills(billsResult.data ?? []);
+      if (settingsResult.data) {
+        hydrateSettings(settingsResult.data);
+      } else if (settingsResult.shouldOpenConfig) {
+        setConfigModalVisible(true);
+      }
 
-  // Filter state
-  const now = new Date();
-  const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
-  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
+      if (userId && billsResult.online && billsResult.data) {
+        void trySetUserCache(userId, 'bills', billsResult.data);
+      }
+      if (userId && settingsResult.online && settingsResult.data) {
+        void trySetUserCache(userId, 'settings', settingsResult.data);
+      }
+
+      const fullyOnline = billsResult.online && settingsResult.online;
+      const hasAuthoritativeFailure = billsResult.authoritativeFailure || settingsResult.authoritativeFailure;
+      const usableOfflineData = billsResult.hasData && !hasAuthoritativeFailure;
+      const nextState: LoadState = fullyOnline ? 'ready' : usableOfflineData ? 'offline-cache' : 'unavailable';
+      setLoadState(nextState);
+      setOfflineCachedAt(nextState === 'offline-cache' ? billsResult.cachedAt : null);
+    } finally {
+      if (generation === refreshGeneration.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
+  }, [userId]);
+
+  useEffect(() => () => {
+    refreshGeneration.current += 1;
+  }, [userId]);
 
   useEffect(() => {
-    const unsubscribe = navigation.addListener('focus', () => {
-      loadAllData();
-    });
+    const unsubscribe = navigation.addListener('focus', loadAllData);
     return unsubscribe;
   }, [navigation, loadAllData]);
 
   const onRefresh = () => {
     setRefreshing(true);
-    loadAllData();
+    void loadAllData();
+  };
+
+  const formatCurrencyInput = (value: string) => {
+    const digits = value.replace(/[^0-9]/g, '');
+    if (!digits) return '';
+    return (Number(digits) / 100).toFixed(2).replace('.', ',');
   };
 
   const saveSettings = async () => {
+    if (savingSettings) return;
     if (!initialBalance || !emergencyGoal) {
-      Alert.alert("Aviso", "Preencha ambos os valores.");
+      Alert.alert('Campos obrigatórios', 'Informe o saldo inicial e a meta da reserva de emergência.');
       return;
     }
-    const bal = parseFloat(initialBalance.replace(',','.'));
-    const goal = parseFloat(emergencyGoal.replace(',','.'));
+
+    const balanceMagnitude = Number(initialBalance.replace(',', '.'));
+    const goal = Number(emergencyGoal.replace(',', '.'));
+    if (!Number.isFinite(balanceMagnitude) || !Number.isFinite(goal)) {
+      Alert.alert('Valores inválidos', 'Revise os valores informados antes de salvar.');
+      return;
+    }
+    const balance = initialBalanceNegative && balanceMagnitude !== 0 ? -balanceMagnitude : balanceMagnitude;
+
+    setSavingSettings(true);
     try {
       await api.post('/settings', {
-        initial_balance: bal,
+        initial_balance: balance,
         emergency_fund_goal: goal,
-        initial_balance_date: initialDate || new Date().toISOString().split('T')[0]
+        initial_balance_date: initialDate || financialDateOnly(),
       });
       setConfigModalVisible(false);
-      loadAllData();
-    } catch (error) {
-      Alert.alert("Erro", "Não foi possível salvar configurações.");
+      await loadAllData();
+    } catch {
+      Alert.alert(
+        'Resultado não confirmado',
+        'Não foi possível confirmar se as configurações foram salvas. Recarregue os dados para reconciliar o estado antes de tentar novamente.',
+      );
+    } finally {
+      setSavingSettings(false);
     }
   };
 
   const getDaysUntilDue = (dueDate: string) => {
     if (!dueDate) return null;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const due = new Date(dueDate + 'T00:00:00');
-    return Math.ceil((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    try {
+      return financialDaysBetween(financialDateOnly(), dueDate);
+    } catch {
+      return null;
+    }
   };
 
-  // ---------- Filtering Logic ----------
-  const filteredByDate = allBills.filter(b => {
-    if (b.is_recurring) return false; // Hide recurring templates
-    if (!b.due_date) return false;
-    const d = new Date(b.due_date + 'T00:00:00');
-    return d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
-  });
+  const billsDueInSelectedPeriod = useMemo(() => allBills.filter((bill) => {
+    if (bill.is_recurring || !bill.due_date) return false;
+    try {
+      const due = parseFinancialDateOnly(bill.due_date);
+      return due.month - 1 === selectedMonth && due.year === selectedYear;
+    } catch {
+      return false;
+    }
+  }), [allBills, selectedMonth, selectedYear]);
 
-  const pendingBills = filteredByDate.filter(
-    b => b.status === 'pending' || b.status === 'overdue'
+  const pendingBills = useMemo(
+    () => billsDueInSelectedPeriod.filter((bill) => bill.status === 'pending' || bill.status === 'overdue'),
+    [billsDueInSelectedPeriod],
   );
-  const paidBills = filteredByDate.filter(
-    b => b.status === 'paid' || b.status === 'aprovado'
-  );
+  const paidBills = useMemo(() => allBills.filter((bill) => {
+    if (bill.is_recurring || (bill.status !== 'paid' && bill.status !== 'aprovado') || !bill.payment_date) {
+      return false;
+    }
+    try {
+      const paid = parseFinancialDateOnly(bill.payment_date);
+      return paid.month - 1 === selectedMonth && paid.year === selectedYear;
+    } catch {
+      return false;
+    }
+  }), [allBills, selectedMonth, selectedYear]);
 
   const displayedBills = activeTab === 'pending'
     ? pendingBills
     : activeTab === 'paid'
       ? paidBills
-      : filteredByDate;
+      : billsDueInSelectedPeriod;
 
-  // Sort: overdue first, then by due_date asc for pending; newest first for paid
-  const sortedBills = [...displayedBills].sort((a, b) => {
+  const sortedBills = useMemo(() => [...displayedBills].sort((a, b) => {
     if (activeTab === 'paid') {
-      return new Date(b.payment_date || b.due_date).getTime() -
-             new Date(a.payment_date || a.due_date).getTime();
+      return (b.payment_date ?? '').localeCompare(a.payment_date ?? '');
     }
-    const daysA = getDaysUntilDue(a.due_date) ?? 999;
-    const daysB = getDaysUntilDue(b.due_date) ?? 999;
-    return daysA - daysB;
-  });
+    return (getDaysUntilDue(a.due_date) ?? 999) - (getDaysUntilDue(b.due_date) ?? 999);
+  }), [displayedBills, activeTab]);
 
-  // Summary calculations
-  const totalPending = pendingBills.reduce((sum, b) => sum + Number(b.amount), 0);
-  const totalPaid = paidBills.reduce((sum, b) => sum + Number(b.amount), 0);
-  const overdueBills = pendingBills.filter(b => {
-    const d = getDaysUntilDue(b.due_date);
-    return d !== null && d < 0;
-  });
+  const totalPending = pendingBills.reduce((sum, bill) => sum + Number(bill.amount), 0);
+  const totalPaid = paidBills.reduce((sum, bill) => sum + Number(bill.amount), 0);
+  const overdueBills = pendingBills.filter((bill) => (getDaysUntilDue(bill.due_date) ?? 0) < 0);
 
-  // ---------- Month Navigation ----------
   const goToPrevMonth = () => {
     if (selectedMonth === 0) {
       setSelectedMonth(11);
-      setSelectedYear(y => y - 1);
+      setSelectedYear((year) => year - 1);
     } else {
-      setSelectedMonth(m => m - 1);
+      setSelectedMonth((month) => month - 1);
     }
   };
 
   const goToNextMonth = () => {
     if (selectedMonth === 11) {
       setSelectedMonth(0);
-      setSelectedYear(y => y + 1);
+      setSelectedYear((year) => year + 1);
     } else {
-      setSelectedMonth(m => m + 1);
+      setSelectedMonth((month) => month + 1);
     }
   };
 
   const goToCurrentMonth = () => {
-    const n = new Date();
-    setSelectedMonth(n.getMonth());
-    setSelectedYear(n.getFullYear());
+    const current = financialDateParts();
+    setSelectedMonth(current.month - 1);
+    setSelectedYear(current.year);
   };
 
-  const isCurrentMonth = selectedMonth === now.getMonth() && selectedYear === now.getFullYear();
-
-  // ---------- Currency Formatting ----------
-  const formatCurrency = (value: string) => {
-    const numericValue = value.replace(/[^0-9]/g, '');
-    if (numericValue) {
-      const val = (Number(numericValue) / 100).toFixed(2);
-      return val.replace('.', ',');
-    }
-    return '';
-  };
-
-  const handleBalanceChange = (text: string) => {
-    setInitialBalance(formatCurrency(text));
-  };
-
-  const handleGoalChange = (text: string) => {
-    setEmergencyGoal(formatCurrency(text));
-  };
-
-  // ---------- Render ----------
+  const isCurrentMonth = selectedMonth === financialNow.month - 1 && selectedYear === financialNow.year;
+  const selectedPeriod = `${MONTH_NAMES[selectedMonth]} ${selectedYear}`;
 
   const renderBill = ({ item }: { item: Bill }) => {
     const isPaid = item.status === 'paid' || item.status === 'aprovado';
     const daysUntil = getDaysUntilDue(item.due_date);
     const isOverdue = daysUntil !== null && daysUntil < 0 && !isPaid;
     const isUrgent = daysUntil !== null && daysUntil >= 0 && daysUntil <= 3 && !isPaid;
+    const statusLabel = isPaid ? 'Pago' : isOverdue ? 'Vencida' : 'Pendente';
+    const description = item.description || `Fatura ${item.id.substring(0, 5)}`;
 
     return (
       <TouchableOpacity
-        style={[
-          styles.card,
-          isPaid && styles.cardPaid,
-          isOverdue && styles.cardOverdue,
-        ]}
+        style={[styles.card, isPaid && styles.cardPaid, isOverdue && styles.cardOverdue]}
         activeOpacity={0.75}
         onPress={() => navigation.navigate('BillHistory', { billId: item.id })}
+        accessibilityRole="button"
+        accessibilityLabel={`${description}. ${formatBRL(item.amount)}. Status ${statusLabel}. ${isPaid && item.payment_date ? `Pago em ${formatDate(item.payment_date)}` : `Vence em ${formatDate(item.due_date)}`}`}
+        accessibilityHint="Abre os detalhes e o histórico desta fatura"
       >
-        <View style={styles.cardLeft}>
-          <View style={[
-            styles.cardIcon,
-            isPaid ? styles.cardIconPaid : isOverdue ? styles.cardIconOverdue : styles.cardIconPending
-          ]}>
-            <Ionicons
-              name={isPaid ? 'checkmark' : isOverdue ? 'alert' : 'time'}
-              size={18}
-              color="#fff"
-            />
-          </View>
+        <View style={[styles.cardIcon, isPaid ? styles.cardIconPaid : isOverdue ? styles.cardIconOverdue : styles.cardIconPending]}>
+          <Ionicons accessibilityElementsHidden name={isPaid ? 'checkmark' : isOverdue ? 'alert' : 'time'} size={18} color="#fff" />
         </View>
 
         <View style={styles.cardCenter}>
-          <View style={styles.cardTitleRow}>
-            {item.is_recurring && (
-              <Ionicons name="repeat" size={12} color="#8b5cf6" style={{ marginRight: 4 }} />
-            )}
-            <Text style={styles.cardTitle} numberOfLines={1}>
-              {item.description || `Fatura #${item.id.substring(0, 5)}`}
-            </Text>
-          </View>
-
+          <Text style={styles.cardTitle} numberOfLines={2}>{description}</Text>
           <Text style={styles.cardDate}>
-            {isPaid && item.payment_date
-              ? `Pago em ${new Date(item.payment_date + 'T00:00:00').toLocaleDateString('pt-BR')}`
-              : `Vence ${item.due_date ? new Date(item.due_date + 'T00:00:00').toLocaleDateString('pt-BR') : '-'}`
-            }
+            {isPaid && item.payment_date ? `Pago em ${formatDate(item.payment_date)}` : `Vence ${formatDate(item.due_date)}`}
           </Text>
+          <Text style={styles.cardStatus}>{statusLabel}</Text>
         </View>
 
         <View style={styles.cardRight}>
-          <Text style={[styles.cardAmount, isPaid && { color: '#64748b' }]}>
-            R$ {Number(item.amount).toFixed(2)}
+          <Text style={[styles.cardAmount, isPaid && styles.cardAmountPaid]} numberOfLines={1} adjustsFontSizeToFit>
+            {formatBRL(item.amount)}
           </Text>
-
-          {isUrgent && !isPaid && (
-            <View style={[styles.urgentBadge, daysUntil === 0 && { backgroundColor: '#ef4444' }]}>
-              <Text style={styles.urgentBadgeText}>
-                {daysUntil === 0 ? 'HOJE' : `${daysUntil}d`}
-              </Text>
-            </View>
-          )}
-
-          {isOverdue && (
-            <View style={[styles.urgentBadge, { backgroundColor: '#ef4444' }]}>
-              <Text style={styles.urgentBadgeText}>Vencida</Text>
-            </View>
-          )}
-
-          {isPaid && item.receipt_url && (
-            <View style={styles.receiptDot}>
-              <Ionicons name="attach" size={12} color="#10b981" />
-            </View>
-          )}
+          {isUrgent && !isPaid && <Text style={styles.urgentText}>{daysUntil === 0 ? 'Vence hoje' : `Vence em ${daysUntil} dias`}</Text>}
+          {isOverdue && <Text style={styles.overdueText}>Pagamento atrasado</Text>}
+          {isPaid && item.receipt_url && <Text style={styles.receiptText}>Comprovante disponível</Text>}
         </View>
-
-        <Ionicons name="chevron-forward" size={16} color="#cbd5e1" style={{ marginLeft: 4 }} />
+        <Ionicons accessibilityElementsHidden name="chevron-forward" size={16} color="#94a3b8" />
       </TouchableOpacity>
     );
   };
 
   const tabConfig: { key: TabKey; label: string; count: number; icon: keyof typeof Ionicons.glyphMap }[] = [
-    { key: 'pending', label: 'A Pagar', count: pendingBills.length, icon: 'alert-circle' },
+    { key: 'pending', label: 'A pagar', count: pendingBills.length, icon: 'alert-circle' },
     { key: 'paid', label: 'Pagas', count: paidBills.length, icon: 'checkmark-circle' },
-    { key: 'all', label: 'Todas', count: filteredByDate.length, icon: 'list' },
+    { key: 'all', label: 'Todas', count: billsDueInSelectedPeriod.length, icon: 'list' },
+  ];
+
+  const quickActions = [
+    { label: 'Rendas', icon: 'cash' as const, route: 'Income', hint: 'Abre o controle de rendas' },
+    { label: 'Saúde', icon: 'heart' as const, route: 'Insights', hint: 'Abre os indicadores financeiros' },
+    { label: 'Fixas', icon: 'repeat' as const, route: 'RecurringBill', hint: 'Abre as faturas recorrentes' },
+    { label: 'Nova', icon: 'add' as const, route: 'Details', hint: 'Cria uma nova fatura' },
   ];
 
   const renderHeader = () => (
     <View>
-      {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerTop}>
-          <View>
-            <Text style={styles.title}>FinanceFlow</Text>
-            <Text style={styles.subtitle}>Controle Financeiro</Text>
+          <View style={styles.headerCopy}>
+            <Text accessibilityRole="header" style={styles.title}>FinanceFlow</Text>
+            <Text style={styles.subtitle}>Visão financeira de {selectedPeriod}</Text>
           </View>
-          <TouchableOpacity 
-            style={styles.settingsBtn} 
+          <TouchableOpacity
+            style={styles.settingsBtn}
             onPress={() => setConfigModalVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Abrir configurações financeiras"
+            accessibilityHint="Permite editar saldo inicial e meta de reserva"
           >
-            <Ionicons name="settings-sharp" size={22} color="#fff" />
+            <Ionicons accessibilityElementsHidden name="settings-sharp" size={22} color="#fff" />
           </TouchableOpacity>
         </View>
 
-        {/* Summary Cards */}
-        <View style={styles.summaryRow}>
+        <View style={styles.summaryRow} accessible accessibilityLabel={`${pendingBills.length} pendentes, total ${formatBRL(totalPending)}. ${paidBills.length} pagas, total ${formatBRL(totalPaid)}.`}>
           <View style={styles.summaryCard}>
-            <Text style={styles.summaryLabel}>
-              {pendingBills.length} pendente{pendingBills.length !== 1 ? 's' : ''}
-            </Text>
-            <Text style={styles.summaryValue}>
-              R$ {totalPending.toFixed(2)}
-            </Text>
+            <Text style={styles.summaryLabel}>{pendingBills.length} pendente{pendingBills.length !== 1 ? 's' : ''}</Text>
+            <Text style={styles.summaryValue} numberOfLines={1} adjustsFontSizeToFit>{formatBRL(totalPending)}</Text>
           </View>
           <View style={styles.summaryDivider} />
           <View style={styles.summaryCard}>
-            <Text style={styles.summaryLabel}>
-              {paidBills.length} paga{paidBills.length !== 1 ? 's' : ''}
-            </Text>
-            <Text style={[styles.summaryValue, { color: '#a7f3d0' }]}>
-              R$ {totalPaid.toFixed(2)}
-            </Text>
+            <Text style={styles.summaryLabel}>{paidBills.length} paga{paidBills.length !== 1 ? 's' : ''}</Text>
+            <Text style={[styles.summaryValue, styles.summaryPaid]} numberOfLines={1} adjustsFontSizeToFit>{formatBRL(totalPaid)}</Text>
           </View>
         </View>
 
         {overdueBills.length > 0 && (
-          <View style={styles.overdueAlert}>
-            <Ionicons name="warning" size={14} color="#fef2f2" />
-            <Text style={styles.overdueAlertText}>
-              {overdueBills.length} conta{overdueBills.length > 1 ? 's' : ''} vencida{overdueBills.length > 1 ? 's' : ''}!
-            </Text>
+          <View style={styles.overdueAlert} accessibilityLiveRegion="polite">
+            <Ionicons accessibilityElementsHidden name="warning" size={15} color="#fff" />
+            <Text style={styles.overdueAlertText}>{overdueBills.length} conta{overdueBills.length !== 1 ? 's' : ''} vencida{overdueBills.length !== 1 ? 's' : ''}</Text>
           </View>
         )}
       </View>
 
-      {/* Network Status */}
-      <NetworkStatus isOffline={isOffline} onRetry={loadAllData} />
+      <NetworkStatus
+        isOffline={loadState === 'offline-cache'}
+        cachedAt={offlineCachedAt}
+        onRetry={loadAllData}
+      />
 
-      {/* Month Filter */}
-      <View style={styles.monthFilter}>
-        <TouchableOpacity onPress={goToPrevMonth} style={styles.monthArrow}>
-          <Ionicons name="chevron-back" size={20} color="#6366f1" />
+      <View style={styles.monthFilter} accessibilityLabel={`Período selecionado: ${selectedPeriod}`}>
+        <TouchableOpacity
+          onPress={goToPrevMonth}
+          style={styles.monthArrow}
+          accessibilityRole="button"
+          accessibilityLabel="Mês anterior"
+        >
+          <Ionicons accessibilityElementsHidden name="chevron-back" size={20} color="#4f46e5" />
         </TouchableOpacity>
-
-        <TouchableOpacity onPress={goToCurrentMonth} style={styles.monthLabel}>
-          <Text style={styles.monthText}>
-            {MONTH_NAMES[selectedMonth]} {selectedYear}
-          </Text>
-          {!isCurrentMonth && (
-            <Text style={styles.monthReset}>Ir para hoje</Text>
-          )}
+        <TouchableOpacity
+          onPress={goToCurrentMonth}
+          style={styles.monthLabel}
+          accessibilityRole="button"
+          accessibilityLabel={`${selectedPeriod}${isCurrentMonth ? ', mês atual' : ', tocar para voltar ao mês atual'}`}
+        >
+          <Text style={styles.monthText}>{selectedPeriod}</Text>
+          {!isCurrentMonth && <Text style={styles.monthReset}>Voltar para este mês</Text>}
         </TouchableOpacity>
-
-        <TouchableOpacity onPress={goToNextMonth} style={styles.monthArrow}>
-          <Ionicons name="chevron-forward" size={20} color="#6366f1" />
+        <TouchableOpacity
+          onPress={goToNextMonth}
+          style={styles.monthArrow}
+          accessibilityRole="button"
+          accessibilityLabel="Próximo mês"
+        >
+          <Ionicons accessibilityElementsHidden name="chevron-forward" size={20} color="#4f46e5" />
         </TouchableOpacity>
       </View>
 
-      {/* Tabs */}
-      <View style={styles.tabBar}>
-        {tabConfig.map(tab => (
+      <View style={styles.tabBar} accessibilityRole="tablist">
+        {tabConfig.map((tab) => {
+          const selected = activeTab === tab.key;
+          return (
+            <TouchableOpacity
+              key={tab.key}
+              style={[styles.tab, selected && styles.tabActive]}
+              onPress={() => setActiveTab(tab.key)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected }}
+              accessibilityLabel={`${tab.label}, ${tab.count} item${tab.count === 1 ? '' : 's'}`}
+            >
+              <Ionicons accessibilityElementsHidden name={tab.icon} size={15} color={selected ? '#4338ca' : '#64748b'} />
+              <Text style={[styles.tabText, selected && styles.tabTextActive]}>{tab.label}</Text>
+              <Text style={[styles.tabCount, selected && styles.tabCountActive]}>{tab.count}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      <View style={styles.quickActions} accessibilityLabel="Atalhos financeiros">
+        {quickActions.map((action) => (
           <TouchableOpacity
-            key={tab.key}
-            style={[styles.tab, activeTab === tab.key && styles.tabActive]}
-            onPress={() => setActiveTab(tab.key)}
+            key={action.route}
+            style={styles.quickBtn}
+            onPress={() => navigation.navigate(action.route)}
+            accessibilityRole="button"
+            accessibilityLabel={action.label}
+            accessibilityHint={action.hint}
           >
-            <Ionicons
-              name={tab.icon}
-              size={14}
-              color={activeTab === tab.key ? '#6366f1' : '#94a3b8'}
-            />
-            <Text style={[styles.tabText, activeTab === tab.key && styles.tabTextActive]}>
-              {tab.label}
-            </Text>
-            {tab.count > 0 && (
-              <View style={[styles.tabBadge, activeTab === tab.key && styles.tabBadgeActive]}>
-                <Text style={[styles.tabBadgeText, activeTab === tab.key && styles.tabBadgeTextActive]}>
-                  {tab.count}
-                </Text>
-              </View>
-            )}
+            <Ionicons accessibilityElementsHidden name={action.icon} size={18} color="#4338ca" />
+            <Text style={styles.quickBtnText}>{action.label}</Text>
           </TouchableOpacity>
         ))}
-      </View>
-
-      {/* Quick Actions */}
-      <View style={styles.quickActions}>
-        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('Income')}>
-          <View style={[styles.quickBtnIcon, { backgroundColor: '#fdf4ff' }]}>
-            <Ionicons name="cash" size={16} color="#c026d3" />
-          </View>
-          <Text style={styles.quickBtnText}>Rendas</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('Insights')}>
-          <View style={[styles.quickBtnIcon, { backgroundColor: '#fff1f2' }]}>
-            <Ionicons name="heart" size={16} color="#e11d48" />
-          </View>
-          <Text style={styles.quickBtnText}>Saúde</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('RecurringBill')}>
-          <View style={[styles.quickBtnIcon, { backgroundColor: '#f5f3ff' }]}>
-            <Ionicons name="repeat" size={16} color="#8b5cf6" />
-          </View>
-          <Text style={styles.quickBtnText}>Fixo</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.quickBtn} onPress={() => navigation.navigate('Details')}>
-          <View style={[styles.quickBtnIcon, { backgroundColor: '#eff6ff' }]}>
-            <Ionicons name="add" size={16} color="#3b82f6" />
-          </View>
-          <Text style={styles.quickBtnText}>Nova</Text>
-        </TouchableOpacity>
       </View>
     </View>
   );
 
+  if (loading) {
+    return (
+      <View style={styles.stateContainer} accessibilityLiveRegion="polite">
+        <ActivityIndicator size="large" color="#4f46e5" />
+        <Text style={styles.stateTitle}>Carregando seu mês</Text>
+        <Text style={styles.stateText}>Buscando faturas e configurações financeiras.</Text>
+      </View>
+    );
+  }
+
+  if (loadState === 'unavailable') {
+    return (
+      <View style={styles.stateContainer} accessibilityLiveRegion="assertive">
+        <Ionicons accessibilityElementsHidden name="cloud-offline-outline" size={52} color="#64748b" />
+        <Text style={styles.stateTitle}>Não foi possível carregar seus dados</Text>
+        <Text style={styles.stateText}>Não há cache disponível para esta conta. Verifique sua conexão e tente novamente.</Text>
+        <TouchableOpacity
+          style={styles.retryButton}
+          onPress={loadAllData}
+          accessibilityRole="button"
+          accessibilityLabel="Tentar carregar os dados novamente"
+        >
+          <Ionicons accessibilityElementsHidden name="refresh" size={18} color="#fff" />
+          <Text style={styles.retryButtonText}>Tentar novamente</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
+      <FlatList
+        data={sortedBills}
+        keyExtractor={(item) => item.id}
+        renderItem={renderBill}
+        ListHeaderComponent={renderHeader}
+        contentContainerStyle={styles.listContainer}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#4f46e5']} />}
+        ListEmptyComponent={
+          <View style={styles.emptyContainer} accessibilityLiveRegion="polite">
+            <Ionicons accessibilityElementsHidden name={activeTab === 'paid' ? 'checkmark-done-circle-outline' : 'file-tray-outline'} size={48} color="#94a3b8" />
+            <Text style={styles.emptyTitle}>{activeTab === 'pending' ? 'Nada para pagar neste mês' : activeTab === 'paid' ? 'Nenhum pagamento neste mês' : 'Nenhuma fatura neste mês'}</Text>
+            <Text style={styles.emptyText}>{activeTab === 'pending' ? `Não há faturas pendentes em ${selectedPeriod}.` : activeTab === 'paid' ? `Nenhum pagamento foi registrado em ${selectedPeriod}.` : `Nenhuma fatura foi encontrada em ${selectedPeriod}.`}</Text>
+          </View>
+        }
+      />
 
-      {/* Bill List */}
-      {loading ? (
-        <ActivityIndicator size="large" color="#6366f1" style={styles.loader} />
-      ) : (
-        <FlatList
-          data={sortedBills}
-          keyExtractor={(item) => item.id}
-          renderItem={renderBill}
-          ListHeaderComponent={renderHeader}
-          contentContainerStyle={styles.listContainer}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#6366f1']} />}
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Ionicons
-                name={activeTab === 'paid' ? 'checkmark-done-circle-outline' : 'file-tray-outline'}
-                size={48}
-                color="#cbd5e1"
-              />
-              <Text style={styles.emptyText}>
-                {activeTab === 'pending'
-                  ? `Nenhuma conta pendente\nem ${MONTH_NAMES[selectedMonth]}/${selectedYear}.`
-                  : activeTab === 'paid'
-                    ? `Nenhum pagamento registrado\nem ${MONTH_NAMES[selectedMonth]}/${selectedYear}.`
-                    : `Nenhuma fatura em\n${MONTH_NAMES[selectedMonth]}/${selectedYear}.`
-                }
-              </Text>
-            </View>
-          }
-        />
-      )}
-
-      {/* FAB */}
       <TouchableOpacity
         style={styles.fab}
         onPress={() => navigation.navigate('Details')}
         activeOpacity={0.85}
+        accessibilityRole="button"
+        accessibilityLabel="Adicionar nova fatura"
+        accessibilityHint="Abre o formulário de criação de fatura"
       >
-        <Ionicons name="add" size={28} color="#fff" />
+        <Ionicons accessibilityElementsHidden name="add" size={28} color="#fff" />
       </TouchableOpacity>
+      <Modal visible={configModalVisible} animationType="slide" transparent onRequestClose={() => !savingSettings && setConfigModalVisible(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
+          <View style={styles.modalContainer} accessibilityViewIsModal>
+            <Text accessibilityRole="header" style={styles.modalTitle}>Configurações financeiras</Text>
+            <Text style={styles.modalSub}>Defina o saldo inicial e a meta da reserva de emergência.</Text>
 
-      <Modal visible={configModalVisible} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
-            <Text style={styles.modalTitle}>Configuração Inicial</Text>
-            <Text style={styles.modalSub}>
-              Para usar os recursos avançados de finanças, precisaremos de um ponto de partida.
-            </Text>
-            
-            <Text style={styles.modalLabel}>Qual o seu saldo agora?</Text>
-            <View style={styles.inputWrapper}>
-              <Text style={styles.currencyPrefix}>R$</Text>
+            <Text style={styles.modalLabel}>Saldo inicial</Text>
+            <TouchableOpacity
+              style={[styles.signToggle, initialBalanceNegative && styles.signToggleActive]}
+              onPress={() => setInitialBalanceNegative((current) => !current)}
+              accessibilityRole="switch"
+              accessibilityLabel="Saldo inicial negativo"
+              accessibilityHint="Ative quando o saldo inicial representar dívida, cheque especial ou outra posição negativa"
+              accessibilityState={{ checked: initialBalanceNegative }}
+            >
+              <Ionicons
+                accessibilityElementsHidden
+                name={initialBalanceNegative ? 'remove-circle' : 'add-circle'}
+                size={18}
+                color={initialBalanceNegative ? '#991b1b' : '#047857'}
+              />
+              <Text style={[styles.signToggleText, initialBalanceNegative && styles.signToggleTextNegative]}>
+                {initialBalanceNegative ? 'Negativo' : 'Positivo ou zero'}
+              </Text>
+            </TouchableOpacity>
+            <View style={[styles.inputWrapper, initialBalanceNegative && styles.inputWrapperNegative]}>
+              <Text style={[styles.currencyPrefix, initialBalanceNegative && styles.currencyPrefixNegative]}>
+                {initialBalanceNegative ? '-R$' : 'R$'}
+              </Text>
               <TextInput
                 style={styles.modalInputAmount}
-                keyboardType="numeric"
+                keyboardType="decimal-pad"
                 placeholder="0,00"
                 value={initialBalance}
-                onChangeText={handleBalanceChange}
+                onChangeText={(text) => {
+                  if (text.includes('-')) setInitialBalanceNegative(true);
+                  setInitialBalance(formatCurrencyInput(text));
+                }}
+                accessibilityLabel="Magnitude do saldo inicial em reais"
+                accessibilityHint="Use o controle de saldo negativo para representar dívida ou cheque especial"
+                returnKeyType="next"
               />
             </View>
 
-            <Text style={styles.modalLabel}>Qual sua meta para Reserva de Emergência?</Text>
+            <Text style={styles.modalLabel}>Meta da reserva de emergência</Text>
             <View style={styles.inputWrapper}>
               <Text style={styles.currencyPrefix}>R$</Text>
               <TextInput
                 style={styles.modalInputAmount}
-                keyboardType="numeric"
+                keyboardType="decimal-pad"
                 placeholder="0,00"
                 value={emergencyGoal}
-                onChangeText={handleGoalChange}
+                onChangeText={(text) => setEmergencyGoal(formatCurrencyInput(text))}
+                accessibilityLabel="Meta da reserva de emergência em reais"
+                returnKeyType="done"
               />
             </View>
 
@@ -513,505 +610,106 @@ export default function HomeScreen({ navigation }: any) {
               <TouchableOpacity
                 style={styles.cancelBtn}
                 onPress={() => setConfigModalVisible(false)}
+                disabled={savingSettings}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: savingSettings }}
               >
                 <Text style={styles.cancelBtnText}>Cancelar</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalBtn, { flex: 2, marginTop: 0 }]} onPress={saveSettings}>
-                <Text style={styles.modalBtnText}>Salvar</Text>
+              <TouchableOpacity
+                style={[styles.modalBtn, savingSettings && styles.buttonDisabled]}
+                onPress={saveSettings}
+                disabled={savingSettings}
+                accessibilityRole="button"
+                accessibilityLabel="Salvar configurações financeiras"
+                accessibilityState={{ disabled: savingSettings, busy: savingSettings }}
+              >
+                {savingSettings ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalBtnText}>Salvar</Text>}
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
-
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f1f5f9',
-  },
-
-  // Header
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 45,
-    paddingBottom: 20,
-    backgroundColor: '#4f46e5',
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
-    elevation: 8,
-    shadowColor: '#4f46e5',
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-  },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  settingsBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: '900',
-    color: '#fff',
-    letterSpacing: -0.5,
-  },
-  subtitle: {
-    fontSize: 13,
-    color: '#c7d2fe',
-    marginTop: 2,
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-  },
-  summaryCard: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  summaryDivider: {
-    width: 1,
-    height: 30,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-  },
-  summaryLabel: {
-    color: '#c7d2fe',
-    fontSize: 12,
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  summaryValue: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '900',
-  },
-  overdueAlert: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 10,
-    backgroundColor: 'rgba(239,68,68,0.25)',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-  },
-  overdueAlertText: {
-    color: '#fecaca',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-
-  // Month Filter
-  monthFilter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 14,
-    marginHorizontal: 16,
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    paddingVertical: 8,
-    paddingHorizontal: 6,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  monthArrow: {
-    padding: 8,
-  },
-  monthLabel: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  monthText: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#1e293b',
-    textTransform: 'capitalize',
-  },
-  monthReset: {
-    fontSize: 10,
-    color: '#6366f1',
-    fontWeight: '600',
-    marginTop: 1,
-  },
-
-  // Tabs
-  tabBar: {
-    flexDirection: 'row',
-    marginHorizontal: 16,
-    marginTop: 10,
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 4,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  tab: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    borderRadius: 10,
-    gap: 4,
-  },
-  tabActive: {
-    backgroundColor: '#eef2ff',
-  },
-  tabText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#94a3b8',
-  },
-  tabTextActive: {
-    color: '#6366f1',
-    fontWeight: '800',
-  },
-  tabBadge: {
-    backgroundColor: '#e2e8f0',
-    borderRadius: 8,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    minWidth: 18,
-    alignItems: 'center',
-  },
-  tabBadgeActive: {
-    backgroundColor: '#c7d2fe',
-  },
-  tabBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#64748b',
-  },
-  tabBadgeTextActive: {
-    color: '#4f46e5',
-  },
-
-  // Quick Actions
-  quickActions: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 12,
-    marginHorizontal: 16,
-    marginTop: 10,
-    marginBottom: 4,
-  },
-  quickBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    elevation: 1,
-    gap: 6,
-  },
-  quickBtnIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  quickBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#475569',
-  },
-
-  // Cards
-  card: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    padding: 14,
-    borderRadius: 14,
-    marginBottom: 8,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  cardPaid: {
-    opacity: 0.7,
-  },
-  cardOverdue: {
-    backgroundColor: '#fef2f2',
-    borderWidth: 1,
-    borderColor: '#fecaca',
-  },
-  cardLeft: {
-    marginRight: 12,
-  },
-  cardIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cardIconPending: {
-    backgroundColor: '#f59e0b',
-  },
-  cardIconPaid: {
-    backgroundColor: '#10b981',
-  },
-  cardIconOverdue: {
-    backgroundColor: '#ef4444',
-  },
-  cardCenter: {
-    flex: 1,
-  },
-  cardTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  cardTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1e293b',
-    flex: 1,
-  },
-  cardDate: {
-    fontSize: 11,
-    color: '#94a3b8',
-    marginTop: 3,
-  },
-  cardRight: {
-    alignItems: 'flex-end',
-    marginLeft: 8,
-  },
-  cardAmount: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#1e293b',
-  },
-  urgentBadge: {
-    backgroundColor: '#f59e0b',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-    marginTop: 4,
-  },
-  urgentBadgeText: {
-    color: '#fff',
-    fontSize: 9,
-    fontWeight: '800',
-  },
-  receiptDot: {
-    marginTop: 4,
-  },
-
-  // List
-  listContainer: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 100,
-  },
-  loader: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  emptyContainer: {
-    alignItems: 'center',
-    marginTop: 50,
-    paddingHorizontal: 20,
-  },
-  emptyText: {
-    textAlign: 'center',
-    color: '#94a3b8',
-    marginTop: 12,
-    fontSize: 14,
-    lineHeight: 22,
-  },
-
-  // FAB
-  fab: {
-    position: 'absolute',
-    bottom: 28,
-    right: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: '#6366f1',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 8,
-    shadowColor: '#6366f1',
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-  },
-
-  // Wallet
-  walletCard: {
-    backgroundColor: '#fff',
-    marginHorizontal: 16,
-    marginTop: 14,
-    borderRadius: 14,
-    padding: 16,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  walletHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  walletTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#1e293b',
-    marginLeft: 6,
-  },
-  walletRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  walletLabel: {
-    fontSize: 12,
-    color: '#64748b',
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  walletValue: {
-    fontSize: 18,
-    fontWeight: '900',
-    color: '#1e293b',
-  },
-  insightBox: {
-    backgroundColor: '#fffbeb',
-    borderRadius: 8,
-    padding: 10,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  insightText: {
-    flex: 1,
-    fontSize: 12,
-    color: '#92400e',
-    lineHeight: 18,
-  },
-
-  // Config Modal
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  modalContainer: {
-    backgroundColor: '#fff',
-    borderRadius: 20,
-    padding: 24,
-    elevation: 10,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#1e293b',
-    marginBottom: 8,
-  },
-  modalSub: {
-    fontSize: 13,
-    color: '#64748b',
-    marginBottom: 20,
-    lineHeight: 18,
-  },
-  modalLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#475569',
-    marginBottom: 6,
-    marginTop: 12,
-  },
-  modalInput: {
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 10,
-    padding: 14,
-    fontSize: 15,
-    color: '#1e293b',
-    minHeight: 52,
-  },
-  modalInputAmount: {
-    flex: 1,
-    padding: 14,
-    fontSize: 15,
-    color: '#1e293b',
-  },
-  inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 10,
-    paddingLeft: 12,
-  },
-  currencyPrefix: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#64748b',
-    marginRight: 4,
-  },
-  modalBtn: {
-    backgroundColor: '#4f46e5',
-    padding: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginTop: 24,
-  },
-  modalBtnText: {
-    color: '#fff',
-    fontWeight: '800',
-    fontSize: 16,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 24,
-    gap: 12,
-  },
-  cancelBtn: {
-    flex: 1,
-    padding: 14,
-    borderRadius: 12,
-    backgroundColor: '#f1f5f9',
-    alignItems: 'center',
-  },
-  cancelBtnText: {
-    color: '#64748b',
-    fontWeight: '700',
-  },
+  container: { flex: 1, backgroundColor: '#f1f5f9' },
+  stateContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, backgroundColor: '#f8fafc' },
+  stateTitle: { marginTop: 16, fontSize: 20, lineHeight: 26, fontWeight: '800', color: '#0f172a', textAlign: 'center' },
+  stateText: { marginTop: 8, fontSize: 14, lineHeight: 21, color: '#475569', textAlign: 'center' },
+  retryButton: { minHeight: 48, marginTop: 20, borderRadius: 12, paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#4f46e5' },
+  retryButtonText: { color: '#fff', fontWeight: '800', fontSize: 14 },
+  header: { marginHorizontal: -16, marginTop: -8, paddingHorizontal: 20, paddingTop: 42, paddingBottom: 20, backgroundColor: '#4338ca', borderBottomLeftRadius: 24, borderBottomRightRadius: 24 },
+  headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 16, marginBottom: 16 },
+  headerCopy: { flex: 1 },
+  title: { fontSize: 26, fontWeight: '900', color: '#fff', letterSpacing: -0.5 },
+  subtitle: { fontSize: 13, lineHeight: 19, color: '#e0e7ff', marginTop: 2 },
+  settingsBtn: { width: 48, height: 48, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.16)', justifyContent: 'center', alignItems: 'center' },
+  summaryRow: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 14, paddingVertical: 12, paddingHorizontal: 12, alignItems: 'center' },
+  summaryCard: { flex: 1, alignItems: 'center', paddingHorizontal: 4 },
+  summaryDivider: { width: 1, height: 38, backgroundColor: 'rgba(255,255,255,0.24)' },
+  summaryLabel: { color: '#e0e7ff', fontSize: 12, fontWeight: '600', marginBottom: 3 },
+  summaryValue: { width: '100%', textAlign: 'center', color: '#fff', fontSize: 18, fontWeight: '900' },
+  summaryPaid: { color: '#d1fae5' },
+  overdueAlert: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 10, backgroundColor: '#991b1b', paddingVertical: 9, paddingHorizontal: 12, borderRadius: 10 },
+  overdueAlertText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+  monthFilter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 14, backgroundColor: '#fff', borderRadius: 14, paddingVertical: 4, paddingHorizontal: 4 },
+  monthArrow: { minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center' },
+  monthLabel: { flex: 1, minHeight: 48, alignItems: 'center', justifyContent: 'center' },
+  monthText: { fontSize: 16, fontWeight: '800', color: '#1e293b' },
+  monthReset: { fontSize: 11, color: '#4338ca', fontWeight: '700', marginTop: 2 },
+  tabBar: { flexDirection: 'row', marginTop: 10, backgroundColor: '#fff', borderRadius: 14, padding: 4 },
+  tab: { flex: 1, minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderRadius: 10, gap: 4 },
+  tabActive: { backgroundColor: '#eef2ff' },
+  tabText: { fontSize: 12, fontWeight: '700', color: '#64748b' },
+  tabTextActive: { color: '#4338ca', fontWeight: '800' },
+  tabCount: { minWidth: 20, textAlign: 'center', fontSize: 11, fontWeight: '800', color: '#475569' },
+  tabCountActive: { color: '#4338ca' },
+  quickActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10, marginBottom: 4 },
+  quickBtn: { minHeight: 48, flexGrow: 1, flexBasis: '45%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, gap: 7 },
+  quickBtnText: { fontSize: 12, fontWeight: '800', color: '#334155' },
+  listContainer: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 110 },
+  card: { minHeight: 82, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', padding: 14, borderRadius: 14, marginBottom: 8, gap: 10 },
+  cardPaid: { backgroundColor: '#f8fafc' },
+  cardOverdue: { backgroundColor: '#fff7f7', borderWidth: 1, borderColor: '#fecaca' },
+  cardIcon: { width: 38, height: 38, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  cardIconPending: { backgroundColor: '#a16207' },
+  cardIconPaid: { backgroundColor: '#047857' },
+  cardIconOverdue: { backgroundColor: '#b91c1c' },
+  cardCenter: { flex: 1, minWidth: 0 },
+  cardTitle: { fontSize: 14, lineHeight: 19, fontWeight: '800', color: '#1e293b' },
+  cardDate: { fontSize: 11, lineHeight: 16, color: '#64748b', marginTop: 3 },
+  cardStatus: { fontSize: 11, lineHeight: 16, color: '#475569', fontWeight: '700', marginTop: 1 },
+  cardRight: { maxWidth: '38%', alignItems: 'flex-end' },
+  cardAmount: { width: '100%', textAlign: 'right', fontSize: 15, fontWeight: '900', color: '#1e293b' },
+  cardAmountPaid: { color: '#475569' },
+  urgentText: { marginTop: 4, fontSize: 10, lineHeight: 14, fontWeight: '800', color: '#92400e', textAlign: 'right' },
+  overdueText: { marginTop: 4, fontSize: 10, lineHeight: 14, fontWeight: '800', color: '#991b1b', textAlign: 'right' },
+  receiptText: { marginTop: 4, fontSize: 10, lineHeight: 14, fontWeight: '700', color: '#047857', textAlign: 'right' },
+  emptyContainer: { alignItems: 'center', marginTop: 42, paddingHorizontal: 20 },
+  emptyTitle: { marginTop: 12, fontSize: 17, fontWeight: '800', color: '#334155', textAlign: 'center' },
+  emptyText: { textAlign: 'center', color: '#64748b', marginTop: 6, fontSize: 14, lineHeight: 21 },
+  fab: { position: 'absolute', bottom: 28, right: 24, width: 58, height: 58, borderRadius: 18, backgroundColor: '#4338ca', justifyContent: 'center', alignItems: 'center', elevation: 8, shadowColor: '#312e81', shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 } },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.58)', justifyContent: 'center', padding: 20 },
+  modalContainer: { backgroundColor: '#fff', borderRadius: 20, padding: 24, elevation: 10 },
+  modalTitle: { fontSize: 20, fontWeight: '800', color: '#1e293b', marginBottom: 8 },
+  modalSub: { fontSize: 13, color: '#64748b', marginBottom: 12, lineHeight: 19 },
+  modalLabel: { fontSize: 13, fontWeight: '700', color: '#475569', marginBottom: 6, marginTop: 12 },
+  signToggle: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 12, marginBottom: 8, borderRadius: 10, borderWidth: 1, borderColor: '#bbf7d0', backgroundColor: '#f0fdf4' },
+  signToggleActive: { borderColor: '#fecaca', backgroundColor: '#fef2f2' },
+  signToggleText: { fontSize: 13, fontWeight: '800', color: '#047857' },
+  signToggleTextNegative: { color: '#991b1b' },
+  inputWrapper: { minHeight: 52, flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 10, paddingLeft: 12 },
+  inputWrapperNegative: { borderColor: '#fecaca', backgroundColor: '#fff7f7' },
+  currencyPrefix: { fontSize: 15, fontWeight: '700', color: '#64748b', marginRight: 4 },
+  currencyPrefixNegative: { color: '#991b1b' },
+  modalInputAmount: { flex: 1, minHeight: 52, paddingHorizontal: 10, fontSize: 16, color: '#1e293b' },
+  modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, gap: 12 },
+  cancelBtn: { flex: 1, minHeight: 48, paddingHorizontal: 14, borderRadius: 12, backgroundColor: '#f1f5f9', alignItems: 'center', justifyContent: 'center' },
+  cancelBtnText: { color: '#475569', fontWeight: '800' },
+  modalBtn: { flex: 2, minHeight: 48, backgroundColor: '#4338ca', paddingHorizontal: 14, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  modalBtnText: { color: '#fff', fontWeight: '800', fontSize: 16 },
+  buttonDisabled: { opacity: 0.65 },
 });

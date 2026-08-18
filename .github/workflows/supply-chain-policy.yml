@@ -1,0 +1,50 @@
+name: Supply-chain policy
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - portfolio/revamp-2026
+      - main
+  push:
+    branches:
+      - portfolio/revamp-2026
+      - 'work/**'
+
+permissions:
+  contents: read
+
+jobs:
+  action-pins:
+    name: Immutable Actions and reproducible tooling
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup deterministic parser runtime
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.13'
+          check-latest: false
+      - name: Bootstrap hash-locked semantic parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/hermetic_python.py \
+            --pip-lock backend/requirements-pip-bootstrap.lock \
+            --requirements-lock .github/scripts/requirements-supply-chain.txt \
+            --expected-python 3.12.13 \
+            --expected-initial-pip 26.2.1 \
+            --expected-pip 26.2.1 \
+            --label SUPPLY_CHAIN_PARSER
+          python .github/scripts/report_supply_chain_runtime.py
+      - name: Compile production checker and mutation suites
+        run: python -m py_compile backend/hermetic_python.py .github/scripts/check_supply_chain.py .github/scripts/production_executable_tooling.py .github/scripts/report_supply_chain_runtime.py .github/scripts/test_supply_chain.py .github/scripts/test_production_executable_tooling.py .github/scripts/test_hermetic_python.py
+      - name: Verify semantic YAML and closed-world executable tooling policy
+        run: python .github/scripts/production_executable_tooling.py
+      - name: Test semantic YAML policy regressions
+        run: python .github/scripts/test_supply_chain.py
+      - name: Test production closed-world executable tooling mutations
+        run: python .github/scripts/test_production_executable_tooling.py
+      - name: Test hash-locked Python bootstrap integrity
+        run: python .github/scripts/test_hermetic_python.py

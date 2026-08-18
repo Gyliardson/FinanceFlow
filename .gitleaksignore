@@ -1,0 +1,5 @@
+# Exact historical false-positive fingerprint from commit 68bc951e.
+# The finding is a deterministic migration-test sentinel, not a credential;
+# the current tree replaced it with a low-entropy fixture in PR #43.
+# Keep this fingerprint-specific so full-history secret scanning remains intact.
+68bc951e2c0c4017983bded88fc92186258154bd:mobile/tests/idempotent-mutation-contract.cjs:generic-api-key:213

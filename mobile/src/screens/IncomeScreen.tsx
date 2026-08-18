@@ -1,437 +1,335 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, StyleSheet, TextInput, TouchableOpacity,
-  ActivityIndicator, Alert, Modal, FlatList
+  AppState, View, Text, StyleSheet, TextInput, TouchableOpacity,
+  ActivityIndicator, Alert, Modal, FlatList, KeyboardAvoidingView, Platform, ScrollView
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../services/api';
+import { financialDateOnly, formatFinancialDatePtBr } from '../services/financialDate';
+import { useFinancialMutation } from '../services/useFinancialMutation';
+
+interface Income {
+  id: string;
+  title: string;
+  amount: number;
+  date: string;
+  description?: string | null;
+  type: 'salary' | 'extra' | 'adjustment';
+}
+
+const formatMoney = (value: number) => new Intl.NumberFormat('pt-BR', {
+  style: 'currency',
+  currency: 'BRL',
+  minimumFractionDigits: 2,
+}).format(Number(value || 0));
+
+const formatDateOnly = (value: string) => {
+  try {
+    return formatFinancialDatePtBr(value);
+  } catch {
+    return value;
+  }
+};
 
 export default function IncomeScreen({ navigation }: any) {
-  const [incomes, setIncomes] = useState<any[]>([]);
+  const [incomes, setIncomes] = useState<Income[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
-
+  const [saving, setSaving] = useState(false);
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
-  const [type, setType] = useState('salary'); // salary, extra, adjustment
+  const [type, setType] = useState<Income['type']>('salary');
+  const refreshGeneration = useRef(0);
+  const incomeMutation = useFinancialMutation('/incomes');
+  const intentLocked = incomeMutation.hasActiveIntent;
 
   const handleAmountChange = (text: string) => {
     const numericValue = text.replace(/[^0-9]/g, '');
     if (numericValue) {
       let valNum = Number(numericValue) / 100;
       if (valNum > 1000000) valNum = 1000000;
-      const val = valNum.toFixed(2);
-      setAmount(val.replace('.', ','));
+      setAmount(valNum.toFixed(2).replace('.', ','));
     } else {
       setAmount('');
     }
   };
 
   const fetchIncomes = async () => {
+    const generation = ++refreshGeneration.current;
+    setLoading(true);
+    setLoadError(false);
     try {
       const response = await api.get('/incomes');
+      if (generation !== refreshGeneration.current) return;
       setIncomes(response.data.data || []);
-    } catch (error) {
-      console.error(error);
-      Alert.alert('Erro', 'Não foi possível carregar as rendas.');
+    } catch {
+      if (generation !== refreshGeneration.current) return;
+      setLoadError(true);
     } finally {
-      setLoading(false);
+      if (generation === refreshGeneration.current) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    const unsubscribe = navigation.addListener('focus', () => {
-      fetchIncomes();
+    const unsubscribeFocus = navigation.addListener('focus', fetchIncomes);
+    const unsubscribeBlur = navigation.addListener('blur', () => {
+      refreshGeneration.current += 1;
     });
-    return unsubscribe;
+    return () => {
+      refreshGeneration.current += 1;
+      unsubscribeFocus();
+      unsubscribeBlur();
+    };
   }, [navigation]);
 
-  const handleSave = async () => {
-    if (!title || !amount) {
-      Alert.alert('Erro', 'Título e Valor são obrigatórios.');
-      return;
-    }
-
-    const nAmount = parseFloat(amount.replace(',', '.'));
-    if (isNaN(nAmount)) {
-      Alert.alert('Erro', 'Valor inválido.');
-      return;
-    }
-
-    try {
-      const payload = {
-        title,
-        amount: nAmount,
-        date: new Date().toISOString().split('T')[0],
-        description: description || null,
-        type,
-        is_recurring: false
-      };
-
-      await api.post('/incomes', payload);
-      Alert.alert('Sucesso', 'Renda adicionada!');
-      setModalVisible(false);
-      resetForm();
-      fetchIncomes();
-    } catch (error) {
-      console.error(error);
-      Alert.alert('Erro', 'Falha ao salvar a renda.');
-    }
-  };
+  useEffect(() => {
+    const appStateSubscription = AppState.addEventListener('change', (state) => {
+      if (
+        state === 'active'
+        && navigation.isFocused()
+        && !modalVisible
+        && !saving
+        && !intentLocked
+      ) {
+        void fetchIncomes();
+      }
+    });
+    return () => appStateSubscription.remove();
+  }, [navigation, modalVisible, saving, intentLocked]);
 
   const resetForm = () => {
+    incomeMutation.startNewIntent();
     setTitle('');
     setAmount('');
     setDescription('');
     setType('salary');
   };
 
-  const renderIncome = ({ item }: { item: any }) => {
-    let iconName: any = 'cash';
-    let iconColor = '#10b981';
+  const closeModal = () => {
+    if (saving) return;
+    setModalVisible(false);
+    resetForm();
+  };
 
+  const handleSave = async () => {
+    if (saving) return;
+    if (!title.trim() || !amount) {
+      Alert.alert('Dados incompletos', 'Título e valor são obrigatórios.');
+      return;
+    }
+
+    const nAmount = Number(amount.replace(',', '.'));
+    if (!Number.isFinite(nAmount) || nAmount <= 0) {
+      Alert.alert('Valor inválido', 'Informe um valor maior que zero.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await incomeMutation.mutate({
+        title: title.trim(),
+        amount: nAmount,
+        date: financialDateOnly(),
+        description: description.trim() || null,
+        type,
+        is_recurring: false,
+      });
+      setModalVisible(false);
+      resetForm();
+      await fetchIncomes();
+      Alert.alert('Renda adicionada', 'O lançamento foi salvo com sucesso.');
+    } catch {
+      Alert.alert(
+        'Resultado ainda não confirmado',
+        'Os valores desta intenção foram bloqueados. Tente novamente para reutilizar a mesma identidade e o payload original, ou cancele e abra um novo cadastro para iniciar outra intenção.'
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const renderIncome = ({ item }: { item: Income }) => {
+    let iconName: keyof typeof Ionicons.glyphMap = 'cash';
+    let iconColor = '#15803d';
     if (item.type === 'extra') {
       iconName = 'briefcase';
-      iconColor = '#3b82f6';
+      iconColor = '#1d4ed8';
     } else if (item.type === 'adjustment') {
       iconName = 'options';
-      iconColor = '#f59e0b';
+      iconColor = '#b45309';
     }
 
     return (
-      <View style={styles.card}>
+      <View
+        accessible
+        accessibilityLabel={`${item.title}, ${formatMoney(item.amount)}, ${formatDateOnly(item.date)}`}
+        style={styles.card}
+      >
         <View style={styles.cardLeft}>
           <View style={[styles.cardIcon, { backgroundColor: iconColor }]}>
-            <Ionicons name={iconName} size={20} color="#fff" />
+            <Ionicons accessibilityElementsHidden name={iconName} size={20} color="#fff" />
           </View>
         </View>
         <View style={styles.cardCenter}>
-          <Text style={styles.cardTitle}>{item.title}</Text>
-          {item.description ? <Text style={styles.cardDesc}>{item.description}</Text> : null}
-          <Text style={styles.cardDate}>{new Date(item.date).toLocaleDateString('pt-BR')}</Text>
+          <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
+          {item.description ? <Text style={styles.cardDesc} numberOfLines={3}>{item.description}</Text> : null}
+          <Text style={styles.cardDate}>{formatDateOnly(item.date)}</Text>
         </View>
         <View style={styles.cardRight}>
-          <Text style={styles.cardAmount}>R$ {Number(item.amount).toFixed(2)}</Text>
+          <Text style={styles.cardAmount} numberOfLines={1} adjustsFontSizeToFit>{formatMoney(item.amount)}</Text>
         </View>
       </View>
     );
   };
 
-  if (loading) {
+  const renderContent = () => {
+    if (loading) {
+      return (
+        <View accessibilityLiveRegion="polite" style={styles.stateContainer}>
+          <ActivityIndicator accessibilityLabel="Carregando rendas" size="large" color="#4f46e5" />
+          <Text style={styles.stateTitle}>Carregando rendas</Text>
+        </View>
+      );
+    }
+    if (loadError) {
+      return (
+        <View accessibilityLiveRegion="polite" style={styles.stateContainer}>
+          <Ionicons accessibilityElementsHidden name="cloud-offline-outline" size={34} color="#b45309" />
+          <Text style={styles.stateTitle}>Não foi possível carregar as rendas</Text>
+          <Text style={styles.stateText}>Verifique sua conexão e tente novamente.</Text>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Tentar carregar rendas novamente" style={styles.retryBtn} onPress={fetchIncomes}>
+            <Text style={styles.retryBtnText}>Tentar novamente</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
     return (
-      <View style={styles.loaderContainer}>
-        <ActivityIndicator size="large" color="#4f46e5" />
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.container}>
       <FlatList
         data={incomes}
         keyExtractor={item => item.id}
         renderItem={renderIncome}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <Ionicons name="wallet-outline" size={48} color="#cbd5e1" />
-            <Text style={styles.emptyText}>Nenhuma renda registrada ainda.</Text>
+          <View style={styles.stateContainer}>
+            <Ionicons accessibilityElementsHidden name="wallet-outline" size={42} color="#64748b" />
+            <Text style={styles.stateTitle}>Nenhuma renda registrada</Text>
+            <Text style={styles.stateText}>Adicione salário, renda extra ou um ajuste para começar.</Text>
           </View>
         }
       />
+    );
+  };
 
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => setModalVisible(true)}
-      >
-        <Ionicons name="add" size={28} color="#fff" />
+  return (
+    <View style={styles.container}>
+      {renderContent()}
+      <TouchableOpacity accessibilityRole="button" accessibilityLabel="Adicionar renda" accessibilityHint="Abre o formulário para registrar uma nova renda" style={styles.fab} onPress={() => setModalVisible(true)}>
+        <Ionicons accessibilityElementsHidden name="add" size={28} color="#fff" />
       </TouchableOpacity>
 
-      <Modal
-        visible={modalVisible}
-        animationType="slide"
-        transparent={true}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
-            <Text style={styles.modalTitle}>Adicionar Renda / Ajuste</Text>
-            
-            <Text style={styles.label}>Tipo</Text>
-            <View style={styles.typeRow}>
-              <TouchableOpacity
-                style={[styles.typeBtn, type === 'salary' && styles.typeBtnActive]}
-                onPress={() => setType('salary')}
-              >
-                <Text style={[styles.typeBtnText, type === 'salary' && { color: '#fff' }]}>Salário</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.typeBtn, type === 'extra' && styles.typeBtnActiveExtra]}
-                onPress={() => setType('extra')}
-              >
-                <Text style={[styles.typeBtnText, type === 'extra' && { color: '#fff' }]}>Extra</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.typeBtn, type === 'adjustment' && styles.typeBtnActiveAdj]}
-                onPress={() => setType('adjustment')}
-              >
-                <Text style={[styles.typeBtnText, type === 'adjustment' && { color: '#fff' }]}>Ajuste Manual</Text>
-              </TouchableOpacity>
-            </View>
+      <Modal visible={modalVisible} animationType="slide" transparent onRequestClose={closeModal}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
+          <View accessibilityViewIsModal style={styles.modalContainer}>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Text accessibilityRole="header" style={styles.modalTitle}>Adicionar renda ou ajuste</Text>
+              {intentLocked && (
+                <Text style={styles.intentNotice}>
+                  Resultado anterior indeterminado: os valores estão bloqueados para que “Salvar” repita exatamente a mesma intenção. Cancele para iniciar outra.
+                </Text>
+              )}
+              <Text style={styles.label}>Tipo</Text>
+              <View accessibilityRole="radiogroup" style={styles.typeRow}>
+                {(['salary', 'extra', 'adjustment'] as Income['type'][]).map((candidate) => (
+                  <TouchableOpacity
+                    key={candidate}
+                    accessibilityRole="radio"
+                    accessibilityLabel={candidate === 'salary' ? 'Salário' : candidate === 'extra' ? 'Renda extra' : 'Ajuste manual'}
+                    accessibilityState={{ selected: type === candidate, disabled: saving || intentLocked }}
+                    disabled={saving || intentLocked}
+                    style={[
+                      styles.typeBtn,
+                      candidate === 'salary' && type === candidate && styles.typeBtnActive,
+                      candidate === 'extra' && type === candidate && styles.typeBtnActiveExtra,
+                      candidate === 'adjustment' && type === candidate && styles.typeBtnActiveAdj,
+                    ]}
+                    onPress={() => setType(candidate)}
+                  >
+                    <Text style={[styles.typeBtnText, type === candidate && styles.typeBtnTextActive]}>
+                      {candidate === 'salary' ? 'Salário' : candidate === 'extra' ? 'Extra' : 'Ajuste'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
 
-            <Text style={styles.label}>Título *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Ex: Salário, iFood..."
-              value={title}
-              onChangeText={setTitle}
-              maxLength={100}
-            />
+              <Text nativeID="income-title-label" style={styles.label}>Título</Text>
+              <TextInput accessibilityLabel="Título da renda" accessibilityLabelledBy="income-title-label" editable={!saving && !intentLocked} style={styles.input} placeholder="Ex.: Salário, iFood" value={title} onChangeText={setTitle} maxLength={100} returnKeyType="next" />
+              <Text nativeID="income-amount-label" style={styles.label}>Valor</Text>
+              <View style={styles.inputWrapper}>
+                <Text style={styles.currencyPrefix}>R$</Text>
+                <TextInput accessibilityLabel="Valor da renda em reais" accessibilityLabelledBy="income-amount-label" editable={!saving && !intentLocked} style={styles.inputAmount} placeholder="0,00" keyboardType="numeric" value={amount} onChangeText={handleAmountChange} returnKeyType="next" />
+              </View>
+              <Text nativeID="income-description-label" style={styles.label}>Descrição opcional</Text>
+              <TextInput accessibilityLabel="Descrição opcional da renda" accessibilityLabelledBy="income-description-label" editable={!saving && !intentLocked} style={[styles.input, styles.descriptionInput]} placeholder="Ex.: Pagamento semanal" value={description} onChangeText={setDescription} maxLength={255} multiline textAlignVertical="top" />
 
-            <Text style={styles.label}>Valor*</Text>
-            <View style={styles.inputWrapper}>
-              <Text style={styles.currencyPrefix}>R$</Text>
-              <TextInput
-                style={styles.inputAmount}
-                placeholder="0,00"
-                keyboardType="numeric"
-                value={amount}
-                onChangeText={handleAmountChange}
-              />
-            </View>
-
-            <Text style={styles.label}>Descrição (Opcional)</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Ex: Pagamento semanal..."
-              value={description}
-              onChangeText={setDescription}
-              maxLength={255}
-            />
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.cancelBtn}
-                onPress={() => {
-                  setModalVisible(false);
-                  resetForm();
-                }}
-              >
-                <Text style={styles.cancelBtnText}>Cancelar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.saveBtn}
-                onPress={handleSave}
-              >
-                <Text style={styles.saveBtnText}>Salvar</Text>
-              </TouchableOpacity>
-            </View>
+              <View style={styles.modalActions}>
+                <TouchableOpacity accessibilityRole="button" accessibilityLabel="Cancelar cadastro de renda" accessibilityState={{ disabled: saving }} disabled={saving} style={styles.cancelBtn} onPress={closeModal}>
+                  <Text style={styles.cancelBtnText}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity accessibilityRole="button" accessibilityLabel={saving ? 'Salvando renda' : 'Salvar renda'} accessibilityState={{ disabled: saving, busy: saving }} disabled={saving} style={[styles.saveBtn, saving && styles.saveBtnDisabled]} onPress={handleSave}>
+                  {saving ? <ActivityIndicator accessibilityLabel="Salvando renda" color="#fff" /> : <Text style={styles.saveBtnText}>{intentLocked ? 'Tentar mesma intenção' : 'Salvar'}</Text>}
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f1f5f9'
-  },
-  loaderContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  list: {
-    padding: 16,
-    paddingBottom: 100
-  },
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  cardLeft: {
-    marginRight: 12,
-  },
-  cardIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  cardCenter: {
-    flex: 1,
-  },
-  cardTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1e293b'
-  },
-  cardDesc: {
-    fontSize: 12,
-    color: '#64748b',
-    marginTop: 2
-  },
-  cardDate: {
-    fontSize: 11,
-    color: '#94a3b8',
-    marginTop: 4
-  },
-  cardRight: {
-    marginLeft: 10
-  },
-  cardAmount: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#10b981'
-  },
-  empty: {
-    alignItems: 'center',
-    marginTop: 60
-  },
-  emptyText: {
-    color: '#94a3b8',
-    marginTop: 12,
-    fontSize: 14
-  },
-  fab: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#10b981',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 6,
-    shadowColor: '#10b981',
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 4 },
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end'
-  },
-  modalContainer: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 24,
-    elevation: 10,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#1e293b',
-    marginBottom: 20
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#475569',
-    marginBottom: 6,
-    marginTop: 12
-  },
-  input: {
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 10,
-    padding: 14,
-    fontSize: 15,
-    color: '#1e293b',
-    minHeight: 52,
-  },
-  inputAmount: {
-    flex: 1,
-    padding: 14,
-    fontSize: 15,
-    color: '#1e293b',
-  },
-  inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f8fafc',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    borderRadius: 10,
-    paddingLeft: 12,
-  },
-  currencyPrefix: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#64748b',
-    marginRight: 4,
-  },
-  typeRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  typeBtn: {
-    flex: 1,
-    padding: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    alignItems: 'center'
-  },
-  typeBtnActive: {
-    backgroundColor: '#10b981',
-    borderColor: '#10b981'
-  },
-  typeBtnActiveExtra: {
-    backgroundColor: '#3b82f6',
-    borderColor: '#3b82f6'
-  },
-  typeBtnActiveAdj: {
-    backgroundColor: '#f59e0b',
-    borderColor: '#f59e0b'
-  },
-  typeBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#64748b'
-  },
-  modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 24,
-    gap: 12
-  },
-  cancelBtn: {
-    flex: 1,
-    padding: 14,
-    borderRadius: 12,
-    backgroundColor: '#f1f5f9',
-    alignItems: 'center'
-  },
-  cancelBtnText: {
-    color: '#64748b',
-    fontWeight: '700'
-  },
-  saveBtn: {
-    flex: 2,
-    padding: 14,
-    borderRadius: 12,
-    backgroundColor: '#10b981',
-    alignItems: 'center'
-  },
-  saveBtnText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 16
-  }
+  container: { flex: 1, backgroundColor: '#f1f5f9' },
+  list: { padding: 16, paddingBottom: 100, flexGrow: 1 },
+  stateContainer: { flex: 1, minHeight: 240, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 28 },
+  stateTitle: { marginTop: 12, textAlign: 'center', color: '#1e293b', fontSize: 17, lineHeight: 24, fontWeight: '800' },
+  stateText: { marginTop: 5, textAlign: 'center', color: '#64748b', fontSize: 14, lineHeight: 20 },
+  retryBtn: { minHeight: 44, justifyContent: 'center', marginTop: 16, paddingHorizontal: 18, borderRadius: 10, backgroundColor: '#1d4ed8' },
+  retryBtnText: { color: '#fff', fontWeight: '800' },
+  card: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 12, flexDirection: 'row', alignItems: 'center', elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowOffset: { width: 0, height: 2 } },
+  cardLeft: { marginRight: 12 },
+  cardIcon: { width: 40, height: 40, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+  cardCenter: { flex: 1, minWidth: 0 },
+  cardTitle: { fontSize: 16, lineHeight: 22, fontWeight: '700', color: '#1e293b' },
+  cardDesc: { fontSize: 12, lineHeight: 17, color: '#64748b', marginTop: 2 },
+  cardDate: { fontSize: 11, color: '#64748b', marginTop: 4 },
+  cardRight: { maxWidth: '42%', marginLeft: 10 },
+  cardAmount: { fontSize: 16, fontWeight: '800', color: '#15803d' },
+  fab: { position: 'absolute', bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: '#15803d', justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: '#15803d', shadowOpacity: 0.4, shadowRadius: 6, shadowOffset: { width: 0, height: 4 } },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.55)', justifyContent: 'flex-end' },
+  modalContainer: { maxHeight: '92%', backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, elevation: 10 },
+  modalTitle: { fontSize: 20, lineHeight: 27, fontWeight: '800', color: '#1e293b', marginBottom: 12 },
+  intentNotice: { padding: 10, borderRadius: 10, backgroundColor: '#fffbeb', color: '#92400e', fontSize: 12, lineHeight: 18, fontWeight: '700' },
+  label: { fontSize: 13, fontWeight: '700', color: '#475569', marginBottom: 6, marginTop: 12 },
+  input: { backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 10, padding: 14, fontSize: 15, color: '#1e293b', minHeight: 52 },
+  descriptionInput: { minHeight: 88 },
+  inputAmount: { flex: 1, minHeight: 52, padding: 14, fontSize: 15, color: '#1e293b' },
+  inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 10, paddingLeft: 12 },
+  currencyPrefix: { fontSize: 15, fontWeight: '700', color: '#64748b', marginRight: 4 },
+  typeRow: { flexDirection: 'row', gap: 8 },
+  typeBtn: { flex: 1, minHeight: 44, paddingHorizontal: 8, justifyContent: 'center', borderRadius: 8, borderWidth: 1, borderColor: '#cbd5e1', alignItems: 'center' },
+  typeBtnActive: { backgroundColor: '#15803d', borderColor: '#15803d' },
+  typeBtnActiveExtra: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
+  typeBtnActiveAdj: { backgroundColor: '#b45309', borderColor: '#b45309' },
+  typeBtnText: { fontSize: 12, fontWeight: '700', color: '#475569' },
+  typeBtnTextActive: { color: '#fff' },
+  modalActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, gap: 12 },
+  cancelBtn: { flex: 1, minHeight: 48, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 12, backgroundColor: '#f1f5f9', alignItems: 'center' },
+  cancelBtnText: { color: '#475569', fontWeight: '700' },
+  saveBtn: { flex: 2, minHeight: 48, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 12, backgroundColor: '#15803d', alignItems: 'center' },
+  saveBtnDisabled: { opacity: 0.65 },
+  saveBtnText: { color: '#fff', fontWeight: '800', fontSize: 16 },
 });

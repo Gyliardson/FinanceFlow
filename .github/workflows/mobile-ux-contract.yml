@@ -1,0 +1,62 @@
+name: Mobile UX contract
+
+on:
+  pull_request:
+    branches:
+      - portfolio/revamp-2026
+      - main
+  push:
+    branches:
+      - portfolio/revamp-2026
+      - 'work/**'
+
+permissions:
+  contents: read
+
+jobs:
+  ux-accessibility-contract:
+    name: UX state and accessibility contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.13.0'
+      - name: Run focused mobile contract
+        run: node mobile/tests/ux-accessibility-contract.cjs
+      - name: Run signed initial balance contract
+        run: node mobile/tests/signed-initial-balance-contract.cjs
+      - name: Run private receipt access contract
+        run: node mobile/tests/private-receipt-access-contract.cjs
+      - name: Run unresolved financial status contract
+        run: node mobile/tests/pending-financial-status-contract.cjs
+      - name: Run financial submit single-flight contract
+        run: node mobile/tests/financial-submit-single-flight-contract.cjs
+      - name: Run payment route identity contract
+        run: node mobile/tests/payment-route-identity-contract.cjs
+      - name: Run payment attempt identity lock contract
+        run: node mobile/tests/payment-attempt-identity-lock-contract.cjs
+      - name: Run payment lifecycle refresh contract
+        run: node mobile/tests/payment-refresh-lifecycle-contract.cjs
+      - name: Run bill detail focus refresh contract
+        run: node mobile/tests/bill-detail-focus-refresh-contract.cjs
+      - name: Run Home refresh generation contract
+        run: node mobile/tests/home-refresh-generation-contract.cjs
+      - name: Run Home paid period contract
+        run: node mobile/tests/home-paid-period-contract.cjs
+      - name: Run recurring generation recovery contract
+        run: node mobile/tests/recurring-generation-recovery-contract.cjs
+      - name: Run recurring notification permission contract
+        run: node mobile/tests/recurring-notification-permission-contract.cjs
+      - name: Run offline resume reconciliation contract
+        run: node mobile/tests/offline-resume-reconciliation-contract.cjs
+      - name: Run income refresh generation contract
+        run: node mobile/tests/income-refresh-generation-contract.cjs
+      - name: Run Insights refresh generation contract
+        run: node mobile/tests/insights-refresh-generation-contract.cjs
+      - name: Run passive resume reconciliation contract
+        run: node mobile/tests/passive-resume-reconciliation-contract.cjs
+      - name: Run authoritative reminder reconciliation contract
+        run: node mobile/tests/authoritative-reminder-reconciliation-contract.cjs

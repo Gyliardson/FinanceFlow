@@ -5,7 +5,11 @@ on:
     branches:
       - main
     paths:
-      - 'mobile/**' # Apenas quando houver mudanças no frontend
+      - 'mobile/**'
+      - '.github/npm-tools/**'
+
+permissions:
+  contents: read
 
 jobs:
   update-frontend:
@@ -13,29 +17,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: 'mobile/package-lock.json'
+          node-version: '22.13.0'
+          cache: npm
+          cache-dependency-path: |
+            mobile/package-lock.json
+            .github/npm-tools/package-lock.json
 
-      - name: Install dependencies
+      - name: Install mobile dependencies from committed lock
         working-directory: ./mobile
-        run: npm ci
+        run: npm ci --ignore-scripts
 
-      - name: Setup EAS
-        uses: expo/expo-github-action@v8
-        with:
-          eas-version: latest
-          packager: npm
-          token: ${{ secrets.EXPO_TOKEN }}
+      - name: Install EAS tooling from committed integrity lock
+        run: npm ci --ignore-scripts --legacy-peer-deps --prefix .github/npm-tools
+
+      - name: Verify exact EAS CLI package
+        run: |
+          version=$(node -p "require('./.github/npm-tools/node_modules/eas-cli/package.json').version")
+          test "$version" = '21.8.0'
+          echo "EAS_LOCKED_VERSION=$version"
+
+      - name: Validate production runtime configuration
+        working-directory: ./mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: ../.github/npm-tools/node_modules/.bin/eas env:exec production 'node scripts/validate-release-env.mjs' --non-interactive
 
       - name: Publish Update
         working-directory: ./mobile
         env:
-          EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
-          EXPO_PUBLIC_API_KEY: ${{ secrets.EXPO_PUBLIC_API_KEY }}
-        run: eas update --branch production --message "Auto-deploy via GitHub Actions"
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: ../.github/npm-tools/node_modules/.bin/eas update --branch production --environment production --message "Auto-deploy via GitHub Actions"

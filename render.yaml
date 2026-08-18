@@ -5,16 +5,20 @@ services:
     dockerContext: backend
     dockerfilePath: Dockerfile
     plan: free
-    region: ohio # Ou a região de sua preferência
+    region: ohio
     healthCheckPath: /health
     envVars:
       - key: ENVIRONMENT
         value: production
       - key: SUPABASE_URL
-        sync: false # Valor deve ser preenchido no painel do Render
+        sync: false
       - key: SUPABASE_KEY
-        sync: false # Valor deve ser preenchido no painel do Render
-      - key: GOOGLE_API_KEY
-        sync: false # Para os insights de IA
+        sync: false # Publishable/anon key only; authorization is enforced by user session + RLS.
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false # Server-only. Never expose through EXPO_PUBLIC_* or client bundles.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false # Comma-separated explicit browser origins. Wildcard is rejected in production.
       - key: PORT
         value: 8000

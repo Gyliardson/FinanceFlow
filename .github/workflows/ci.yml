@@ -1,0 +1,407 @@
+name: FinanceFlow CI
+
+on:
+  pull_request:
+    branches:
+      - portfolio/revamp-2026
+      - main
+  push:
+    branches:
+      - portfolio/revamp-2026
+      - 'work/**'
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      SUPABASE_URL: http://127.0.0.1:54321
+      SUPABASE_KEY: ci-placeholder
+      SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+      GEMINI_API_KEY: ci-placeholder
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup exact Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.13'
+          check-latest: false
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-pip-bootstrap.lock
+            backend/requirements.lock
+      - name: Install hash-locked backend closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          python hermetic_python.py \
+            --pip-lock requirements-pip-bootstrap.lock \
+            --requirements-lock requirements.lock \
+            --direct-requirements requirements.txt \
+            --expected-python 3.12.13 \
+            --expected-initial-pip 26.2.1 \
+            --expected-pip 26.2.1 \
+            --label BACKEND_CI 2>&1 | tee dependency-install.log
+      - name: Upload dependency install diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-dependency-install
+          path: backend/dependency-install.log
+          if-no-files-found: warn
+      - name: Verify dependency consistency
+        run: python -m pip check
+      - name: Compile Python sources
+        run: python -m compileall -q .
+      - name: Run backend tests
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee pytest.log
+      - name: Upload backend test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-pytest-report
+          path: backend/pytest.log
+          if-no-files-found: warn
+
+  postgres-recurring:
+    name: PostgreSQL recurring idempotency
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5
+        env:
+          POSTGRES_USER: financeflow
+          POSTGRES_PASSWORD: financeflow
+          POSTGRES_DB: financeflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U financeflow -d financeflow_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: financeflow
+      PGPASSWORD: financeflow
+      PGDATABASE: financeflow_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Create minimal recurring-bill schema
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE finance_bills (id text PRIMARY KEY, parent_bill_id text, due_date date NOT NULL, is_recurring boolean DEFAULT false);
+          SQL
+      - name: Monetary NUMERIC round-trip is exact
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE finance_money_probe (label text PRIMARY KEY, amount numeric(12,2) NOT NULL);
+          INSERT INTO finance_money_probe (label, amount) VALUES ('cent','0.01'),('fraction','0.30'),('negative','-10.01'),('large','1000000.00');
+          SQL
+          actual=$(psql -Atc "SELECT string_agg(label || ':' || amount::text, ',' ORDER BY label) FROM finance_money_probe;")
+          expected='cent:0.01,fraction:0.30,large:1000000.00,negative:-10.01'
+          test "$actual" = "$expected"
+      - name: Migration fails closed without deleting historical duplicates
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO finance_bills (id,parent_bill_id,due_date,is_recurring) VALUES ('template-legacy',NULL,DATE '2026-08-01',true),('legacy-a','template-legacy',DATE '2026-09-15',false),('legacy-b','template-legacy',DATE '2026-09-15',false);
+          SQL
+          if psql -v ON_ERROR_STOP=1 -f backend/migrations/002_recurring_instance_uniqueness.sql; then exit 1; fi
+          test "$(psql -Atc "SELECT count(*) FROM finance_bills WHERE parent_bill_id='template-legacy' AND due_date=DATE '2026-09-15';")" = '2'
+          psql -v ON_ERROR_STOP=1 -c "DELETE FROM finance_bills WHERE id='legacy-b';"
+      - name: Apply uniqueness migration after explicit reconciliation
+        run: psql -v ON_ERROR_STOP=1 -f backend/migrations/002_recurring_instance_uniqueness.sql
+      - name: Concurrent generated inserts produce exactly one row
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills (id,parent_bill_id,due_date,is_recurring) VALUES ('template-race',NULL,DATE '2026-08-01',true);"
+          set +e
+          psql -v ON_ERROR_STOP=1 -c "BEGIN; INSERT INTO finance_bills VALUES ('race-a','template-race',DATE '2026-09-10',false); SELECT pg_sleep(1); COMMIT;" > race-a.log 2>&1 & pid_a=$!
+          sleep 0.2
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills VALUES ('race-b','template-race',DATE '2026-09-10',false);" > race-b.log 2>&1 & pid_b=$!
+          wait "$pid_a"; status_a=$?; wait "$pid_b"; status_b=$?; set -e
+          cat race-a.log; cat race-b.log
+          if [ "$status_a" -eq 0 ] && [ "$status_b" -eq 0 ]; then exit 1; fi
+          if [ "$status_a" -ne 0 ] && [ "$status_b" -ne 0 ]; then exit 1; fi
+          test "$(psql -Atc "SELECT count(*) FROM finance_bills WHERE parent_bill_id='template-race' AND due_date=DATE '2026-09-10';")" = '1'
+      - name: Retry remains idempotent at database boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills VALUES ('race-retry','template-race',DATE '2026-09-10',false);"; then exit 1; fi
+          test "$(psql -Atc "SELECT count(*) FROM finance_bills WHERE parent_bill_id='template-race' AND due_date=DATE '2026-09-10';")" = '1'
+      - name: Bulk conflict rolls back and retry recovers missing instance
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills VALUES ('template-partial',NULL,DATE '2026-08-01',true),('partial-existing','template-partial',DATE '2026-09-20',false);"
+          if psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills VALUES ('partial-conflict','template-partial',DATE '2026-09-20',false),('partial-new','template-partial',DATE '2026-10-20',false);"; then exit 1; fi
+          test "$(psql -Atc "SELECT count(*) FROM finance_bills WHERE id='partial-new';")" = '0'
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills VALUES ('partial-retry','template-partial',DATE '2026-10-20',false);"
+      - name: Upload PostgreSQL race diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: postgres-recurring-race
+          path: |
+            race-a.log
+            race-b.log
+          if-no-files-found: ignore
+
+  postgres-ownership:
+    name: PostgreSQL ownership and RLS
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5
+        env:
+          POSTGRES_USER: financeflow
+          POSTGRES_PASSWORD: financeflow
+          POSTGRES_DB: financeflow_security_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U financeflow -d financeflow_security_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: financeflow
+      PGPASSWORD: financeflow
+      PGDATABASE: financeflow_security_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Create Supabase-compatible ownership fixture
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE anon NOLOGIN;
+          CREATE ROLE authenticated NOLOGIN;
+          CREATE ROLE rls_probe NOLOGIN;
+          GRANT authenticated TO rls_probe;
+          CREATE SCHEMA auth;
+          CREATE TABLE auth.users (id uuid PRIMARY KEY);
+          CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+          CREATE TABLE finance_bills (id text PRIMARY KEY);
+          CREATE TABLE finance_incomes (id text PRIMARY KEY);
+          CREATE TABLE finance_user_settings (id text PRIMARY KEY);
+          SQL
+      - name: Apply restrictive ownership migration
+        run: psql -v ON_ERROR_STOP=1 -f backend/migrations/003_user_ownership_rls.sql
+      - name: RLS isolates users and rejects forged ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          user_a='11111111-1111-1111-1111-111111111111'
+          user_b='22222222-2222-2222-2222-222222222222'
+          psql -v ON_ERROR_STOP=1 <<SQL
+          INSERT INTO auth.users(id) VALUES ('$user_a'),('$user_b');
+          INSERT INTO finance_bills(id,owner_id) VALUES ('bill-a','$user_a'),('bill-b','$user_b');
+          INSERT INTO finance_incomes(id,owner_id) VALUES ('income-a','$user_a'),('income-b','$user_b');
+          INSERT INTO finance_user_settings(id,owner_id) VALUES ('settings-a','$user_a'),('settings-b','$user_b');
+          SQL
+          visible=$(psql -Atqv ON_ERROR_STOP=1 <<SQL
+          SELECT set_config('request.jwt.claim.sub','$user_a',false);
+          SET ROLE rls_probe;
+          SELECT string_agg(id,',' ORDER BY id) FROM finance_bills;
+          RESET ROLE;
+          SQL
+          )
+          test "$(printf '%s\n' "$visible" | tail -n1)" = 'bill-a'
+          if psql -v ON_ERROR_STOP=1 <<SQL
+          SELECT set_config('request.jwt.claim.sub','$user_a',false);
+          SET ROLE rls_probe;
+          INSERT INTO finance_bills(id,owner_id) VALUES ('forged-bill','$user_b');
+          SQL
+          then exit 1; fi
+          changed=$(psql -Atqv ON_ERROR_STOP=1 <<SQL
+          SELECT set_config('request.jwt.claim.sub','$user_a',false);
+          SET ROLE rls_probe;
+          UPDATE finance_bills SET id='tampered-bill-b' WHERE id='bill-b';
+          SELECT count(*) FROM finance_bills WHERE id='tampered-bill-b';
+          RESET ROLE;
+          SQL
+          )
+          test "$(printf '%s\n' "$changed" | tail -n1)" = '0'
+      - name: Anonymous role has no financial-table privileges
+        shell: bash
+        run: |
+          set -euo pipefail
+          if psql -v ON_ERROR_STOP=1 <<'SQL'
+          SET ROLE anon;
+          SELECT * FROM finance_bills;
+          SQL
+          then exit 1; fi
+      - name: NOT NULL enforcement fails closed until explicit backfill
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 -c "INSERT INTO finance_bills(id,owner_id) VALUES ('legacy-null',NULL);"
+          if psql -v ON_ERROR_STOP=1 -f backend/migrations/004_enforce_owner_not_null.sql; then exit 1; fi
+          test "$(psql -Atc "SELECT count(*) FROM finance_bills WHERE id='legacy-null' AND owner_id IS NULL;")" = '1'
+          psql -v ON_ERROR_STOP=1 -c "UPDATE finance_bills SET owner_id='11111111-1111-1111-1111-111111111111' WHERE id='legacy-null';"
+          psql -v ON_ERROR_STOP=1 -f backend/migrations/004_enforce_owner_not_null.sql
+          psql -Atc "SELECT is_nullable FROM information_schema.columns WHERE table_name='finance_bills' AND column_name='owner_id';" | grep -qx 'NO'
+          psql -Atc "SELECT is_nullable FROM information_schema.columns WHERE table_name='finance_incomes' AND column_name='owner_id';" | grep -qx 'NO'
+          psql -Atc "SELECT is_nullable FROM information_schema.columns WHERE table_name='finance_user_settings' AND column_name='owner_id';" | grep -qx 'NO'
+
+  mobile:
+    name: Mobile typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.13.0'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: ./node_modules/.bin/tsc --noEmit
+
+  dependency-audit:
+    name: Dependency audit evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.13'
+          check-latest: false
+      - name: Bootstrap hash-locked pip-audit closure
+        run: |
+          python backend/hermetic_python.py \
+            --pip-lock backend/requirements-pip-bootstrap.lock \
+            --requirements-lock .github/scripts/requirements-pip-audit.lock \
+            --expected-python 3.12.13 \
+            --expected-initial-pip 26.2.1 \
+            --expected-pip 26.2.1 \
+            --label PIP_AUDIT
+          python -m pip_audit --version
+      - name: Audit exact hashed Python dependency closure without pip resolution
+        run: python -m pip_audit --require-hashes --disable-pip -r backend/requirements.lock -f json -o pip-audit.json
+      - name: Upload Python audit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pip-audit-report
+          path: pip-audit.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.13.0'
+      - name: Install mobile dependencies for audit
+        working-directory: mobile
+        run: npm ci --ignore-scripts
+      - name: Capture mobile dependency audit
+        working-directory: mobile
+        run: npm audit --json > npm-audit.json || true
+      - name: Require zero critical mobile vulnerabilities
+        working-directory: mobile
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const audit = JSON.parse(fs.readFileSync('npm-audit.json', 'utf8'));
+          const counts = audit.metadata?.vulnerabilities || {};
+          console.log(`MOBILE_AUDIT_COUNTS=${JSON.stringify(counts)}`);
+          if ((counts.critical || 0) > 0) {
+            console.error('Critical mobile dependency findings block this baseline.');
+            process.exit(1);
+          }
+          NODE
+      - name: Upload mobile audit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-audit-report
+          path: mobile/npm-audit.json
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_BIN: /tmp/financeflow-gitleaks
+      GITLEAKS_EXPECTED_VERSION: '8.24.3'
+      GITLEAKS_SOURCE_SHA: 107a41827bb6698dbbff756b2300537774a1d84c
+      SECRET_SCAN_REQUIRED_IGNORE_FINGERPRINT: 68bc951e2c0c4017983bded88fc92186258154bd:mobile/tests/idempotent-mutation-contract.cjs:generic-api-key:213
+    steps:
+      - name: Checkout exact PR candidate with complete history
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record exact PR candidate HEAD
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: echo "CANDIDATE_HEAD=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_ENV"
+      - name: Checkout exact push candidate with complete history
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record exact push candidate HEAD
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: echo "CANDIDATE_HEAD=${GITHUB_SHA}" >> "$GITHUB_ENV"
+      - name: Setup pinned Go toolchain
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.23.4'
+          cache: false
+      - name: Checkout immutable Gitleaks 8.24.3 source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gitleaks/gitleaks
+          ref: 107a41827bb6698dbbff756b2300537774a1d84c
+          path: .tools/gitleaks-src
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Build and verify pinned scanner
+        working-directory: .tools/gitleaks-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITLEAKS_SOURCE_SHA"
+          printf 'GITLEAKS_BUILD_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)"
+          printf 'GITLEAKS_BUILD_GO_VERSION=%s\n' "$(go version)"
+          go build -trimpath -ldflags "-X github.com/zricethezav/gitleaks/v8/cmd.Version=$GITLEAKS_EXPECTED_VERSION" -o "$GITLEAKS_BIN" .
+          test "$($GITLEAKS_BIN version)" = "$GITLEAKS_EXPECTED_VERSION"
+          printf 'GITLEAKS_BUILD_VERSION=%s\n' "$($GITLEAKS_BIN version)"
+      - name: Test the secret-scan gate against stale-range regression
+        shell: bash
+        run: bash .github/scripts/test_secret_scan_history.sh
+      - name: Scan all commits reachable from exact candidate HEAD
+        shell: bash
+        run: bash .github/scripts/secret_scan_history.sh "$GITHUB_WORKSPACE" "$CANDIDATE_HEAD" "$GITHUB_WORKSPACE/gitleaks-results.sarif"
+      - name: Upload Gitleaks SARIF evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitleaks-results.sarif
+          path: gitleaks-results.sarif
+          if-no-files-found: error

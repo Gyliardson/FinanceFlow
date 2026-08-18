@@ -1,0 +1,62 @@
+name: Financial idempotency
+
+on:
+  pull_request:
+    branches:
+      - portfolio/revamp-2026
+      - main
+  push:
+    branches:
+      - portfolio/revamp-2026
+      - 'work/**'
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-idempotency:
+    name: PostgreSQL mutation idempotency
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5
+        env:
+          POSTGRES_USER: financeflow
+          POSTGRES_PASSWORD: financeflow
+          POSTGRES_DB: financeflow_idempotency_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U financeflow -d financeflow_idempotency_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: financeflow
+      PGPASSWORD: financeflow
+      PGDATABASE: financeflow_idempotency_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run real PostgreSQL idempotency contract
+        shell: bash
+        run: bash backend/financial_idempotency_probe.sh
+
+      - name: Upload concurrency diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: financial-idempotency-races
+          path: |
+            reserve-a.log
+            reserve-b.log
+            bill-a.log
+            bill-b.log
+            income-a.log
+            income-b.log
+            recurring-a.log
+            recurring-b.log
+          if-no-files-found: ignore

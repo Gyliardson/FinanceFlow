@@ -1,0 +1,3 @@
+# Generated once for #193 from CPython 3.12.13 / Linux x86_64.
+# Final release gates validate this checked-in closure and never resolve transitives.
+pip==26.2.1 --hash=sha256:71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e

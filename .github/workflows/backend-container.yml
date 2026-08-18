@@ -1,0 +1,185 @@
+name: Backend container
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - portfolio/revamp-2026
+      - main
+  push:
+    branches:
+      - portfolio/revamp-2026
+      - 'work/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build production backend image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build backend image
+        run: docker build --tag financeflow-backend:ci backend
+      - name: Verify production Python runtime
+        run: |
+          runtime_python=$(docker run --rm --entrypoint python financeflow-backend:ci -c \
+            'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+          echo "Production image Python: $runtime_python"
+          test "$runtime_python" = '3.12'
+      - name: Verify production entrypoint
+        run: |
+          entrypoint=$(docker inspect --format '{{json .Config.Cmd}}' financeflow-backend:ci)
+          echo "$entrypoint"
+          echo "$entrypoint" | grep -F 'exec uvicorn runtime:create_app'
+          echo "$entrypoint" | grep -F -- '--factory'
+          echo "$entrypoint" | grep -F '${PORT:-8000}'
+      - name: Verify unprivileged runtime identity
+        run: |
+          configured_user=$(docker inspect --format '{{.Config.User}}' financeflow-backend:ci)
+          test "$configured_user" = 'financeflow'
+          docker run --rm --entrypoint sh financeflow-backend:ci -c \
+            'test "$(id -u)" -ne 0 && test "$(id -un)" = financeflow'
+
+      - name: Start deterministic private Storage stub
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/scripts/container_storage_stub.py --port 54329 --mode success \
+            > "$RUNNER_TEMP/storage-success.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/storage-success.pid"
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:54329/stub-health > /dev/null; then
+              echo 'STORAGE_STUB_SUCCESS=ready'
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat "$RUNNER_TEMP/storage-success.log"
+          exit 1
+
+      - name: Start production command and prove health through real lifespan
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker rm -f financeflow-backend-smoke >/dev/null 2>&1 || true
+          docker run -d --name financeflow-backend-smoke \
+            --add-host=host.docker.internal:host-gateway \
+            -p 18000:18000 \
+            -e PORT=18000 \
+            -e ENVIRONMENT=production \
+            -e SUPABASE_URL=http://host.docker.internal:54329 \
+            -e SUPABASE_KEY=ci-placeholder \
+            -e SUPABASE_SERVICE_ROLE_KEY=ci-placeholder \
+            -e GEMINI_API_KEY=ci-placeholder \
+            financeflow-backend:ci > /dev/null
+
+          healthy=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18000/health > "$RUNNER_TEMP/backend-health.json"; then
+              healthy=1
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' financeflow-backend-smoke)" != 'true' ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$healthy" -ne 1 ]; then
+            docker logs financeflow-backend-smoke || true
+            cat "$RUNNER_TEMP/storage-success.log" || true
+            exit 1
+          fi
+
+          grep -F '"status":"ok"' "$RUNNER_TEMP/backend-health.json"
+          host_pid=$(docker inspect --format '{{.State.Pid}}' financeflow-backend-smoke)
+          pid1_command=$(ps -p "$host_pid" -o args=)
+          echo "BACKEND_CONTAINER_PID1=$pid1_command"
+          echo "$pid1_command" | grep -F 'uvicorn runtime:create_app'
+          echo 'BACKEND_CONTAINER_HEALTH=pass'
+
+      - name: Prove graceful SIGTERM shutdown
+        shell: bash
+        run: |
+          set -euo pipefail
+          started_at=$(date +%s)
+          docker stop --time 5 financeflow-backend-smoke > /dev/null
+          elapsed=$(( $(date +%s) - started_at ))
+          exit_code=$(docker inspect --format '{{.State.ExitCode}}' financeflow-backend-smoke)
+          echo "BACKEND_CONTAINER_STOP_SECONDS=$elapsed"
+          echo "BACKEND_CONTAINER_EXIT_CODE=$exit_code"
+          test "$elapsed" -le 7
+          test "$exit_code" = '0'
+          echo 'BACKEND_CONTAINER_SIGTERM=pass'
+
+      - name: Test the startup gate with unavailable Storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/scripts/container_storage_stub.py --port 54330 --mode fail \
+            > "$RUNNER_TEMP/storage-fail.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/storage-fail.pid"
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:54330/stub-health > /dev/null; then break; fi
+            sleep 0.25
+          done
+
+          docker rm -f financeflow-backend-negative >/dev/null 2>&1 || true
+          docker run -d --name financeflow-backend-negative \
+            --add-host=host.docker.internal:host-gateway \
+            -p 18001:18001 \
+            -e PORT=18001 \
+            -e ENVIRONMENT=production \
+            -e SUPABASE_URL=http://host.docker.internal:54330 \
+            -e SUPABASE_KEY=ci-placeholder \
+            -e SUPABASE_SERVICE_ROLE_KEY=ci-placeholder \
+            -e GEMINI_API_KEY=ci-placeholder \
+            financeflow-backend:ci > /dev/null
+
+          stopped=0
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18001/health > /dev/null 2>&1; then
+              echo 'Container became healthy despite unavailable required Storage' >&2
+              docker logs financeflow-backend-negative || true
+              exit 1
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' financeflow-backend-negative)" != 'true' ]; then
+              stopped=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$stopped" -ne 1 ]; then
+            echo 'Container did not fail closed when required Storage startup dependency was unavailable' >&2
+            docker logs financeflow-backend-negative || true
+            docker rm -f financeflow-backend-negative >/dev/null 2>&1 || true
+            exit 1
+          fi
+
+          exit_code=$(docker inspect --format '{{.State.ExitCode}}' financeflow-backend-negative)
+          echo "BACKEND_CONTAINER_NEGATIVE_EXIT_CODE=$exit_code"
+          test "$exit_code" != '0'
+          grep -F 'STORAGE_STUB_REQUEST=POST /storage/v1/bucket' "$RUNNER_TEMP/storage-fail.log"
+          echo 'BACKEND_CONTAINER_STARTUP_FAILURE=detected'
+
+      - name: Upload container runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-container-runtime
+          path: |
+            ${{ runner.temp }}/backend-health.json
+            ${{ runner.temp }}/storage-success.log
+            ${{ runner.temp }}/storage-fail.log
+          if-no-files-found: warn
+
+      - name: Cleanup container smoke resources
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f financeflow-backend-smoke financeflow-backend-negative >/dev/null 2>&1 || true
+          for pid_file in "$RUNNER_TEMP/storage-success.pid" "$RUNNER_TEMP/storage-fail.pid"; do
+            if [ -f "$pid_file" ]; then kill "$(cat "$pid_file")" >/dev/null 2>&1 || true; fi
+          done

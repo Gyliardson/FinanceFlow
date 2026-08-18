@@ -1,258 +1,241 @@
-import asyncio
-import sys
+"""Experimental PGMEI browser adapter.
+
+This module intentionally does not attempt to evade CAPTCHA, bot detection, fraud
+controls, or other human-verification mechanisms. The production FinanceFlow runtime
+does not activate it. When explicitly enabled, it uses ordinary Playwright behavior
+and fails closed if the external portal requires human verification or changes.
+"""
+
+from __future__ import annotations
+
 import logging
 import os
 import re
-import random
+import tempfile
 from datetime import datetime
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
+from pathlib import Path
+from urllib.parse import urlparse
+
 from dotenv import load_dotenv
+from pydantic import ValidationError
+
+from integration_contracts import (
+    IntegrationResult,
+    InvoiceCandidate,
+    blocked_result,
+    disabled_result,
+    error_result,
+    experimental_integrations_enabled,
+    unavailable_result,
+)
+from receipt_uploads import sanitize_receipt_for_external_processing, validate_receipt_upload
 
 load_dotenv()
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+PGMEI_HOST = "www8.receita.fazenda.gov.br"
+PGMEI_URL = (
+    "https://www8.receita.fazenda.gov.br/SimplesNacional/"
+    "Aplicacoes/ATSPO/pgmei.app/Identificacao"
+)
+NAVIGATION_TIMEOUT_MS = 45_000
+MAX_PDF_BYTES = 10 * 1024 * 1024
+
+
+def _result_payload(result: IntegrationResult) -> dict:
+    return result.model_dump(mode="json", exclude_none=True)
+
+
+def _target_competence(now: datetime) -> tuple[int, int]:
+    if now.month == 1:
+        return now.year - 1, 12
+    return now.year, now.month - 1
+
+
+def _requires_human_verification(body_text: str, *, captcha_frames: int = 0) -> bool:
+    normalized = body_text.lower()
+    return (
+        captcha_frames > 0
+        or "captcha" in normalized
+        or "comportamento de rob" in normalized
+        or "impedido" in normalized
+        or "verificação de segurança" in normalized
+    )
+
+
+def _is_trusted_pgmei_url(url: str) -> bool:
+    """Require the sensitive CNPJ form to remain on the expected HTTPS origin."""
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == PGMEI_HOST
+        and port in (None, 443)
+    )
+
+
+def _prepare_pdf_for_external_ocr(pdf_bytes: bytes) -> bytes | None:
+    """Validate external PGMEI bytes and produce the metadata-minimized OCR copy."""
+    try:
+        validated = validate_receipt_upload(
+            pdf_bytes,
+            "application/pdf",
+            max_bytes=MAX_PDF_BYTES,
+        )
+        return sanitize_receipt_for_external_processing(validated)
+    except Exception as exc:
+        logger.warning("DASMEI PDF rejected before external OCR: %s", type(exc).__name__)
+        return None
+
+
 async def scrape_dasmei() -> dict:
-    """
-    Automação educacional para buscar guias DAS MEI pendentes.
-    Usa o TARGET_CNPJ do arquivo .env.
-    Retorna o valor, data de vencimento e linha digitável.
-    """
+    """Return one validated DAS invoice candidate without persisting it."""
+
+    if not experimental_integrations_enabled():
+        return _result_payload(disabled_result("DASMEI"))
+
     load_dotenv(override=True)
-    cnpj = os.getenv("TARGET_CNPJ")
-    if not cnpj:
-        return {"status": "error", "message": "Variável TARGET_CNPJ não encontrada no arquivo .env local do servidor."}
-
-    # Remove máscara e garante que possua 14 caracteres numéricos
-    cnpj_clean = re.sub(r'[^0-9]', '', str(cnpj))
+    cnpj = os.getenv("TARGET_CNPJ", "")
+    cnpj_clean = re.sub(r"[^0-9]", "", cnpj)
     if len(cnpj_clean) != 14:
-        return {"status": "error", "message": "CNPJ malformatado. O TARGET_CNPJ deve conter 14 dígitos."}
-
-    logger.info("Iniciando rotina Playwright para ingressar no portal DASMEI.")
-    
-    # Criar diretório tmp base para segurança sem poluir repo
-    os.makedirs("tmp", exist_ok=True)
-    
-    display = None
-    if sys.platform.startswith("linux"):
-        try:
-            from pyvirtualdisplay import Display
-            logger.info("Sistema Linux detectado. Iniciando Display Virtual (Xvfb) para suportar headless=False...")
-            display = Display(visible=0, size=(1280, 720))
-            display.start()
-        except ImportError:
-            logger.warning("pyvirtualdisplay nao esta instalado. Tentando rodar sem Xvfb interno (certifique-se de usar xvfb-run no Render).")
-        except Exception as e:
-            logger.error(f"Erro ao iniciar display virtual: {e}")
+        return _result_payload(
+            IntegrationResult(
+                status="error",
+                message="DASMEI requires a valid 14-digit TARGET_CNPJ configuration.",
+            )
+        )
 
     try:
-        async with async_playwright() as p:
-            # === headless=False é OBRIGATÓRIO ===
-            # O hCaptcha da Receita Federal detecta headless=True por fingerprint de GPU/WebGL.
-            # Usamos headless=False com a janela posicionada fora da tela (--window-position=-32000,-32000)
-            # para simular "invisibilidade" mantendo a renderização GPU real.
-            browser = await p.chromium.launch(
-                headless=False,
-                args=[
-                    '--window-position=-32000,-32000',
-                    '--window-size=1280,720',
-                ]
-            )
-            
-            # Contexto aceita downloads para interceptar o PDF silenciosamente
-            context = await browser.new_context(
-                viewport={'width': 1280, 'height': 720},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                accept_downloads=True
-            )
-            
-            page = await context.new_page()
-            
-            # Aplica stealth para mascarar automação (remove navigator.webdriver etc.)
-            await Stealth().apply_stealth_async(page)
-            
-            try:
-                # === Stage 1: Acesso ao Portal PGMEI ===
-                url_receita = "http://www8.receita.fazenda.gov.br/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/Identificacao"
-                await page.goto(url_receita, wait_until="domcontentloaded", timeout=45000)
-                logger.info("Página da Receita devidamente carregada.")
-                
-                # === Stage 2: Preencher CNPJ (typewriting humano) e submeter ===
-                logger.info("Procurando campo de CNPJ e preenchendo (digitando pausadamente)...")
-                
-                input_cnpj = page.locator('input[id=cnpj]')
-                await input_cnpj.click()
-                await page.wait_for_timeout(random.uniform(500, 1000))
-                await page.keyboard.press("Home")
-                await page.wait_for_timeout(random.uniform(200, 500))
-                
-                # TYPE simula digitação tecla a tecla (humanização)
-                await input_cnpj.type(cnpj_clean, delay=random.randint(80, 250))
-                
-                await page.wait_for_timeout(random.uniform(1000, 2000))
-                await page.screenshot(path="tmp/01_dasmei_filled.png")
-                
-                # === Stage 3: Submeter via teclado ===
-                logger.info("Tentando prosseguir via teclado (Enter)...")
-                await page.wait_for_timeout(random.uniform(500, 1500))
-                await page.keyboard.press("Enter", delay=random.randint(50, 150))
-                
-                # === Stage 4: Aguardar navegação e verificar resultado ===
-                await page.wait_for_timeout(5000)
-                
-                body_text = await page.inner_text("body")
-                
-                # Verifica bloqueio por Captcha
-                if "Impedido" in body_text or "Comportamento de Rob" in body_text:
-                    logger.error("BLOQUEIO DETECTADO! A Receita Federal identificou o robô.")
-                    await page.screenshot(path="tmp/02_dasmei_captcha_block.png")
-                    return {
-                        "status": "error",
-                        "message": "Impedido por proteção Captcha. Comportamento de Robô detectado pela Receita Federal."
-                    }
-                
-                # Aguarda o menu "Emitir Guia" aparecer
-                emitir_selector = 'a[href="/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/emissao"]'
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return _result_payload(unavailable_result("DASMEI browser adapter"))
+
+    now = datetime.now()
+    target_year, target_month = _target_competence(now)
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="financeflow-dasmei-") as tmp_dir:
+            pdf_path = Path(tmp_dir) / f"dasmei_{target_year}_{target_month:02d}.pdf"
+
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
                 try:
-                    await page.wait_for_selector(emitir_selector, timeout=20000)
-                    logger.info("Login confirmado! Painel alcançado.")
-                except:
-                    await page.wait_for_timeout(10000)
-                    body_text = await page.inner_text("body")
-                    if "Impedido" in body_text:
-                        logger.error("Bloqueio detectado após espera extra.")
-                        await page.screenshot(path="tmp/02_dasmei_captcha_block.png")
-                        return {"status": "error", "message": "Impedido por proteção Captcha."}
-                    if "Emitir Guia" not in body_text:
-                        logger.error("Painel não carregou após espera extra.")
-                        await page.screenshot(path="tmp/02_dasmei_timeout_block.png")
-                        return {"status": "error", "message": "Não foi possível carregar o painel do PGMEI."}
-                
-                await page.screenshot(path="tmp/02_dasmei_logged_in.png")
-                
-                # === Stage 5: Clicar no menu "Emitir Guia de Pagamento (DAS)" ===
-                logger.info("Acessando menu 'Emitir Guia de Pagamento (DAS)'...")
-                await page.click(emitir_selector)
-                await page.wait_for_load_state("networkidle")
-                
-                # === Stage 6: Cálculo da Competência ===
-                now = datetime.now()
-                if now.month == 1:
-                    target_month = 12
-                    target_year = now.year - 1
-                else:
-                    target_month = now.month - 1
-                    target_year = now.year
-                    
-                # === Stage 7: Selecionar Ano-Calendário ===
-                try:
-                    logger.info(f"Selecionando Ano-Calendário: {target_year}...")
-                    
-                    await page.select_option('#anoCalendarioSelect', str(target_year))
-                    await page.evaluate("document.querySelector('button[type=submit]').click()")
-                    await page.wait_for_load_state("networkidle")
-                    await page.screenshot(path="tmp/03_dasmei_year_selected.png")
-                    
-                    # === Stage 8: Selecionar mês da competência ===
-                    checkbox_value = f"{target_year}{target_month:02d}"
-                    logger.info(f"Buscando checkbox da competência: {checkbox_value}")
-                    
-                    month_selector = f'[value="{checkbox_value}"]'
-                    select_month = await page.wait_for_selector(month_selector, timeout=15000)
-                    await select_month.click()
-                    logger.info("Mês da competência selecionado!")
-                    
-                    await page.screenshot(path="tmp/04_dasmei_month_selected.png")
-                    
-                    # === Stage 9: Clicar em "Apurar/Gerar DAS" ===
-                    logger.info("Clicando em Apurar/Gerar DAS...")
-                    await page.click('#btnEmitirDas')
-                    await page.wait_for_load_state("networkidle")
-                    await page.wait_for_timeout(2000)
-                    await page.screenshot(path="tmp/05_dasmei_gerado.png")
-                    
-                    # === Stage 10: Download do PDF ===
-                    logger.info("Localizando botão 'Imprimir/Visualizar PDF'...")
-                    pdf_path = os.path.abspath(f"tmp/dasmei_{target_year}_{target_month:02d}.pdf")
-                    
-                    pdf_selector = 'a[href="/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/emissao/imprimir"]'
-                    download_btn = page.locator(pdf_selector).first
-                    
+                    context = await browser.new_context(accept_downloads=True)
+                    page = await context.new_page()
+                    page.set_default_timeout(NAVIGATION_TIMEOUT_MS)
+
+                    await page.goto(
+                        PGMEI_URL,
+                        wait_until="domcontentloaded",
+                        timeout=NAVIGATION_TIMEOUT_MS,
+                    )
+                    # CNPJ is sensitive configuration. Never submit it after a downgrade
+                    # or cross-origin redirect, even if the portal UI still resembles PGMEI.
+                    if not _is_trusted_pgmei_url(page.url):
+                        return _result_payload(unavailable_result("DASMEI secure origin"))
+
+                    cnpj_input = page.locator("#cnpj")
+                    await cnpj_input.fill(cnpj_clean)
+                    await cnpj_input.press("Enter")
+
+                    # Human verification is a hard boundary, never something to evade.
+                    body_text = await page.locator("body").inner_text()
+                    captcha_frame = page.locator(
+                        'iframe[src*="captcha" i], iframe[title*="captcha" i]'
+                    )
+                    if _requires_human_verification(
+                        body_text,
+                        captcha_frames=await captcha_frame.count(),
+                    ):
+                        return _result_payload(blocked_result("DASMEI"))
+
+                    emit_selector = (
+                        'a[href="/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/emissao"]'
+                    )
                     try:
-                        async with page.expect_download(timeout=15000) as download_info:
-                            await download_btn.click()
-                        
+                        await page.locator(emit_selector).wait_for(
+                            state="visible", timeout=20_000
+                        )
+                    except PlaywrightTimeoutError:
+                        return _result_payload(unavailable_result("DASMEI"))
+
+                    await page.locator(emit_selector).click()
+                    await page.wait_for_load_state("domcontentloaded")
+
+                    await page.locator("#anoCalendarioSelect").select_option(
+                        str(target_year)
+                    )
+                    await page.locator('button[type="submit"]').click()
+                    await page.wait_for_load_state("domcontentloaded")
+
+                    competence = f"{target_year}{target_month:02d}"
+                    month_option = page.locator(f'[value="{competence}"]')
+                    try:
+                        await month_option.wait_for(state="visible", timeout=15_000)
+                    except PlaywrightTimeoutError:
+                        return _result_payload(
+                            IntegrationResult(
+                                status="info",
+                                message="No DAS competence is currently available for collection.",
+                            )
+                        )
+
+                    await month_option.click()
+                    await page.locator("#btnEmitirDas").click()
+                    await page.wait_for_load_state("domcontentloaded")
+
+                    pdf_link = page.locator(
+                        'a[href="/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/emissao/imprimir"]'
+                    ).first
+                    try:
+                        async with page.expect_download(timeout=15_000) as download_info:
+                            await pdf_link.click()
                         download = await download_info.value
-                        logger.info("Download capturado! Salvando no disco...")
-                        await download.save_as(pdf_path)
-                        logger.info(f"Boleto PDF salvo em: {pdf_path}")
-                        
-                    except Exception as e:
-                        logger.error(f"Falha no download do PDF: {str(e)}")
-                        raise Exception(f"Falha ao salvar o PDF do DAS: {str(e)}")
-                    
-                    logger.info("Processo de scraping concluído com sucesso!")
+                        await download.save_as(str(pdf_path))
+                    except PlaywrightTimeoutError:
+                        return _result_payload(unavailable_result("DASMEI PDF download"))
+                finally:
+                    await browser.close()
 
-                except Exception as nav_err:
-                    logger.warning(f"Processo falhou: {str(nav_err)}")
-                    await page.screenshot(path="tmp/06_dasmei_falha_critica.png")
-                    raise nav_err
+            from ai_service import extract_invoice_data
 
-                # === Stage 11: Extração de Dados Reais do PDF via IA ===
-                logger.info("Extraindo dados reais do PDF usando Inteligência Artificial...")
-                try:
-                    with open(pdf_path, "rb") as f:
-                        pdf_bytes = f.read()
-                    
-                    from ai_service import extract_invoice_data
-                    ocr_response = extract_invoice_data(pdf_bytes, "application/pdf")
-                    
-                    if ocr_response.get("status") == "error":
-                        raise Exception(ocr_response.get("details", "Sem detalhes do erro do Gemini."))
-                    
-                    extracted = ocr_response.get("extracted_data", {})
-                    real_amount = float(extracted.get("amount", 75.60))
-                    real_due_date = extracted.get("due_date", f"{now.year}-{str(now.month).zfill(2)}-20")
-                    real_barcode = str(extracted.get("barcode", "85800000000000000000000000000000"))
-                    logger.info(f"Leitura concluída! Valor: R${real_amount} | Linha Digitável extraída.")
-                    
-                except Exception as ocr_err:
-                    logger.warning(f"OCR falhou: {str(ocr_err)}. Usando valores base.")
-                    real_amount = 75.60
-                    real_due_date = f"{now.year}-{str(now.month).zfill(2)}-20"
-                    real_barcode = "ErrodeLeitura-0000000000"
+            pdf_bytes = pdf_path.read_bytes()
+            provider_pdf = _prepare_pdf_for_external_ocr(pdf_bytes)
+            if provider_pdf is None:
+                return _result_payload(error_result("DASMEI PDF validation"))
 
-                return {
-                    "status": "success",
-                    "description": f"Guia DAS MEI - {target_month:02d}/{target_year}",
-                    "amount": real_amount,
-                    "due_date": real_due_date,
-                    "barcode": real_barcode,
-                    "message": "Guia capturada e processada com OCR Inteligente via Gemini."
-                }
-                
-            except Exception as err:
-                error_msg = str(err)
-                logger.error(f"Erro Playwright na navegação do PGMEI: {error_msg}")
-                
-                try:
-                    if not page.is_closed():
-                        await page.screenshot(path="tmp/dasmei_error.png")
-                except:
-                    pass
-                    
-                return {"status": "error", "message": f"Erro técnico no scraper: {error_msg}"}
-                
-            finally:
-                await browser.close()
-    
-    finally:
-        if display:
-            display.stop()
+            ocr_response = extract_invoice_data(provider_pdf, "application/pdf")
+            if ocr_response.get("status") != "success":
+                return _result_payload(error_result("DASMEI OCR"))
+
+            extracted = ocr_response.get("extracted_data") or {}
+            try:
+                candidate = InvoiceCandidate(
+                    description=f"Guia DAS MEI - {target_month:02d}/{target_year}",
+                    amount=extracted.get("amount"),
+                    due_date=extracted.get("due_date"),
+                    barcode=extracted.get("barcode"),
+                )
+            except (ValidationError, ValueError, TypeError):
+                return _result_payload(error_result("DASMEI invoice validation"))
+
+            return _result_payload(
+                IntegrationResult(
+                    status="success",
+                    message="DASMEI produced one validated invoice candidate.",
+                    candidate=candidate,
+                )
+            )
+    except Exception as exc:  # external browser/provider boundary
+        logger.warning("DASMEI adapter failed safely: %s", type(exc).__name__)
+        return _result_payload(error_result("DASMEI"))
+
 
 if __name__ == "__main__":
-    resultado = asyncio.run(scrape_dasmei())
-    print("\n[Módulo de Scraping DASMEI]:")
-    print(resultado)
+    import asyncio
+
+    print(asyncio.run(scrape_dasmei()))
