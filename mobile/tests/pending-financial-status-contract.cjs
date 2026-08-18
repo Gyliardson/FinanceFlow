@@ -7,6 +7,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 
+const app = read('App.tsx');
 const status = read('src/components/PendingFinancialStatus.tsx');
 const navigator = read('src/navigation/AppNavigator.tsx');
 const store = read('src/services/idempotentMutation.ts');
@@ -16,8 +17,16 @@ assert.match(status, /listPendingOperationsForOwner\(requestedOwner\)/,
   'status surface must enumerate only the authenticated owner namespace');
 assert.match(status, /ownerRef\.current === requestedOwner/,
   'late pending-state reads must not repaint a newer owner session');
-assert.match(status, /useNavigationState/,
-  'route changes must refresh pending state after an ambiguous form is closed');
+assert.doesNotMatch(status, /useNavigationState|useNavigation\s*\(/,
+  'the global status is a Stack.Navigator sibling and must not call navigator-scoped hooks');
+assert.match(app, /<NavigationContainer[\s\S]*onStateChange=\{\(\) => setNavigationRevision/,
+  'the NavigationContainer must own the route-change signal for the global status');
+assert.match(app, /<AppNavigator navigationRevision=\{navigationRevision\}\s*\/>/,
+  'the root navigation revision must flow into the authenticated navigator');
+assert.match(navigator, /<PendingFinancialStatus navigationRevision=\{navigationRevision\}\s*\/>/,
+  'the global status must receive route-change revisions without navigator-scoped hooks');
+assert.match(status, /\[ownerId, navigationRevision, refresh\]/,
+  'route changes must still refresh pending state after an ambiguous form is closed');
 assert.match(status, /AppState\.addEventListener\('change'/,
   'foreground transitions must refresh pending state after restart/reconnect lifecycle events');
 assert.match(status, /state === 'active'/);
@@ -43,7 +52,7 @@ assert.doesNotMatch(status, /\.key\b/,
 assert.doesNotMatch(status, /intentId/,
   'the global unresolved status must never render logical intent identifiers');
 
-assert.match(navigator, /<PendingFinancialStatus\s*\/>/,
+assert.match(navigator, /<PendingFinancialStatus[\s\S]*\/>/,
   'the unresolved status must survive originating form unmount inside the authenticated navigator');
 assert.doesNotMatch(store, /LOCAL_RETENTION_MS|createdAt\s*>=\s*cutoff/,
   'ambiguous durable state must not be silently deleted because local wall-clock time passed');
