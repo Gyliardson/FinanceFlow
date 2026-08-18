@@ -65,6 +65,7 @@ export default function LoginScreen() {
           value={email}
           onChangeText={setEmail}
           placeholder="voce@exemplo.com"
+          placeholderTextColor="#94a3b8"
           style={styles.input}
         />
 
@@ -82,6 +83,7 @@ export default function LoginScreen() {
           value={password}
           onChangeText={setPassword}
           placeholder="Sua senha"
+          placeholderTextColor="#94a3b8"
           style={styles.input}
           onSubmitEditing={handleSignIn}
         />
