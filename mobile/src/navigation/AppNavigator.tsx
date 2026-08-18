@@ -13,7 +13,11 @@ import { useAuth } from '../services/AuthContext';
 
 const Stack = createStackNavigator();
 
-export default function AppNavigator() {
+type AppNavigatorProps = {
+  navigationRevision: number;
+};
+
+export default function AppNavigator({ navigationRevision }: AppNavigatorProps) {
   const { signOut } = useAuth();
 
   return (
@@ -82,7 +86,7 @@ export default function AppNavigator() {
           }}
         />
       </Stack.Navigator>
-      <PendingFinancialStatus />
+      <PendingFinancialStatus navigationRevision={navigationRevision} />
     </View>
   );
 }
