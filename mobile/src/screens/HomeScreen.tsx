@@ -580,7 +580,7 @@ export default function HomeScreen({ navigation }: any) {
               <TextInput
                 style={styles.modalInputAmount}
                 keyboardType="decimal-pad"
-                placeholder="0,00"
+                placeholder="0,00" placeholderTextColor="#64748b"
                 value={initialBalance}
                 onChangeText={(text) => {
                   if (text.includes('-')) setInitialBalanceNegative(true);
@@ -598,7 +598,7 @@ export default function HomeScreen({ navigation }: any) {
               <TextInput
                 style={styles.modalInputAmount}
                 keyboardType="decimal-pad"
-                placeholder="0,00"
+                placeholder="0,00" placeholderTextColor="#64748b"
                 value={emergencyGoal}
                 onChangeText={(text) => setEmergencyGoal(formatCurrencyInput(text))}
                 accessibilityLabel="Meta da reserva de emergência em reais"

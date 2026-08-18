@@ -266,14 +266,14 @@ export default function IncomeScreen({ navigation }: any) {
               </View>
 
               <Text nativeID="income-title-label" style={styles.label}>Título</Text>
-              <TextInput accessibilityLabel="Título da renda" accessibilityLabelledBy="income-title-label" editable={!saving && !intentLocked} style={styles.input} placeholder="Ex.: Salário, iFood" value={title} onChangeText={setTitle} maxLength={100} returnKeyType="next" />
+              <TextInput accessibilityLabel="Título da renda" accessibilityLabelledBy="income-title-label" editable={!saving && !intentLocked} style={styles.input} placeholder="Ex.: Salário, iFood" placeholderTextColor="#64748b" value={title} onChangeText={setTitle} maxLength={100} returnKeyType="next" />
               <Text nativeID="income-amount-label" style={styles.label}>Valor</Text>
               <View style={styles.inputWrapper}>
                 <Text style={styles.currencyPrefix}>R$</Text>
-                <TextInput accessibilityLabel="Valor da renda em reais" accessibilityLabelledBy="income-amount-label" editable={!saving && !intentLocked} style={styles.inputAmount} placeholder="0,00" keyboardType="numeric" value={amount} onChangeText={handleAmountChange} returnKeyType="next" />
+                <TextInput accessibilityLabel="Valor da renda em reais" accessibilityLabelledBy="income-amount-label" editable={!saving && !intentLocked} style={styles.inputAmount} placeholder="0,00" placeholderTextColor="#64748b" keyboardType="numeric" value={amount} onChangeText={handleAmountChange} returnKeyType="next" />
               </View>
               <Text nativeID="income-description-label" style={styles.label}>Descrição opcional</Text>
-              <TextInput accessibilityLabel="Descrição opcional da renda" accessibilityLabelledBy="income-description-label" editable={!saving && !intentLocked} style={[styles.input, styles.descriptionInput]} placeholder="Ex.: Pagamento semanal" value={description} onChangeText={setDescription} maxLength={255} multiline textAlignVertical="top" />
+              <TextInput accessibilityLabel="Descrição opcional da renda" accessibilityLabelledBy="income-description-label" editable={!saving && !intentLocked} style={[styles.input, styles.descriptionInput]} placeholder="Ex.: Pagamento semanal" placeholderTextColor="#64748b" value={description} onChangeText={setDescription} maxLength={255} multiline textAlignVertical="top" />
 
               <View style={styles.modalActions}>
                 <TouchableOpacity accessibilityRole="button" accessibilityLabel="Cancelar cadastro de renda" accessibilityState={{ disabled: saving }} disabled={saving} style={styles.cancelBtn} onPress={closeModal}>
