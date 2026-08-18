@@ -1,0 +1,97 @@
+name: Final placeholder contrast contract
+
+on:
+  push:
+    branches:
+      - work/199-local-mobile-auth-smoke
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: work/199-local-mobile-auth-smoke
+      - name: Extend mobile UX contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('mobile/tests/ux-accessibility-contract.cjs')
+          source = path.read_text(encoding='utf-8')
+          marker = "console.log('Mobile UX/accessibility contract passed.');"
+          if marker not in source:
+              raise RuntimeError('UX contract completion marker not found')
+          if 'Placeholder contrast must remain explicit' in source:
+              raise RuntimeError('Placeholder contrast contract already present')
+
+          block = r'''
+// Placeholder contrast must remain explicit on the mobile form surfaces. This
+// deliberately scans every TSX source instead of pinning line numbers or one
+// screen, so a new TextInput placeholder cannot silently inherit an Android
+// theme color that disappears against the app's light input backgrounds.
+const listTsxSources = (directory) => fs.readdirSync(directory, { withFileTypes: true })
+  .flatMap((entry) => {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) return listTsxSources(fullPath);
+    return entry.isFile() && entry.name.endsWith('.tsx') ? [fullPath] : [];
+  });
+
+const relativeLuminance = (hex) => {
+  const channels = hex.slice(1).match(/.{2}/g).map((pair) => parseInt(pair, 16) / 255);
+  const linear = channels.map((channel) => (
+    channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4
+  ));
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+};
+
+const contrastAgainstWhite = (hex) => (1.05 / (relativeLuminance(hex) + 0.05));
+let placeholderFieldCount = 0;
+
+for (const absolutePath of listTsxSources(path.join(root, 'src'))) {
+  const relativePath = path.relative(root, absolutePath);
+  const source = fs.readFileSync(absolutePath, 'utf8');
+  for (const match of source.matchAll(/<TextInput\b[\s\S]*?\/>/g)) {
+    const input = match[0];
+    if (!/\bplaceholder\s*=/.test(input)) continue;
+    placeholderFieldCount += 1;
+    const colorMatch = input.match(/\bplaceholderTextColor\s*=\s*["'](#[0-9a-fA-F]{6})["']/);
+    assert.ok(
+      colorMatch,
+      `${relativePath}: every TextInput with placeholder must declare an explicit six-digit hex placeholderTextColor`,
+    );
+    const color = colorMatch[1].toLowerCase();
+    assert.notEqual(color, '#ffffff', `${relativePath}: white placeholder text is forbidden on light input surfaces`);
+    assert.ok(
+      contrastAgainstWhite(color) >= 2.4,
+      `${relativePath}: placeholderTextColor ${color} is too light for the app's white/light input surfaces`,
+    );
+  }
+}
+
+assert.ok(placeholderFieldCount > 0, 'Placeholder contract must enumerate at least one TextInput field');
+
+'''
+          path.write_text(source.replace(marker, block + marker), encoding='utf-8')
+          PY
+      - name: Run contract and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          node mobile/tests/ux-accessibility-contract.cjs
+          git rm .github/workflows/_final-placeholder-contract.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mobile/tests/ux-accessibility-contract.cjs
+          git commit -m "test(mobile): guard placeholder contrast across forms"
+          git push origin HEAD:work/199-local-mobile-auth-smoke
