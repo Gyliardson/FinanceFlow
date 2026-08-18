@@ -1,0 +1,69 @@
+name: TEMP 199 Expo SDK 57 patch refresh
+
+on:
+  push:
+    branches:
+      - work/199-local-mobile-auth-smoke
+    paths:
+      - '.github/workflows/temp-199-expo-sdk57-refresh.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temp-199-expo-sdk57-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.repository == 'Gyliardson/FinanceFlow'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: work/199-local-mobile-auth-smoke
+          fetch-depth: 1
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.13.0'
+          cache: npm
+          cache-dependency-path: |
+            mobile/package-lock.json
+            .github/npm-tools/package-lock.json
+      - name: Install current mobile closure
+        working-directory: mobile
+        run: npm ci --ignore-scripts
+      - name: Align SDK 57 patch dependencies
+        working-directory: mobile
+        run: ./node_modules/.bin/expo install --fix --npm
+      - name: Install integrity-locked health tooling
+        run: npm ci --ignore-scripts --legacy-peer-deps --prefix .github/npm-tools
+      - name: Verify Expo health before commit
+        working-directory: mobile
+        run: ../.github/npm-tools/node_modules/.bin/expo-doctor
+      - name: Enforce narrow mutation surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf 'Changed paths:\n%s\n' "${changed[*]}"
+          for path in "${changed[@]}"; do
+            case "$path" in
+              mobile/package.json|mobile/package-lock.json) ;;
+              *) echo "Unexpected Expo refresh mutation: $path" >&2; exit 1 ;;
+            esac
+          done
+          test "${#changed[@]}" -eq 2
+      - name: Remove one-shot workflow and commit reviewed outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/temp-199-expo-sdk57-refresh.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mobile/package.json mobile/package-lock.json .github/workflows/temp-199-expo-sdk57-refresh.yml
+          git diff --cached --check
+          git commit -m 'chore(mobile): align Expo SDK 57 patch dependencies'
+          git push origin HEAD:work/199-local-mobile-auth-smoke
