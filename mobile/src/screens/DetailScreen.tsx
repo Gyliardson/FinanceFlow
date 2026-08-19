@@ -225,12 +225,12 @@ export default function DetailScreen({ navigation }: any) {
         <View style={styles.form}>
           <Text style={styles.sectionTitle}>Dados da fatura</Text>
           <Text style={styles.inputLabel}>Descrição *</Text>
-          <TextInput style={styles.input} value={description} onChangeText={setDescription} editable={editable} placeholder="Ex.: Plano de internet" maxLength={150} accessibilityLabel="Descrição da fatura" />
+          <TextInput style={styles.input} value={description} onChangeText={setDescription} editable={editable} placeholder="Ex.: Plano de internet" placeholderTextColor="#64748b" maxLength={150} accessibilityLabel="Descrição da fatura" />
           <Text style={styles.inputLabel}>Valor *</Text>
-          <View style={styles.currencyInput}><Text style={styles.currencyPrefix}>R$</Text><TextInput style={styles.currencyField} keyboardType="decimal-pad" value={amount} onChangeText={(text) => setAmount(normalizeCurrencyInput(text))} editable={editable} placeholder="0,00" accessibilityLabel="Valor da fatura em reais" /></View>
+          <View style={styles.currencyInput}><Text style={styles.currencyPrefix}>R$</Text><TextInput style={styles.currencyField} keyboardType="decimal-pad" value={amount} onChangeText={(text) => setAmount(normalizeCurrencyInput(text))} editable={editable} placeholder="0,00" placeholderTextColor="#64748b" accessibilityLabel="Valor da fatura em reais" /></View>
           <Text style={styles.inputLabel}>Data de vencimento *</Text>
           {Platform.OS === 'web' ? (
-            <TextInput style={styles.input} value={dueDate} onChangeText={(text) => setDueDate(normalizeDateInput(text))} editable={editable} placeholder="DD/MM/AAAA" keyboardType="numeric" maxLength={10} accessibilityLabel="Data de vencimento no formato dia mês ano" />
+            <TextInput style={styles.input} value={dueDate} onChangeText={(text) => setDueDate(normalizeDateInput(text))} editable={editable} placeholder="DD/MM/AAAA" placeholderTextColor="#64748b" keyboardType="numeric" maxLength={10} accessibilityLabel="Data de vencimento no formato dia mês ano" />
           ) : (
             <TouchableOpacity style={styles.dateButton} onPress={() => setShowDatePicker(true)} disabled={!editable} accessibilityRole="button" accessibilityLabel={dueDate ? `Data de vencimento ${dueDate}` : 'Selecionar data de vencimento'} accessibilityHint="Abre o seletor de data"><Text style={[styles.dateButtonText, !dueDate && styles.placeholderText]}>{dueDate || 'Selecionar data'}</Text></TouchableOpacity>
           )}
@@ -245,7 +245,7 @@ export default function DetailScreen({ navigation }: any) {
             }} />
           )}
           <Text style={styles.inputLabel}>Linha digitável ou chave Pix</Text>
-          <TextInput style={[styles.input, styles.multilineInput]} multiline value={barcode} onChangeText={setBarcode} editable={editable} placeholder="Opcional" maxLength={255} accessibilityLabel="Linha digitável ou chave Pix opcional" accessibilityHint="Revise este campo especialmente quando preenchido por IA" />
+          <TextInput style={[styles.input, styles.multilineInput]} multiline value={barcode} onChangeText={setBarcode} editable={editable} placeholder="Opcional" placeholderTextColor="#64748b" maxLength={255} accessibilityLabel="Linha digitável ou chave Pix opcional" accessibilityHint="Revise este campo especialmente quando preenchido por IA" />
           <Text style={styles.reviewNotice}>Revise valor, vencimento e linha digitável antes de confirmar.</Text>
           <TouchableOpacity style={[styles.saveButton, busy && styles.buttonDisabled]} onPress={handleSaveBill} disabled={busy} accessibilityRole="button" accessibilityLabel="Salvar nova fatura" accessibilityHint={intentLocked ? 'Repete a mesma intenção financeira com a identidade e os valores originais' : 'Salva a fatura informada'} accessibilityState={{ disabled: busy, busy: loadingSave }}>
             {loadingSave ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>{intentLocked ? 'Tentar mesma intenção' : 'Salvar fatura'}</Text>}

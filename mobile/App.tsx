@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, AppState, Platform, StyleSheet, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import AppNavigator from './src/navigation/AppNavigator';
@@ -14,6 +14,7 @@ import api from './src/services/api';
 
 function AppContent() {
   const { session, loading } = useAuth();
+  const [navigationRevision, setNavigationRevision] = useState(0);
 
   const reconcileAuthoritativeBillReminders = useCallback(async () => {
     if (!session || Platform.OS === 'web') return;
@@ -69,9 +70,11 @@ function AppContent() {
   }
 
   return (
-    <NavigationContainer>
+    <NavigationContainer
+      onStateChange={() => setNavigationRevision((revision) => revision + 1)}
+    >
       <StatusBar style="auto" />
-      <AppNavigator />
+      <AppNavigator navigationRevision={navigationRevision} />
     </NavigationContainer>
   );
 }

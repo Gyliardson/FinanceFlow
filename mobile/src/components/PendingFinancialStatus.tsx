@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, StyleSheet, Text, View } from 'react-native';
-import { useNavigationState } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '../services/AuthContext';
@@ -28,6 +27,10 @@ const operationSummary = (pending: PendingOperationWithType[]) => {
     .join(', ');
 };
 
+type PendingFinancialStatusProps = {
+  navigationRevision: number;
+};
+
 /**
  * Privacy-safe durable status for ambiguous financial work.
  *
@@ -36,10 +39,13 @@ const operationSummary = (pending: PendingOperationWithType[]) => {
  * foreground transitions, authenticated-owner changes and authoritative intent
  * closure refresh the owner-scoped SecureStore-backed pending state so a form can
  * be closed without making an unresolved financial action disappear from the UI.
+ *
+ * Route changes are signalled by NavigationContainer at the application root.
+ * This component is intentionally a sibling of Stack.Navigator so it survives
+ * screen unmounts, and therefore must not call navigator-scoped hooks directly.
  */
-export default function PendingFinancialStatus() {
+export default function PendingFinancialStatus({ navigationRevision }: PendingFinancialStatusProps) {
   const { session } = useAuth();
-  const navigationIndex = useNavigationState((state) => state.index);
   const ownerId = session?.user.id ?? null;
   const ownerRef = useRef<string | null>(ownerId);
   const requestSequence = useRef(0);
@@ -82,7 +88,7 @@ export default function PendingFinancialStatus() {
 
   useEffect(() => {
     void refresh();
-  }, [ownerId, navigationIndex, refresh]);
+  }, [ownerId, navigationRevision, refresh]);
 
   useEffect(() => subscribeFinancialIntentClosed(() => {
     void refresh();

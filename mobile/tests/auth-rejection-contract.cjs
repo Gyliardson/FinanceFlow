@@ -8,6 +8,8 @@ const secureStore = require(path.join(compiledRoot, 'node_modules', 'expo-secure
 const auth = require(path.join(compiledRoot, 'authSession.js'));
 const cache = require(path.join(compiledRoot, 'userCache.js'));
 const failures = require(path.join(compiledRoot, 'apiFailure.js'));
+const apiModule = require(path.join(compiledRoot, 'api.js'));
+const api = apiModule.default;
 
 const SECURE_SESSION_MANIFEST_KEY = 'financeflow.auth-session.v3.manifest';
 const SECURE_SESSION_PREFIX = 'financeflow.auth-session.v3';
@@ -53,6 +55,7 @@ async function reset() {
   global.fetch = undefined;
   process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://example.supabase.test';
   process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'publishable-test-key';
+  apiModule.configureApiAuthSessionSnapshotProvider(null, null, null);
   await auth.initializeAuthSession();
 }
 
@@ -132,11 +135,60 @@ async function testStaleRejectedSnapshotCannotClearNewerSameOwnerLogin() {
   );
 }
 
+async function testAxios401InvalidatesPersistedSessionThroughConfiguredHandler() {
+  await reset();
+  await installSession(makeSession('user-a'));
+  await cache.setUserCache('user-a', 'bills', [{ id: 'stale-private-bill' }]);
+  const expectedSnapshot = await auth.getValidAuthSessionSnapshot();
+  const rejectedSnapshots = [];
+
+  apiModule.configureApiAuthSessionSnapshotProvider(
+    () => auth.getValidAuthSessionSnapshot(),
+    auth.isAuthSessionSnapshotCurrent,
+    async (snapshot) => {
+      rejectedSnapshots.push(snapshot);
+      await auth.invalidateRejectedAuthSessionSnapshot(snapshot);
+    },
+  );
+
+  const originalAdapter = api.defaults.adapter;
+  api.defaults.adapter = async (config) => {
+    assert.equal(config.headers.get('Authorization'), `Bearer ${expectedSnapshot.accessToken}`);
+    const error = new Error('synthetic protected endpoint 401');
+    error.config = config;
+    error.response = {
+      status: 401,
+      data: { detail: 'Unauthorized' },
+      headers: {},
+      config,
+    };
+    throw error;
+  };
+
+  try {
+    await assert.rejects(
+      api.get('/bills'),
+      /synthetic protected endpoint 401/,
+    );
+  } finally {
+    api.defaults.adapter = originalAdapter;
+    apiModule.configureApiAuthSessionSnapshotProvider(null, null, null);
+  }
+
+  assert.equal(rejectedSnapshots.length, 1);
+  assert.deepEqual(rejectedSnapshots[0], expectedSnapshot);
+  assert.equal(auth.getCurrentAuthSession(), null);
+  assert.equal(await readSecureSession(), null);
+  assert.equal(await secureStore.getItemAsync(LEGACY_SECURE_SESSION_KEY), null);
+  assert.equal(await cache.getUserCache('user-a', 'bills'), null);
+}
+
 async function main() {
   const tests = [
     testFailureClassificationDoesNotMaskAuthoritative4xx,
     testCurrentRejectedSnapshotClearsOnlyItsOwnerAndSession,
     testStaleRejectedSnapshotCannotClearNewerSameOwnerLogin,
+    testAxios401InvalidatesPersistedSessionThroughConfiguredHandler,
   ];
   for (const test of tests) {
     await test();

@@ -108,4 +108,51 @@ assert.doesNotMatch(income, /const localIsoDate =/, 'Device-local date helpers m
 assert.doesNotMatch(income, /toISOString\(\)\.split\(/, 'Income creation must not derive the business date from UTC ISO time');
 assert.doesNotMatch(income, /new Date\(item\.date\)/, 'Stored date-only income values must not be parsed as UTC Date objects');
 
+// Placeholder contrast must remain explicit on the mobile form surfaces. This
+// scans every TSX source instead of pinning line numbers or one screen, so a new
+// TextInput placeholder cannot silently inherit an Android theme color that
+// disappears against the app's white/light input backgrounds.
+const listTsxSources = (directory) => fs.readdirSync(directory, { withFileTypes: true })
+  .flatMap((entry) => {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) return listTsxSources(fullPath);
+    return entry.isFile() && entry.name.endsWith('.tsx') ? [fullPath] : [];
+  });
+
+const relativeLuminance = (hex) => {
+  const channels = hex.slice(1).match(/.{2}/g).map((pair) => parseInt(pair, 16) / 255);
+  const linear = channels.map((channel) => (
+    channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4
+  ));
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+};
+
+const contrastAgainstWhite = (hex) => 1.05 / (relativeLuminance(hex) + 0.05);
+let placeholderFieldCount = 0;
+
+for (const absolutePath of listTsxSources(path.join(root, 'src'))) {
+  const relativePath = path.relative(root, absolutePath);
+  const source = fs.readFileSync(absolutePath, 'utf8');
+  for (const match of source.matchAll(/<TextInput\b[\s\S]*?\/>/g)) {
+    const input = match[0];
+    if (!/\bplaceholder\s*=/.test(input)) continue;
+    placeholderFieldCount += 1;
+    const colorMatch = input.match(/\bplaceholderTextColor\s*=\s*["'](#[0-9a-fA-F]{6})["']/);
+    assert.ok(
+      colorMatch,
+      `${relativePath}: every TextInput with placeholder must declare an explicit six-digit hex placeholderTextColor`,
+    );
+    const color = colorMatch[1].toLowerCase();
+    assert.notEqual(color, '#ffffff', `${relativePath}: white placeholder text is forbidden on light input surfaces`);
+    assert.ok(
+      contrastAgainstWhite(color) >= 2.4,
+      `${relativePath}: placeholderTextColor ${color} is too light for the app's white/light input surfaces`,
+    );
+  }
+}
+
+assert.ok(placeholderFieldCount > 0, 'Placeholder contract must enumerate at least one TextInput field');
+
 console.log('Mobile UX/accessibility contract passed.');
