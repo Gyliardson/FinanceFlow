@@ -1,133 +1,187 @@
-# FinanceFlow Security Model
+# FinanceFlow security model
 
-## Scope
+This document describes the effective security boundaries of the current FinanceFlow application. It focuses on properties enforced by source, database migrations, and deterministic tests; it does not turn external platform settings or a historical hardening snapshot into timeless security claims.
 
-FinanceFlow handles financial records and payment receipts. The portfolio runtime therefore uses a per-user ownership model rather than a shared application secret as the authorization boundary.
+## Trust model
 
-## Identity and authorization
+FinanceFlow assumes all client input, caller-provided identifiers, uploaded files, external-provider output, network outcomes, and third-party integrations can be incomplete, stale, malformed, or adversarial.
 
-- Supabase Auth is the identity authority for end users.
-- Protected requests use `Authorization: Bearer <access-token>`; alternate schemes and malformed bearer values fail closed.
-- The backend validates the access token with Supabase Auth before constructing a user-scoped Data API client.
-- The verified access token is attached to PostgREST so PostgreSQL RLS can evaluate `auth.uid()` for that request.
-- Request-scoped user/client context is bound only for the request lifetime and reset afterward.
-- Financial tables carry an `owner_id` referencing `auth.users(id)`.
-- PostgreSQL Row Level Security is the final data-isolation boundary.
-- Authenticated policies permit access only when `owner_id = auth.uid()`.
-- Anonymous table access is revoked.
-- The backend service-role credential is server-only and must never be exposed through `EXPO_PUBLIC_*`, client bundles, logs, fixtures or screenshots.
-- A publishable Supabase key is not an authorization decision by itself; protected requests must carry an authenticated user session before application data is accessed.
+The main trust boundaries are:
 
-Production starts through the Uvicorn factory `runtime:create_app`. That composition root installs verified Supabase Bearer authentication, permits only explicit browser origins and registers the user-scoped receipt/recurring/OCR routes. `main.py` is retained only as a compatibility entrypoint and delegates directly to `runtime.create_app()`; it contains no independent routes, shared-secret middleware or wildcard CORS configuration. Consequently `uvicorn main:app` cannot reopen the retired `X-API-KEY` authorization surface.
+- Supabase Auth for end-user identity;
+- FastAPI request authentication and composition;
+- user-scoped Supabase Data API/PostgREST access;
+- PostgreSQL RLS and owner-derived database functions;
+- server-only private receipt storage capability;
+- explicit external OCR/AI calls whose output remains untrusted;
+- owner-scoped secure mobile persistence for sensitive local state.
 
-## Mobile session and offline cache
+No single layer is treated as a universal security guarantee.
 
-- The mobile app authenticates with Supabase Auth and supplies its current access token to the API client as a Bearer credential.
-- Access and refresh tokens are persisted in `expo-secure-store`, not in general-purpose AsyncStorage.
-- A structurally valid legacy AsyncStorage session may migrate once into SecureStore. After migration, the plaintext session copy is deleted.
-- SecureStore is authoritative: if secure session state exists but is malformed, startup fails closed instead of reviving an older plaintext session.
-- Refreshes are single-flight. A stale failed refresh is not allowed to clear a newer successful login.
-- Invalid/expired refresh credentials clear the affected user's session and financial cache. A transient Auth/network outage preserves the same authenticated owner's offline cache without authorizing a different identity.
-- Logout completes locally even when the remote Auth service is unavailable and removes the current owner's financial cache and local session.
-- Financial offline values are stored only under `@financeflow:user:<user-id>:bills|settings` and are read/written by screens using the authenticated `session.user.id`.
-- Historical global `@bills_cache` / `@settings_cache` values are accepted only by a one-time owner-tagged migration. Mismatched or untagged legacy values fail closed, and current code never re-creates the global keys.
-- The Expo app config explicitly resolves the SecureStore native plugin, and the mobile auth contract validates restart, migration, expiry, transient outage, token rotation, refresh concurrency, logout and account-switch isolation.
+## Authentication
 
-Raw authentication/API error objects must not be written to client logs because request metadata can contain credentials or financial context. This remains a standing review requirement.
+The mobile client signs in with Supabase Auth and sends the current access token to FinanceFlow API routes as a Bearer credential. FastAPI verifies that access token before constructing the authenticated request context.
 
-## Ownership migration
+Important properties:
 
-Migration `003_user_ownership_rls.sql` introduces the owner columns, restrictive policies and authenticated grants. Existing rows intentionally remain unowned when the migration runs without an end-user session and are therefore inaccessible through user-scoped RLS.
+- missing, malformed, invalid, or expired credentials fail authentication;
+- request identity comes from the verified token rather than a caller-supplied owner field;
+- session refresh/logout/account-switch paths are explicit;
+- the mobile bundle receives only public Supabase configuration, never a service-role key;
+- server-only provider/database/storage credentials remain outside the client.
 
-Existing production/demo rows must be reconciled explicitly before migration `004_enforce_owner_not_null.sql` is applied. Migration 004 fails closed if any bill, income or settings row still has `owner_id IS NULL`; it never guesses ownership or deletes financial records.
+## Ownership and PostgreSQL RLS
 
-Recommended operator procedure:
+Financial tables are owner-scoped. PostgreSQL RLS remains the final cross-user row-isolation boundary for authenticated data access.
 
-1. take a database backup;
-2. inventory all rows with `owner_id IS NULL`;
-3. determine the correct account for each row through an auditable manual process;
-4. update only the reviewed rows using an administrative/server context;
-5. verify that no unowned rows remain;
-6. apply migration 004;
-7. run the ownership/RLS verification gate.
+A caller cannot gain authority merely by supplying another user's `owner_id`, bill id, settings id, receipt path, or other object identifier. Canonical operations either:
 
-Do not automate ownership guessing from descriptions, e-mail addresses, filenames or other financial metadata.
+- read through the authenticated user-scoped Data API context and RLS; or
+- execute sanctioned database functions that derive ownership from `auth.uid()`.
 
-## Payment receipts
+The current authenticated data plane revokes direct table `INSERT`, `UPDATE`, and `DELETE` for the `authenticated` role on canonical financial tables after the sanctioned write surface is established. Owner-scoped reads remain available where required.
 
-The `receipts` bucket is private. Application startup may create it or force an existing bucket back to `public = false`; it must never make the bucket public.
+See [Authenticated data plane](../docs/security/AUTHENTICATED_DATA_PLANE.md).
 
-Migration `005_private_receipt_paths.sql` adds `receipt_path`. The durable database value for new private receipts is the object path, not a public or expiring URL. Existing `receipt_url` values are preserved for explicit reconciliation; no migration silently deletes historical payment evidence.
+## SECURITY DEFINER functions
 
-New receipt object keys use the canonical namespace `<owner_uuid>/<bill_uuid>/<opaque_filename>`. Server helpers reject paths outside that exact owner/bill namespace before the service-role storage client may create temporary access.
+The effective database write surface includes narrowly scoped `SECURITY DEFINER` functions. This is a privilege mechanism, not a claim that a function is safe simply because it uses that keyword.
 
-Signed receipt URLs are bounded to a maximum of 15 minutes, with a default lifetime of 5 minutes. They are transient response material only and must never be persisted or logged.
+The reviewed boundary depends on the combination of:
 
-The production payment route and reusable payment service enforce these invariants:
+- owner derivation from `auth.uid()`;
+- rejection of an absent authenticated owner;
+- no caller-supplied `owner_id` on the sanctioned functions;
+- fixed safe `search_path`;
+- restricted execute grants;
+- bounded operation-specific parameters;
+- database constraints and transactional behavior;
+- deterministic positive/negative PostgreSQL tests.
 
-- bill lookup and the final payment update use the authenticated RLS-scoped Data API client supplied by the request layer;
-- receipt bytes are signature-validated and size-bounded before storage;
-- file extension and content type come from validated bytes, never the client filename;
-- the final database write is compare-and-set on `status != paid`, so a concurrent second submit cannot silently overwrite the first payment;
-- a zero-row compare-and-set is treated as an authorization/race failure;
-- if upload succeeds but payment persistence fails, the uploaded object is removed on a best-effort basis so partial failures do not leave unnecessary financial documents behind;
-- storage/provider exception details are not propagated as public domain errors;
-- the payment response does not expose the durable storage path or a public URL.
+Migration `007_authenticated_data_plane.sql` also converts the four durable financial-idempotency functions introduced by migration 006 from their original `SECURITY INVOKER` form to the effective `SECURITY DEFINER` form needed after direct authenticated table DML is revoked.
 
-Private receipt access is split from privileged storage: the user-scoped Data API client must first return the bill and its `receipt_path`; only then may the server-only storage helper create a bounded signed URL. An RLS-filtered cross-user identifier is therefore handled like a missing receipt and never reaches privileged storage.
+## Service-role boundary
 
-The completed access flow is:
+`SUPABASE_SERVICE_ROLE_KEY` is server-only. It must never be exposed in the React Native/Expo bundle or any `EXPO_PUBLIC_*` value.
 
-1. authorize the caller against the bill owner through the user-scoped/RLS client;
-2. upload under an owner-scoped, server-generated object path;
-3. persist only that object path;
-4. generate bounded private access on demand after authorization;
-5. never log temporary access URLs or raw financial-document content.
+Normal financial Data API operations intentionally use authenticated end-user context so RLS remains active. Service-role capability is isolated to server-side operations that actually require elevated platform authority, principally private storage operations; it is not a shortcut around the user-scoped financial authorization model.
 
-## Recurring work
+## Financial correctness as a security boundary
 
-Recurring generation in the production composition does not rely on a request `ContextVar` surviving after the response. Both recurring creation and explicit generation receive the already authenticated Data API client and execute within the request lifetime. PostgreSQL uniqueness remains the final idempotency authority for generated instances.
+FinanceFlow treats several correctness properties as security-relevant because violating them can create unauthorized or duplicated financial effects:
 
-## Failure behavior
+- exact decimal money;
+- owner-derived writes;
+- financial DATE-only semantics in `America/Sao_Paulo`;
+- durable mutation idempotency;
+- original-payload replay for ambiguous mobile intents;
+- database-owned payment date;
+- recurring-instance uniqueness under retry/concurrency.
 
-Security-sensitive operations fail closed:
+Pending financial mutation records are not a general offline write queue. They retain the identity of an already-submitted ambiguous operation so the client can replay the same key and original payload rather than manufacture a second effect.
 
-- missing/invalid/expired bearer tokens are rejected without leaking provider errors;
-- invalid authentication responses never construct a Data API client;
-- missing storage service-role configuration prevents private storage initialization;
-- unexpected bucket-management failures abort startup instead of silently weakening privacy;
-- unowned historical rows prevent NOT NULL promotion;
-- RLS rejects cross-user reads/writes even if a resource identifier is guessed;
-- receipt paths outside the authenticated owner/bill namespace are rejected before signed access is created;
-- receipt MIME spoofing, empty files, unknown formats and oversized uploads are rejected before storage;
-- a payment database failure after upload triggers best-effort orphan cleanup;
-- a concurrent/zero-row payment update fails closed instead of claiming success;
-- production HTTP exceptions with status 5xx are sanitized so provider/database details are not returned to clients;
-- authorization failures never fall back to a static application API key;
-- a legacy cache/session owner mismatch must not be attributed to the currently authenticated user.
+See [FINANCIAL_RULES.md](FINANCIAL_RULES.md) and [Logical intent identity](../docs/architecture/LOGICAL_INTENT_IDENTITY.md).
 
-## CI evidence
+## Receipt upload boundary
 
-The CI security track is expected to prove, with disposable PostgreSQL where applicable:
+Receipt documents are untrusted uploads.
 
-- bearer parsing rejects missing and malformed credentials;
-- invalid/expired auth never reaches the user-scoped data client;
-- authenticated request context is reset after every request;
-- User A cannot read or mutate User B rows;
-- forged `owner_id` inserts are rejected;
-- anonymous financial-table access is rejected;
-- historical unowned rows make migration 004 fail without deletion;
-- explicit backfill allows migration 004 to complete;
-- production composition rejects legacy API-key auth and wildcard CORS;
-- the compatibility `main:app` entrypoint resolves to that same secured composition rather than a second application;
-- security-sensitive receipt and recurring routes are registered exactly once;
-- private receipt keys are owner/bill scoped and signed URL lifetimes are bounded;
-- receipt payment tests cover MIME spoofing, already-paid state, storage failure, database failure, orphan cleanup and compare-and-set double-submit behavior;
-- private receipt access tests prove an unauthorized/missing bill never invokes privileged storage;
-- recurring tests prove the authenticated client is passed explicitly instead of being recovered after a background handoff;
-- internal HTTP 5xx details are sanitized while client/domain 4xx details remain usable;
-- mobile auth/cache tests prove encrypted session migration, fail-closed corrupt state, offline restart isolation, invalid refresh cleanup, refresh single-flight, stale-refresh/new-login race safety, logout and account-switch isolation;
-- current screens do not re-create legacy global financial cache keys;
-- backend tests, dependency evidence and secret scanning remain green.
+Before persistence, the backend applies bounded upload validation and verifies actual supported content signatures rather than trusting filename extensions or declared MIME type alone. Object identity is generated by the server under an owner/bill-scoped private path.
 
-This document describes the enforced model. Any future route/entrypoint change must preserve a single canonical Bearer/RLS-secured application surface and re-run the exact-head security/runtime gates before integration.
+The mobile client does not receive permanent public receipt URLs. Authorized reads first resolve an owner-scoped bill/receipt association and then issue bounded signed access to the private object.
+
+## Receipt-backed payment reconciliation
+
+A payment with a receipt crosses two durable systems: private object storage and PostgreSQL financial state. A transport exception after the object upload and payment request begins does **not** prove that the payment failed before commit.
+
+The current implementation is reconciliation-first:
+
+1. upload the validated receipt to its owner/bill-scoped private path;
+2. invoke the sanctioned `finance_mark_bill_paid` transition;
+3. if transport/RPC response is missing, malformed, or raises an exception, re-read the authoritative bill through the authenticated RLS-scoped data client;
+4. if the bill is durably paid with the attempted receipt path, retain that object and return/converge to the committed payment;
+5. if authoritative state shows another completed payment owns a different receipt, delete only the losing attempted upload;
+6. if authoritative state proves the bill remains unpaid and the attempted object is unreferenced, delete that orphan;
+7. if reconciliation cannot be completed, retain the object fail-safe and surface an ambiguous persistence error for later reconciliation.
+
+Therefore, “persistence failed” is not an instruction to immediately delete the uploaded receipt. Cleanup requires authoritative evidence that the attempted object is not referenced by the durable financial state.
+
+This is specifically covered by commit-then-response-loss and failed-reconciliation tests. Preserving a bounded possible orphan is preferable to deleting evidence that an already-committed payment still references.
+
+## Storage-upload failure before payment transition
+
+Storage upload itself is a separate boundary. If the receipt cannot be persisted before the payment RPC starts, the financial transition has not begun. The implementation attempts to remove the exact generated object path in case storage committed but its response was lost, then raises a storage error. This case must not be conflated with a transport exception after the financial RPC has started.
+
+## Receipt authorization
+
+Receipt access is derived from authenticated financial state:
+
+- lookup occurs in the authenticated owner scope;
+- the stored object key is validated against the expected owner/bill namespace;
+- only then is a short-lived signed URL produced;
+- the private bucket itself is not made public.
+
+A guessed object path or bill id is not sufficient authority.
+
+## OCR / AI boundary
+
+External OCR/AI systems are untrusted providers, not authorization or accounting authorities.
+
+- Provider invocation is explicit for supported OCR/insight operations.
+- Passive insight reads do not invoke the provider.
+- Uploaded content is validated locally before provider use.
+- Structured provider output is validated locally before fields are accepted.
+- Low-confidence/unreadable OCR requires review instead of silent automatic financial persistence.
+- Critical CI does not require a live external-provider call.
+
+See [OCR_SECURITY.md](OCR_SECURITY.md) and [AI privacy](../docs/security/AI_PRIVACY.md).
+
+## Mobile local-state privacy
+
+Sensitive local state is owner-scoped.
+
+- Supabase session material uses secure platform storage through the supported mobile auth boundary.
+- Supported offline financial read cache is owner-scoped and treated as replaceable read resilience.
+- Ambiguous financial intent records use owner-scoped SecureStore persistence and preserve the original key/payload required for safe replay.
+- Account switches/logout do not allow one owner to select another owner's cache or pending mutation.
+- Private pending payloads and replay identifiers are not rendered in the global unresolved-operation status.
+
+Corrupt ordinary read cache can be discarded/refetched. Corrupt ambiguous mutation evidence is stricter: it may correspond to a financial effect whose response was lost, so the client fails closed instead of treating unreadable pending state as “nothing pending.”
+
+See [Offline resilience](../docs/architecture/OFFLINE_RESILIENCE.md).
+
+## Experimental integrations
+
+DASMEI, TIM, Unopar, IMAP/PDF, and related scheduler paths are experimental/opt-in boundaries. They do not receive authority to bypass human-verification/access-control systems and do not independently persist authoritative financial records through a hidden production path.
+
+External sites and message formats remain mutable/untrusted. CAPTCHA, human verification, unexpected authentication state, or incompatible response shape must fail closed rather than trigger evasion behavior.
+
+## Secrets and configuration
+
+Repository configuration separates public client configuration from server secrets.
+
+Public-by-design mobile values include the allowed `EXPO_PUBLIC_*` endpoint/publishable-key configuration. Server-only values include service-role, database, deployment, and external-provider credentials.
+
+The repository uses full-history Gitleaks evidence for secret detection, but a green scan does not prove operator-side secret rotation, remote platform permissions, or environment protection. Those remain external controls.
+
+See [Deployment](../docs/operations/DEPLOYMENT.md) and [Secret scan gate](../docs/assurance/SECRET_SCAN_GATE.md).
+
+## Supply-chain / CI boundary
+
+Repository workflows, Dockerfile inventory, pinned tooling, and the independent FinanceFlow Trust Verifier are assurance mechanisms. They reduce specific supply-chain risks but are not claims of complete security.
+
+The external verifier rereads the exact candidate tree and evaluates its independently held `financeflow-trust-policy/v2`. A documentation change should not require a verifier rebaseline unless it actually changes a policy-bound object; accidental bound-blob/workflow/Dockerfile changes should be removed from the candidate instead.
+
+See [Governance](../docs/assurance/GOVERNANCE.md) and [Quality evidence](../docs/assurance/QUALITY_EVIDENCE.md).
+
+## What repository evidence does not prove
+
+A green candidate does not by itself prove:
+
+- current production Supabase/Render/EAS credentials or remote settings;
+- organization/account-level GitHub security configuration;
+- physical-device behavior that was not exercised;
+- continued compatibility of experimental third-party portals;
+- absence of every vulnerability in upstream immutable dependencies.
+
+Those boundaries should be re-observed when a release/review decision depends on them rather than represented by stale documentation snapshots.

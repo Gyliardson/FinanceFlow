@@ -1,92 +1,152 @@
-# FinanceFlow Mobile
+# FinanceFlow mobile
 
-FinanceFlow Mobile is an Expo-managed React Native application.
+React Native / Expo client for FinanceFlow personal-finance workflows.
 
-## Supported baseline
+## Current baseline
 
-The portfolio revamp currently targets:
+The mobile application currently targets:
 
-- Expo SDK 57 (`expo ~57.0.12`)
-- React Native `0.86.2`
-- React `19.2.3`
-- TypeScript `~6.0.3`
-- Node.js `22.13.x` or newer within the Expo SDK 57 supported range
+- Expo `~57.0.14`;
+- React Native `0.86.x` as resolved by the current Expo SDK 57 dependency graph;
+- Node.js 22.13+ for the repository's current clean-install/CI toolchain.
 
-Keep Expo-managed native packages aligned with the SDK. Do not upgrade React Native independently from Expo or use `npm audit fix --force` to force an incompatible dependency graph.
+`mobile/package.json` is the source-controlled package baseline. This document does not authorize dependency upgrades; version changes belong in their own reviewed scope.
 
-## Install and validate
+## Install and static health
 
-Use the committed lockfile for reproducible installs:
+From `mobile/`:
 
 ```bash
 npm ci
 npx tsc --noEmit
-npx expo-doctor
-npx expo config --type public
-npx expo export --platform web --output-dir dist-ci
+npx --yes expo-doctor@1.20.2
 ```
 
-The same checks run in GitHub Actions through the `Mobile Expo health` workflow. A clean lockfile install and Expo Doctor are required before treating a dependency migration as valid.
+Repository CI also exercises the release-environment contract and an Expo web-export smoke where defined.
 
-## Authentication and pending financial mutations
+## Android physical-device development
 
-Authentication credentials and unresolved financial-mutation state are private device state.
+Expo SDK 57 physical-device development uses the project's **Development Build + Metro** workflow. A bare `npx expo start` command is not the complete supported device setup path.
 
-- Session tokens are stored with `expo-secure-store`.
-- A financial mutation is prepared from one coherent authenticated-session snapshot containing the access token, authenticated owner id and a local session generation. If the session changes before transport preparation completes, the request fails closed instead of combining one user's namespace with another user's token.
-- For bill creation, income creation, reserve addition and recurring-template creation, the first submission persists an owner-scoped pending record **before transport**. That record owns the `Idempotency-Key` and the complete original request payload.
-- Ambiguous outcomes such as network loss, timeout and retryable server errors retain the pending record. A reconnect, manual retry or app/module restart reuses the same key and replays the original payload rather than silently rebuilding derived fields from the current clock/UI state.
-- Income date is a derived first-submission field for local intent matching. Crossing local midnight while an income outcome is unresolved does not manufacture a second operation; the original date and key are replayed.
-- Pending-store read/modify/write operations are serialized per owner + operation so different simultaneous intents cannot overwrite one another.
-- Pending financial records are stored owner-scoped in `SecureStore`; the historical AsyncStorage format is migrated one way and removed. Do not log full pending payloads or move them back to unencrypted AsyncStorage.
-- Normal logout intentionally retains an ambiguous pending record encrypted under its original owner namespace so that owner can reconcile it later. Another account cannot select or reuse that key/payload. A dedicated purge helper exists for an explicit destructive lifecycle decision.
-- Confirmed success or definitive non-retryable 4xx rejection closes the pending identity. A later explicit user action is a new intent and receives a new key.
+Use the canonical runbook:
 
-The PostgreSQL/RLS layer remains the authority for owner isolation and durable replay. Mobile persistence does not replace the database idempotency ledger; it preserves the logical identity needed to use that ledger correctly across uncertain transport outcomes.
+[Android local development](../docs/operations/MOBILE_LOCAL_ANDROID.md)
 
-## Financial date-only semantics
+That document covers development-client installation, public environment configuration, Metro startup, network/device considerations, and the evidence boundary between a repository build check and a real physical-device smoke.
 
-FinanceFlow distinguishes a **financial calendar date** from a timestamp/instant.
+## Authentication
 
-- The product financial timezone is the IANA zone `America/Sao_Paulo`.
-- `src/services/financialDate.ts` is the canonical mobile boundary for deriving the current financial `YYYY-MM-DD` from an instant.
-- Initial-balance defaults, income dates, dashboard month selection, due-date distance/status and bill-history status use that financial calendar rather than the device timezone or UTC day.
-- A UTC instant may already be on the next calendar day while São Paulo is still on the previous financial day. For example, `2026-08-15T01:30:00Z` is `2026-08-14 22:30` in São Paulo and therefore has financial date `2026-08-14`.
-- Never derive financial date-only values with `new Date().toISOString().split('T')[0]`, `toISOString().slice(0, 10)`, UTC getters, or equivalent UTC slicing.
-- Do not hard-code a `-03:00` offset. `Intl`/IANA timezone rules are the authority so historical DST/offset changes remain correct even though São Paulo currently has no DST.
-- User-selected due dates are already calendar values. Serialize their chosen year/month/day directly; do not convert them through a UTC timestamp just to obtain `YYYY-MM-DD`.
-- `YYYY-MM-DD` rendering, comparison and day-distance should use date-only helpers instead of parsing the string as a JavaScript instant.
-- `toISOString()` remains valid for a **real UTC timestamp** when the domain requires an instant. The prohibition applies to financial DATE-only derivation, not timestamp serialization generally.
-- Notification triggers are scheduling instants built from an already-authoritative due-date calendar value; they are not persisted as the financial date authority.
+The client uses Supabase Auth and persists the supported session through the mobile secure-storage boundary. FinanceFlow API requests use the current Bearer access token; the backend verifies it before constructing user-scoped data access.
 
-The Mobile auth contract includes deterministic financial-date tests for the UTC-next-day window, local midnight, month/year rollovers, IANA historical offset behavior and a static guard against reintroducing UTC slicing in financial screens. Backend tests separately prove that shifting `initial_balance_date` from D to D+1 changes which same-day incomes/payments enter authoritative balance calculation.
+Important properties include:
 
-## Notification privacy
+- session restore/refresh is explicit;
+- logout/account-switch isolation prevents one owner's local financial state from being selected by another owner;
+- mutation preparation binds owner + token + session generation coherently;
+- server-only credentials such as `SUPABASE_SERVICE_ROLE_KEY` never belong in the mobile bundle;
+- all `EXPO_PUBLIC_*` values are public by design and must contain only client-safe configuration.
 
-Local notification previews are treated as an unauthenticated display surface because the operating system may show them while the device is locked.
+See the root [README](../README.md) and [Security model](../backend/SECURITY_MODEL.md).
 
-- Default notification titles and bodies are deliberately generic and do not include bill names, amounts, barcodes, account identifiers, receipt details or other financial payloads.
-- The opaque bill ID remains only in `notification.content.data` so FinanceFlow can identify and cancel reminders for the matching bill. It is not rendered in title/body preview text.
-- Opening the authenticated application is the boundary for viewing the bill's financial details.
-- Reminder copy is concise and neutral; notifications should prompt review without coercive or alarming language.
-- The mobile UX contract statically rejects bill-name interpolation and previously aggressive reminder phrases in `NotificationService.ts`.
+## Financial dates
 
-This policy minimizes incidental lock-screen disclosure without relying on a particular Android/iOS preview configuration. Users may apply stricter operating-system notification settings independently.
+The mobile client uses `America/Sao_Paulo` for financial DATE-only semantics. Business dates such as income dates and locally prepared financial “today” values must come from the canonical timezone-aware date helper rather than `Date.toISOString().slice(0, 10)` or equivalent UTC slicing.
 
-## Native/runtime notes
+This distinction is covered by deterministic tests around local midnight, UTC day rollover, month/year boundaries, and historical IANA timezone behavior.
 
-- `react-native-gesture-handler` is imported before application bootstrap because the navigation stack depends on its native initialization.
-- Session tokens are stored through `expo-secure-store`; do not replace this with plain AsyncStorage for authentication credentials.
-- `expo-notifications` uses explicit date trigger types and the Android `bills` channel. Validate scheduling/cancellation after SDK upgrades.
-- `expo-updates`, `runtimeVersion`, EAS project metadata, and build/update channels are configured in `app.json` / `eas.json`; changes to them require build/update validation rather than TypeScript-only evidence.
-- The Expo 57 native migration bumps the app version to `1.1.0`. Because `runtimeVersion.policy` is `appVersion`, this creates a new OTA runtime boundary and prevents Expo 57 updates from targeting older Expo 54 binaries.
-- The production EAS Update workflow uses Node 22.13 and only injects public runtime configuration. Server/service-role/provider secrets must not be reintroduced into the client bundle.
-- Legacy icon/splash declarations that pointed at files with mismatched image content were removed during the SDK 57 migration. New production artwork should only be reintroduced with correctly encoded assets and Expo config validation.
+## Financial mutation identity
 
-## Dependency security
+Four non-convergent financial actions use the explicit logical-intent boundary:
 
-`npm audit` evidence is captured by CI. The SDK 57 migration removed all critical findings from the previous Expo 54 graph. Residual advisories must be reviewed against the resolved Expo/Metro dependency tree; fixes that require an incompatible Expo/React Native downgrade are documented rather than forced or silently suppressed.
+- ordinary bill creation;
+- income creation;
+- reserve addition;
+- recurring-template creation.
 
-## Environment
+For an explicit intent, the mobile layer persists the `Idempotency-Key` plus the complete original first-submission payload before transport. If the result becomes ambiguous because of timeout, network loss, response loss, or session interruption, retry/reconnect/restart uses the **same key and same original payload**.
 
-Create `mobile/.env` from `.env.example`. Public Expo variables are client-visible by design. Never place Supabase service-role credentials, backend secrets, or provider secrets in `EXPO_PUBLIC_*` variables.
+A new explicit action receives a new local intent and a new key even when its business payload matches an unresolved older action. Payload equality does not define intent identity.
+
+Pending financial state is **not** a general offline write queue. New financial mutations remain online-only. Pending records exist only to reconcile already-submitted operations whose server outcome may be unknown.
+
+Detailed contract: [Logical intent identity](../docs/architecture/LOGICAL_INTENT_IDENTITY.md).
+
+## Pending-state privacy and corruption behavior
+
+Unresolved financial intent records are owner-scoped in SecureStore. The authenticated UI can surface category/count status, but does not expose amounts, titles, original payloads, idempotency keys, or local intent IDs in the global unresolved-operation indicator.
+
+A normal read cache is replaceable and may be discarded/refetched when corrupt. Ambiguous mutation evidence is different: unreadable pending state may correspond to a committed financial effect whose response was lost. The client therefore fails closed for that owner/operation instead of interpreting corrupt pending state as empty.
+
+Logout or closing the originating form does not prove an ambiguous server effect was cancelled and does not silently erase the durable replay identity.
+
+## Offline read resilience
+
+FinanceFlow supports owner-scoped offline **reads** for selected financial data through encrypted/local cache envelopes with freshness and corruption handling.
+
+Offline behavior intentionally does not create new financial writes while connectivity/auth is unavailable. A pending record may survive offline only because that operation was already submitted before its outcome became ambiguous.
+
+See [Offline resilience](../docs/architecture/OFFLINE_RESILIENCE.md).
+
+## Bills and recurring obligations
+
+The mobile client distinguishes recurring templates from concrete payable child bills.
+
+- An ordinary bill can be created as a financial mutation.
+- A recurring template represents monthly scheduling metadata.
+- Generated recurring children are the payable instances.
+- Templates are not directly markable as paid.
+- Recurrence behavior, including short-month clamping, is ultimately protected by backend/database contracts.
+
+## Payments and receipts
+
+Payment flows can complete with or without a receipt. Receipt-backed payments upload a validated document through the backend; the mobile client does not receive service-role storage authority.
+
+Receipt objects remain private and are accessed through authorized bounded signed URLs. If the backend reports an ambiguous persistence outcome, the client must not infer that the uploaded evidence was rolled back; the backend reconciles against authoritative owner-scoped state before cleanup.
+
+See [Security model](../backend/SECURITY_MODEL.md).
+
+## Reserve / emergency fund
+
+The current product supports reserve **addition** and emergency-fund goal tracking. It does not expose a supported reserve withdrawal/decrement endpoint. Mobile presentation and documentation must preserve that boundary.
+
+## OCR and financial insights
+
+OCR-assisted extraction is advisory input, not authoritative financial truth. Upload validation and provider-output validation occur on the backend, and low-confidence/unreadable results require review.
+
+Financial insight reads are passive. External AI/provider invocation occurs only on explicit supported refresh/generation operations rather than every dashboard read.
+
+See [OCR security](../backend/OCR_SECURITY.md) and [AI privacy](../docs/security/AI_PRIVACY.md).
+
+## Local notifications
+
+Due-date reminders are local-device behavior and are intentionally privacy-conscious. Notification bodies should not expose unnecessary sensitive financial details on a locked screen.
+
+See [NOTIFICATIONS.md](NOTIFICATIONS.md).
+
+## Release configuration
+
+The mobile runtime requires the public configuration contract documented in `.env.example` and EAS configuration:
+
+- `EXPO_PUBLIC_API_URL`;
+- `EXPO_PUBLIC_SUPABASE_URL`;
+- `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+
+These are public bundle values. Never place service-role, database, deployment, or external-provider secrets in them.
+
+Production EAS values, signing credentials, store accounts, and `EXPO_TOKEN` are operator-managed external state. Repository CI can validate configuration shape and build/static contracts without claiming those external credentials are provisioned.
+
+See [Deployment](../docs/operations/DEPLOYMENT.md).
+
+## Quality contracts
+
+The mobile-specific source-defined gates include:
+
+- `Mobile auth contract` / `Auth session, cache and mutation identity`;
+- `Mobile UX contract` / `UX state and accessibility contract`;
+- `Mobile Expo health` / `Expo Doctor and build smoke`.
+
+These checks cover deterministic source/runtime contracts. They do not replace native visual inspection, signed-store build evidence, or physical-device smoke when those are required by a runtime-changing release.
+
+The hardening branch `portfolio/revamp-2026` is historical: its work is already integrated into `main`. Some workflow definitions still contain historical branch triggers; those triggers remain source-defined compatibility until changed in a separate workflow scope and should not be treated as the forward development model.
+
+For repository-wide evidence, see [Quality evidence](../docs/assurance/QUALITY_EVIDENCE.md) and [Governance](../docs/assurance/GOVERNANCE.md).
