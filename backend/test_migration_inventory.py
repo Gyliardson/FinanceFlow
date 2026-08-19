@@ -41,9 +41,12 @@ def test_migration_helper_is_successful_inventory_only(capsys):
 
 
 def test_clean_room_documents_current_financial_migration_boundary():
-    clean_room = (Path(__file__).resolve().parents[1] / "docs" / "CLEAN_ROOM.md").read_text(
-        encoding="utf-8"
-    )
+    clean_room = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "operations"
+        / "CLEAN_ROOM.md"
+    ).read_text(encoding="utf-8")
 
     latest = EXPECTED_MIGRATIONS[-1]
     assert "backend/migrations/001_...` through `010_..." in clean_room

@@ -1,210 +1,196 @@
-# FinanceFlow Financial Domain Rules
+# FinanceFlow financial rules
 
-This document defines the backend invariants for monetary values, financial mutation identity, payments and recurring bills. Tests and database/application concurrency guards must prove these rules before the portfolio revamp can claim financial correctness.
+This document records the financial invariants implemented by the current FinanceFlow backend and database. It describes the effective post-migration behavior on `main`; historical hardening branches are not a future promotion target.
 
 ## Money representation
 
-- PostgreSQL `NUMERIC`/`DECIMAL` remains the persistence authority for monetary columns.
-- Authoritative Python arithmetic uses `decimal.Decimal`, never binary `float`.
-- The canonical currency scale is **2 decimal places**.
-- Values are normalized with **`ROUND_HALF_UP`** at the explicit currency boundary.
-- API monetary inputs are normalized before product bounds are evaluated. For a positive-money field, a sub-cent input such as `0.004` becomes `0.00` and is rejected rather than being persisted as a zero-valued transaction.
-- Persistence payloads use canonical fixed-scale decimal strings such as `"10.00"` so JSON serialization cannot introduce binary floating-point drift before PostgreSQL receives the value.
-- Non-finite values (`NaN`, `Infinity`, `-Infinity`) are invalid.
-- Existing API product bounds remain in force unless a separate domain decision changes them.
+Authoritative monetary values use decimal semantics end to end.
 
-### Rounding examples
+- API/domain parsing uses `Decimal` rather than binary floating point for financial arithmetic.
+- PostgreSQL stores financial values as exact `NUMERIC` values.
+- Supported money is normalized to two decimal places using the repository's explicit rounding rules.
+- Invalid, non-finite, out-of-range, or unexpectedly precise values are rejected rather than silently converted.
+- Financial totals are computed from authoritative persisted data instead of trusting client-provided subtotals.
 
-| Input | Canonical value |
-| --- | --- |
-| `0.1 + 0.2` supplied as separate values | `0.30` |
-| `10` | `10.00` |
-| `1.004` | `1.00` |
-| `1.005` | `1.01` |
-| `-1.005` | `-1.01` |
+The current API boundary caps supported absolute monetary magnitude at the repository-defined ±1,000,000 range where negative values are meaningful; non-negative-only fields such as reserve goals/additions enforce the narrower domain appropriate to the operation.
 
-Rounding happens at defined boundaries, not repeatedly during intermediate arithmetic.
+## Financial DATE-only semantics
 
-## Financial calendar and timezone
+FinanceFlow distinguishes business-calendar dates from timestamps. The canonical financial timezone is the IANA zone:
 
-A financial **date-only** value is a business-calendar date, not a UTC timestamp truncated to ten characters.
+`America/Sao_Paulo`
 
-- The authoritative product timezone is the IANA zone in `FINANCIAL_TIMEZONE`; the portfolio baseline is `America/Sao_Paulo`.
-- Backend payment dates, recurring targets, month-end balance horizons and monthly insight cache dates derive from `financial_today()`.
-- Mobile derives the current financial `YYYY-MM-DD` through the canonical `mobile/src/services/financialDate.ts` boundary using `Intl.DateTimeFormat` with `America/Sao_Paulo`.
-- The mobile helper must use IANA timezone rules, not a hard-coded `-03:00` offset. São Paulo currently has no DST, but historical/future offset rules remain the timezone database's concern.
-- An instant can be on the next UTC date while still belonging to the prior São Paulo financial date. `2026-08-15T01:30:00Z`, for example, is `2026-08-14 22:30` in São Paulo and therefore has financial date `2026-08-14`.
-- Financial date-only values must **not** be derived with `new Date().toISOString().split('T')[0]`, `toISOString().slice(0, 10)`, UTC getters or equivalent UTC slicing.
-- `toISOString()` remains valid for a real UTC timestamp when the domain requires an instant; the prohibition is specific to financial DATE-only derivation.
-- User-selected dates such as a bill due date are calendar values. Serialize the selected year/month/day directly instead of converting the selection through UTC merely to obtain `YYYY-MM-DD`.
-- `YYYY-MM-DD` display, month filtering, ordering and day-distance should operate as date-only calendar data rather than parsing the string as an instant whose interpretation depends on device timezone.
-- Explicit datetime values used by backend tests must be timezone-aware; naive datetimes are rejected rather than interpreted from the runner locale.
-- Changing the product/business timezone is an explicit domain change and requires mobile/backend boundary tests around local midnight, month/year rollover and relevant IANA offset rules.
+Financial `YYYY-MM-DD` values must be derived with timezone-aware calendar logic. UTC timestamp slicing is not a valid replacement because UTC midnight can fall on a different financial business date.
 
-The `initial_balance_date` setting is financially material. `_calculate_financials` uses it as an inclusive lower bound for `finance_incomes.date` and paid-bill `payment_date`. Shifting that boundary from D to D+1 can remove same-day income/payment records from authoritative balances, so a UTC date drift is a correctness defect rather than a presentation issue.
+This boundary applies to user-facing financial dates such as:
 
-## Authoritative balance calculation
+- income dates;
+- bill due dates;
+- payment dates;
+- initial-balance dates;
+- recurring-generation comparisons.
 
-For a configured start date:
+The payment transition derives its authoritative payment date inside PostgreSQL from private runtime configuration; a client does not get to forge that date through the payment RPC.
 
-`current_balance = initial_balance + incomes - paid_bills - emergency_fund_balance`
+## Ownership and authenticated write boundary
 
-`estimated_surplus = current_balance - pending_or_overdue_bills_due_through_month_end`
+Financial rows are owner-scoped. Supabase Auth establishes end-user identity, FastAPI verifies the Bearer access token, and normal Data API access stays bound to that user's context so PostgreSQL RLS remains the final cross-owner isolation boundary.
 
-Every operand and intermediate total remains `Decimal` until presentation/serialization. Tests include zero, negative balances, cent values, mixed input representations, large allowed values, and rounding boundaries.
+The effective write model is intentionally narrower than “RLS plus arbitrary self-owned DML”:
 
-## Durable online mutation idempotency
+- the `authenticated` role retains owner-scoped reads;
+- direct authenticated `INSERT`, `UPDATE`, and `DELETE` on the canonical financial tables are revoked;
+- sanctioned owner-derived RPCs perform supported writes;
+- those RPCs derive owner identity from `auth.uid()` rather than a caller-supplied `owner_id`;
+- PUBLIC/anonymous execution is revoked where the migrations define the authenticated financial surface.
 
-The following **non-convergent financial POST mutations** use the durable `Idempotency-Key` protocol:
+See [SECURITY_MODEL.md](SECURITY_MODEL.md) and [Authenticated data plane](../docs/security/AUTHENTICATED_DATA_PLANE.md).
 
-1. reserve addition (`POST /insights/reserve`);
-2. ordinary bill creation (`POST /add-bill`);
-3. income creation (`POST /incomes`);
-4. recurring-template creation (`POST /recurring-bills`).
+## Durable financial idempotency
 
-The durable server identity is:
+Four non-convergent financial operations use a durable PostgreSQL `Idempotency-Key` protocol:
 
-`authenticated owner + operation type + Idempotency-Key`
+1. ordinary bill creation — `finance_idempotent_add_bill`;
+2. income creation — `finance_idempotent_add_income`;
+3. reserve addition — `finance_idempotent_add_reserve`;
+4. recurring-template creation — `finance_idempotent_create_recurring_template`.
 
-The product currently exposes reserve **addition only**. There is no reserve-withdrawal/decrement endpoint. A future decrement mutation must adopt this same durable boundary before it is exposed; it is not silently treated as supported today.
+The identity is scoped by authenticated owner + operation + idempotency key. PostgreSQL derives the canonical payload fingerprint and stores the claim/effect/replay result in one transactional boundary. Replaying the same key with the same payload converges to the durable result; reusing the same key for a different payload is a conflict rather than a second financial effect.
 
-### Database-owned payload fingerprint
+### Effective SECURITY DEFINER state
 
-The canonical request fingerprint is computed **inside PostgreSQL**, not supplied by the mobile client or trusted from the FastAPI caller. Each RPC canonicalizes its own logical parameters and derives a SHA-256 fingerprint from that canonical payload.
+Migration `006_financial_idempotency.sql` originally introduced the four durable mutation functions as `SECURITY INVOKER`. That is **not** their effective current state.
 
-Consequences:
+Migration `007_authenticated_data_plane.sql` replaces those functions with narrowly scoped `SECURITY DEFINER` implementations so the application can revoke direct authenticated table DML without losing the supported idempotent write surface. The effective functions:
 
-- the caller cannot choose a fingerprint to make a changed payload look equivalent;
-- owner identity is always `auth.uid()` and is not an RPC argument;
-- equivalent decimal spellings such as `10`, `10.0` and `10.00` canonicalize to the same logical amount;
-- the derived first due date of a recurring template is intentionally excluded from that template's fingerprint, because retrying the same unresolved intent after a calendar rollover must replay the already-committed template rather than become a false mismatch.
+- derive the owner from `auth.uid()`;
+- reject a missing authenticated owner;
+- do not accept caller-provided `owner_id`;
+- use a fixed safe `search_path`;
+- validate the operation-specific payload;
+- execute the ledger claim and financial effect transactionally;
+- restrict execution to the intended authenticated role and remove direct access to the private idempotency internals.
 
-### Transaction boundary
+`SECURITY DEFINER` is **not** a generic security guarantee. The security boundary depends on the reviewed function surface, owner derivation, fixed `search_path`, restricted grants, bounded parameters, RLS/read behavior, and the database tests that exercise replay, conflict, concurrency, and cross-owner isolation.
 
-Migration `006_financial_idempotency.sql` provides PostgreSQL `SECURITY INVOKER` RPCs that coordinate three things in the **same transaction**:
+## Mobile logical-intent identity
 
-1. claim the owner/operation/key row;
-2. apply the financial effect;
-3. persist the durable result used by later replay.
+Database idempotency protects server effects, but the client must still replay the correct server identity after an ambiguous outcome.
 
-This deliberately avoids the unsafe pattern `check key -> mutate -> insert replay record` as separate operations.
+For an explicit non-convergent financial intent, mobile persistence records:
 
-A transaction that rolls back leaves neither a completed effect nor a durable replay result. If the database transaction commits but the client loses the response, both the financial effect and replay result are already durable; the caller retries the same unresolved intent with the same key and PostgreSQL returns the committed result without another effect.
+- an explicit local intent identity;
+- the `Idempotency-Key`;
+- the complete original first-submission payload;
+- owner/operation metadata required to find the pending record safely.
 
-### Server replay contract
+If the response is lost, timeout occurs, or the session becomes temporarily unavailable after submission, retry/reconnect/restart reuses the **same key and same original payload**. Recomputed form values are not substituted into an unresolved intent.
 
-- same owner + operation + key + equivalent canonical payload → return the durable result; apply the financial effect once;
-- same owner + operation + key + different payload → reject explicitly/fail closed;
-- the same opaque key used by another authenticated owner is independent and cannot reveal or deduplicate the first owner's operation;
-- a **new key** deliberately represents a new business intent, even when all business values equal a prior completed operation.
+A new explicit user action gets a new intent/key even when its business payload happens to equal an older unresolved action. Payload equality is not user-intent identity.
 
-The ledger is owner-scoped by RLS and the mutation functions are `SECURITY INVOKER`; `auth.uid()` remains the ownership authority.
+Pending financial state is not a general offline write queue. New financial mutations remain online-only; pending persistence exists to reconcile an already-submitted operation whose outcome is ambiguous.
 
-### Mobile logical-intent lifecycle
+See [Logical intent identity](../docs/architecture/LOGICAL_INTENT_IDENTITY.md) and [Offline resilience](../docs/architecture/OFFLINE_RESILIENCE.md).
 
-The database can only replay a logical operation correctly if the mobile client preserves the same key **and the same original logical request** while the outcome remains indeterminate. For the four scoped operations, the first submission therefore persists an owner-scoped pending mutation before transport.
+## Bills
 
-A pending mutation contains the durable key plus the complete original request payload and local logical-intent fingerprint. Its payload is private financial state and is stored in `SecureStore`; the historical AsyncStorage representation is migrated one way and removed.
+An ordinary bill is a payable financial obligation. A recurring template is scheduling metadata and is not itself a payable instance.
 
-Lifecycle rules:
+Important rules include:
 
-- new explicit user intent → create one pending identity and one new key;
-- the first submitted payload becomes the replay snapshot for that unresolved intent;
-- timeout, connection reset, reconnect, app background/foreground, HTTP 5xx, `408`, `425`, `429`, or lost response → preserve the pending key and original payload;
-- app/module restart → reload the pending record and replay the same identity;
-- confirmed success → close the pending identity;
-- definitive non-retryable 4xx rejection → close the rejected identity;
-- after a definitive outcome, a later explicit user action is a new intent and receives a new key.
+- bill ownership is derived from the authenticated context;
+- monetary amount uses the canonical exact-money boundary;
+- due date is a financial DATE-only value;
+- an ordinary bill creation intent uses durable idempotency;
+- a recurring template uses its own idempotent creation operation;
+- recurring templates cannot be marked paid as if they were generated child bills.
 
-Local matching is not allowed to rely only on a transport payload rebuilt at retry time. In particular, the income `date` field is derived from the financial calendar when the user first submits the intent. If a lost-response retry crosses local midnight, the retry must still select the unresolved income intent and send its original date rather than manufacture a new key for a recomputed date.
+## Monthly recurring obligations
 
-Pending-store mutations are serialized per `owner + operation`. Two different intents of the same operation type may therefore be created concurrently without a `read A / read A / write A+X / write A+Y` last-writer-wins loss.
+Recurring templates generate concrete child bills for due periods. The recurrence boundary is deterministic and database-backed.
 
-### Coherent authentication snapshot
+- Monthly recurrence preserves the intended day where the target month has it.
+- Short months clamp to the final valid day.
+- Leap-year February is handled by calendar semantics rather than fixed-day arithmetic.
+- A due date equal to the financial “today” is treated as consumed when computing the next generated period.
+- Generated children carry their parent relationship.
+- The database partial uniqueness constraint on `(parent_bill_id, due_date)` is the final retry/concurrency authority for generated children.
 
-Financial request preparation captures one authenticated-session snapshot containing the access token, owner id and a local session generation. That single snapshot is used to select the owner namespace, prepare the pending mutation and populate the Authorization header.
+Generated-child convergence is distinct from recurring-template creation idempotency; one invariant must not be used as a substitute for the other.
 
-If the authenticated session changes before preparation finishes, the mutation fails closed before transport. The client must never send combinations such as owner A + token B or owner B + token A.
+## Income
 
-Normal logout intentionally does not destroy an **ambiguous** pending financial mutation: the record remains encrypted and scoped to its original owner so that owner can reconcile it after a later login. A different account cannot select, replay or reuse the first owner's key/payload. An explicit purge helper exists for a deliberate destructive lifecycle policy, but ordinary account switching relies on strict owner namespace isolation rather than making an unresolved financial outcome unrecoverable.
+Income creation uses exact decimal money, financial DATE-only semantics, authenticated ownership, and durable `Idempotency-Key` replay. If a response is lost across local midnight, replay uses the original persisted income date and payload rather than recomputing a new business date.
 
-A structurally valid ambiguous pending mutation has **no wall-clock TTL**. Age alone cannot prove whether the server committed an operation whose response was lost, so the mobile record remains durable until authoritative success, a definitive client rejection, or an explicit reconciliation/lifecycle decision closes it. Server replay records are likewise not automatically deleted by migration 006; they remain durable until an explicit operator-managed lifecycle policy is introduced. The server therefore does not expire a key while a supported mobile pending record can still legitimately retry it.
+## Reserve / emergency fund
 
-## Payment convergence and ambiguous receipt commits
+FinanceFlow currently supports **reserve addition** and emergency-fund goal tracking.
 
-Payment endpoints have a **different contract** from the four `Idempotency-Key` mutations above. Do not describe all payment behavior generically as key-based idempotency.
+- Reserve addition is a non-negative financial mutation protected by durable idempotency.
+- The current product does **not** expose a reserve withdrawal/decrement endpoint.
+- Goal updates are field-scoped and do not imply permission to overwrite reserve balance.
+- Settings replacement preserves fields that are outside the sanctioned input surface.
 
-### Receipt-less payment
+Documentation must not imply bidirectional reserve operations until a real supported withdrawal boundary exists.
 
-The target state is `paid`. The final update is compare-and-set constrained by `status != paid`. If another request completes the same bill between lookup and update, the losing request converges to the already-achieved paid state rather than claiming a second financial write.
+## Settings and initial balance
 
-### Receipt-backed payment
+The settings write surface is owner-derived and field-limited. Initial balance, initial-balance date, and emergency-fund goal are governed by the sanctioned database function rather than arbitrary authenticated table updates.
 
-Receipt-backed payment also uses a `status != paid` compare-and-set, but storage makes the failure model different. An exception returned by the Data API is **not proof of database rollback**.
+The initial-balance date is financially meaningful: authoritative balance calculations include income/payment records according to that date boundary. The database migration chain constrains the sanctioned settings path so an authenticated direct Data API caller cannot use that RPC to place the initial-balance baseline after the canonical financial today.
 
-The fail-safe sequence is:
+## Payments
 
-1. validate and upload the private, owner/bill-scoped receipt;
-2. attempt the RLS-scoped payment mutation;
-3. if the mutation result is lost or otherwise ambiguous, re-read the authoritative RLS-scoped bill;
-4. if the bill committed `paid` with this exact `receipt_path`, retain the object and resolve to the committed payment;
-5. if reconciliation itself is unavailable or the row still references this object in an unexpected partial state, retain the object rather than destroying possibly committed evidence;
-6. delete the uploaded object only after authoritative state proves that this attempt's object is not referenced.
+The sanctioned payment transition is `finance_mark_bill_paid`.
 
-A later retry after `COMMIT -> response failure` converges to the already-committed receipt/payment without a second upload. Tests explicitly distinguish this from `FAIL BEFORE COMMIT`.
+The database derives owner identity and authoritative payment date, row-locks the relevant owner-scoped bill, rejects recurring templates, and converges already-completed state. Receipt-less and receipt-backed payments use the same financial transition; only receipt-backed payment supplies a private object path.
 
-RLS-scoped lookup/update remains the ownership authority, so a cross-user bill id is indistinguishable from a nonexistent bill.
+### Receipt-backed payment ambiguity
 
-## Recurring-bill calendar rule
+Private receipt bytes are validated and uploaded under an owner/bill-scoped opaque object path before the payment transition references that object.
 
-Recurring templates currently implement **monthly cadence only**. Unsupported frequency labels are rejected at the API boundary instead of being stored and then processed with misleading monthly behavior.
+A transport/Data API exception after the payment request starts is an **ambiguous outcome**, not proof that the database rolled back. The backend therefore follows reconciliation-first semantics:
 
-Monthly recurring bills use a configured day from 1 through 31.
+1. re-read the authoritative owner-scoped bill state through the authenticated/RLS data client;
+2. if the committed paid state references the just-uploaded receipt, preserve the object and converge to that durable payment;
+3. if another completed payment owns a different receipt, remove only the losing upload after the authoritative state proves it unreferenced;
+4. if the bill remains unpaid and the authoritative reread proves the attempted object is not referenced, remove that orphan and return the persistence failure;
+5. if reconciliation itself is unavailable or the state is incomplete/ambiguous, retain the private receipt fail-safe for later reconciliation.
 
-- If that day exists in the target month, use it.
-- If the month is shorter, clamp to the month's last day.
-- If today's financial date is before the current month's target due date, generate for the current month.
-- If today is equal to or after the target due date, generate for the next month.
-- December-to-January and leap/non-leap February are mandatory regression cases.
+This rule intentionally prefers a bounded possible orphan over deleting evidence that a committed payment may still reference.
 
-Recurring **template creation** uses the durable `Idempotency-Key` contract above. Child generation occurs after the template RPC and is recoverable independently. If child generation fails after template creation, the API reports explicit partial success and generation can be retried without inserting another template with the same unresolved operation identity.
+## Private receipt access
 
-## Generated-child idempotency
+Receipt storage is private. Persisted financial state stores the validated object identity, not a permanent public URL. Authorized access creates a bounded signed URL only after owner-scoped bill lookup and receipt-path validation.
 
-Generated recurring children use a separate database invariant and must not be confused with template-creation idempotency.
+Storage service-role capability is server-only and is not used as a substitute for the normal authenticated financial Data API client.
 
-Generated children are unique by `(parent_bill_id, due_date)` when `parent_bill_id IS NOT NULL` and the row is not itself a recurring template. Migration `002_recurring_instance_uniqueness.sql` enforces this with a partial unique index.
+## OCR and AI
 
-Application pre-checks are an optimization only; PostgreSQL is the final authority.
+OCR and generated financial insights are provider-assisted outputs, never independent financial authority.
 
-### Historical duplicates
+- Uploads are bounded and signature-validated before OCR.
+- Declared MIME type or filename extension alone is not trusted.
+- Provider output is parsed/validated locally.
+- Low-confidence or unreadable OCR requires review rather than automatic financial persistence.
+- Passive insight reads do not invoke the external provider; generation/refresh is explicit.
 
-Migration 002 is deliberately **fail-closed**. If historical duplicate generated rows already exist, the migration raises an error and does not delete financial records automatically. Reconciliation must be explicit and auditable before retrying the migration.
+See [OCR_SECURITY.md](OCR_SECURITY.md) and [AI privacy](../docs/security/AI_PRIVACY.md).
 
-### Concurrent requests and retries
+## Evidence expectations
 
-Two concurrent attempts to create the same generated instance may race past an application pre-check. The database unique index allows at most one writer to commit.
+Financial correctness claims are tied to deterministic tests and database probes, including:
 
-A repeated retry of an already-generated `(parent_bill_id, due_date)` must not create another row.
+- decimal rounding/range boundaries;
+- financial timezone/date behavior;
+- RLS and forged-owner denial;
+- direct authenticated table-DML denial;
+- same-key sequential and concurrent replay;
+- changed-payload conflict;
+- cross-owner idempotency isolation;
+- commit-then-response-loss retry;
+- recurring-child uniqueness/concurrency;
+- payment/date ownership inside PostgreSQL;
+- receipt payment ambiguity and reconciliation.
 
-For a multi-row insert, a uniqueness conflict aborts the PostgreSQL statement. Non-conflicting rows from the same failed statement must not be assumed persisted; a later retry recalculates missing instances and safely creates only those still absent.
-
-## Validation evidence
-
-The FinanceFlow gates prove these invariants with:
-
-- exact-money unit tests and canonical API payload tests;
-- financial-calendar boundary tests for before/exactly/after São Paulo midnight, UTC-next-day windows, month/year rollover and IANA historical offset behavior;
-- a mutation/control case proving the former `toISOString().split('T')[0]` behavior returns D+1 for the audited 22:30 São Paulo instant while the canonical helper returns D;
-- a backend financial-impact test proving `initial_balance_date = D` inclusively counts income/payment on D and that a D+1 drift changes authoritative balances;
-- a static mobile financial-domain guard against reintroducing UTC slicing for date-only values while preserving legitimate timestamp use;
-- receipt payment tests that distinguish fail-before-commit from commit-then-response-failure and verify signed access to retained evidence;
-- a disposable PostgreSQL 16 financial-idempotency contract covering database-owned fingerprinting, replay, payload mismatch, owner isolation, intentional new-key repetition and concurrent same-key requests for reserve/bill/income/recurring-template mutations;
-- backend adapter tests that model commit-before-timeout for all four durable mutation classes;
-- a mobile contract proving original-payload/key replay across midnight, reconnect-style retry and module/app restart;
-- deterministic controls proving the former payload-drift and concurrent pending-store loss failure models;
-- an account-switch contract proving stale auth snapshots fail closed and another owner cannot inherit pending financial state;
-- PostgreSQL `NUMERIC(...,2)` persistence round-trip checks;
-- recurring calendar edge cases, historical-duplicate fail-closed behavior, concurrent generated-child writers, retry uniqueness and bulk-conflict recovery.
-
-Changes that weaken these invariants require an explicit domain decision and corresponding test updates; they must not be made solely to obtain a green CI result.
+The canonical evidence map is [Quality evidence](../docs/assurance/QUALITY_EVIDENCE.md). Green CI proves the scoped contract exercised on the exact candidate SHA; it is not a blanket claim about live third-party infrastructure or operator-managed credentials.
