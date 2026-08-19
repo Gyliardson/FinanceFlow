@@ -1,6 +1,6 @@
 # Authenticated financial data-plane boundary
 
-Issue #91 tracks a domain-integrity gap in the original Supabase privilege model. Row Level Security isolated owners, but the `authenticated` role also had direct table `INSERT`, `UPDATE`, and `DELETE` privileges. Because the mobile client legitimately possesses the project URL, publishable key, and its own end-user JWT for Supabase Auth, those direct Data API mutations were reachable outside FastAPI and could bypass application financial invariants.
+Issue #91 tracked a domain-integrity gap in the original Supabase privilege model. Row Level Security isolated owners, but the `authenticated` role also had direct table `INSERT`, `UPDATE`, and `DELETE` privileges. Because the mobile client legitimately possesses the project URL, publishable key, and its own end-user JWT for Supabase Auth, those direct Data API mutations were reachable outside FastAPI and could bypass application financial invariants.
 
 The numbered migrations 007–009 implement the least-privilege replacement. **RLS remains the final cross-owner read-isolation authority.** This change restricts self-owned writes; it does not move service-role credentials into the client.
 
@@ -16,7 +16,7 @@ Supported writes cross narrowly defined `SECURITY DEFINER` functions that:
 - use a fixed safe `search_path`;
 - expose execution only to `authenticated`;
 - never accept caller-supplied `owner_id`;
-- preserve transactionality, uniqueness, payment convergence, Decimal bounds and financial-date semantics.
+- preserve transactionality, uniqueness, payment convergence, Decimal bounds, and financial-date semantics.
 
 PUBLIC and anonymous execution are explicitly revoked. The private idempotency ledger and private financial-timezone configuration are not directly accessible to `authenticated`.
 
@@ -36,19 +36,21 @@ PUBLIC and anonymous execution are explicitly revoked. The private idempotency l
 | Generated recurring child | `finance_generate_recurring_child` |
 | Delete financial rows | no canonical production delete route and no sanctioned delete RPC |
 
-`runtime.py` binds full settings writes to `settings_write_routes.update_settings`; settings goal, insight, both payment modes and recurring generation likewise call the sanctioned RPC surface. Legacy non-canonical helpers that still contain direct table mutation code are not runtime routes and become fail-closed after migration 009 because `authenticated` no longer owns table DML.
+`runtime.py` binds full settings writes to `settings_write_routes.update_settings`; settings goal, insight, both payment modes, and recurring generation likewise call the sanctioned RPC surface. Legacy non-canonical helpers that still contain direct table mutation code are not runtime routes and become fail-closed after migration 009 because `authenticated` no longer owns table DML.
 
 Experimental collectors/scheduler are collection-only in the production posture and do not gain a write privilege from this boundary.
 
 ## Durable idempotency RPC hardening
 
-Migration 006 originally declared the four durable mutation functions `SECURITY INVOKER`, which depended on direct authenticated table DML. Migration 007 converts them to narrow `SECURITY DEFINER` functions with fixed `search_path` while preserving their existing owner derivation, payload validation and transactional idempotency ledger behavior. Direct authenticated access to `financeflow_private.idempotency_operations`, its helper and the private schema is revoked.
+Migration 006 originally declared the four durable mutation functions `SECURITY INVOKER`, which depended on direct authenticated table DML. Migration 007 converts them to narrow `SECURITY DEFINER` functions with fixed `search_path` while preserving their existing owner derivation, payload validation, and transactional idempotency ledger behavior. Direct authenticated access to `financeflow_private.idempotency_operations`, its helper, and the private schema is revoked.
 
-The existing Financial idempotency PostgreSQL workflow remains required because migration 007 must not weaken same-key replay, payload conflict detection or atomic ledger/effect semantics.
+`SECURITY DEFINER` is not treated as a security property by itself. The boundary depends on the reviewed function surface: owner derivation from `auth.uid()`, no caller-supplied owner, bounded parameters, fixed `search_path`, restricted execution grants, and the database invariants exercised by tests.
+
+The existing Financial idempotency PostgreSQL workflow remains required because migration 007 must not weaken same-key replay, payload conflict detection, or atomic ledger/effect semantics.
 
 ## Settings and insight boundaries
 
-`finance_replace_settings` accepts only initial balance, initial-balance date and emergency-fund goal. It preserves reserve balance and persisted insight fields on update. `finance_update_emergency_fund_goal` can modify only the goal. `finance_store_insight` can modify only non-authoritative insight text/date and cannot invoke any external provider; explicit AI generation remains a FastAPI action.
+`finance_replace_settings` accepts only initial balance, initial-balance date, and emergency-fund goal. It preserves reserve balance and persisted insight fields on update. `finance_update_emergency_fund_goal` can modify only the goal. `finance_store_insight` can modify only non-authoritative insight text/date and cannot invoke any external provider; explicit AI generation remains a FastAPI action.
 
 All money inputs are parsed as PostgreSQL `NUMERIC` and enforce the same ±1,000,000 / non-negative goal bounds as the API model.
 
@@ -60,24 +62,24 @@ A receipt path, when supplied, must remain under `<owner_id>/<bill_id>/...`. Rec
 
 ## Recurring-child boundary
 
-`finance_generate_recurring_child` accepts only a parent bill id. PostgreSQL verifies that the parent belongs to the authenticated owner and is a valid monthly recurring template, then derives amount, description and due date from that parent. The due date clamps short months and treats a due date equal to today as consumed, matching the product recurrence rule. The partial unique index on `(parent_bill_id, due_date)` remains the final retry/concurrency authority; duplicate calls converge to the existing child.
+`finance_generate_recurring_child` accepts only a parent bill id. PostgreSQL verifies that the parent belongs to the authenticated owner and is a valid monthly recurring template, then derives amount, description, and due date from that parent. The due date clamps short months and treats a due date equal to today as consumed, matching the product recurrence rule. The partial unique index on `(parent_bill_id, due_date)` remains the final retry/concurrency authority; duplicate calls converge to the existing child.
 
 ## PostgreSQL verification contract
 
 `.github/workflows/authenticated-data-plane.yml` applies migrations 002–009 to a disposable PostgreSQL 16 Supabase-compatible fixture and proves both denial and positive paths:
 
 - owner-scoped SELECT still works;
-- direct authenticated INSERT, UPDATE and DELETE are denied;
+- direct authenticated INSERT, UPDATE, and DELETE are denied;
 - bill/income idempotent RPCs still succeed and replay exactly once;
-- settings, goal, insight and reserve writes are owner-scoped and field-limited;
+- settings, goal, insight, and reserve writes are owner-scoped and field-limited;
 - payment date is database-owned;
 - cross-owner payment and recurring-template payment are rejected;
 - recurring-child retries produce one derived child;
 - anonymous table access and sanctioned RPC execution are denied.
 
-This dedicated gate supplements, rather than replaces, existing ownership/RLS, financial-idempotency, recurring-idempotency, backend, mobile, dependency, secret and build gates.
+This dedicated gate supplements, rather than replaces, existing ownership/RLS, financial-idempotency, recurring-idempotency, backend, mobile, dependency, secret, and build gates.
 
-## Migration sequencing and deployment
+## Migration sequencing and current lifecycle
 
 The sequence is intentional:
 
@@ -86,4 +88,6 @@ The sequence is intentional:
 3. canonical application call sites move to the sanctioned surface;
 4. migration 009 revokes direct table DML and removes mutation policies.
 
-For a release candidate, migrations must be applied in numbered order to the Supabase project. A generic empty PostgreSQL replay remains only focused CI evidence, not a substitute for Supabase provisioning. Promotion of #91 additionally requires all exact-head repository gates to be green and post-merge certification on `portfolio/revamp-2026`.
+For a release candidate, migrations must be applied in numbered order to the Supabase project. A generic empty PostgreSQL replay remains focused CI evidence, not a substitute for Supabase provisioning.
+
+The hardening program that introduced this boundary has already been integrated into `main`. Repository workflows still contain historical branch triggers such as `portfolio/revamp-2026` where currently defined; those triggers are legacy lifecycle compatibility and are not the recommended model for new work. Current changes should target `main` through an ordinary reviewed PR and must be evaluated against the exact candidate SHA.

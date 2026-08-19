@@ -4,8 +4,8 @@ from strictyaml import load
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GOVERNANCE_PATH = REPO_ROOT / "docs" / "GOVERNANCE.md"
-QUALITY_EVIDENCE_PATH = REPO_ROOT / "docs" / "QUALITY_EVIDENCE.md"
+GOVERNANCE_PATH = REPO_ROOT / "docs" / "assurance" / "GOVERNANCE.md"
+QUALITY_EVIDENCE_PATH = REPO_ROOT / "docs" / "assurance" / "QUALITY_EVIDENCE.md"
 
 ALWAYS_ON_RELEASE_CONTEXTS = {
     REPO_ROOT / ".github" / "workflows" / "authenticated-data-plane.yml":
@@ -22,9 +22,10 @@ ALWAYS_ON_RELEASE_CONTEXTS = {
 def test_release_security_and_runtime_contexts_are_always_on_for_promotion_prs() -> None:
     """Guard the repository-side half of the remote required-check contract.
 
-    GitHub ruleset membership is intentionally *not* asserted here: proving the
-    effective remote ruleset from CI would require privileged repository-settings
-    credentials. Release certification re-reads the effective ruleset remotely.
+    The branch set below intentionally mirrors the current workflow definitions,
+    including the historical portfolio trigger. It does not define the forward
+    development branch model. GitHub ruleset membership is intentionally *not*
+    asserted here because repository settings are an external control plane.
     """
 
     for workflow_path, required_context in ALWAYS_ON_RELEASE_CONTEXTS.items():

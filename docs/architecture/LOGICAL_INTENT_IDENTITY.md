@@ -14,6 +14,37 @@ One unresolved explicit user intent owns one owner-scoped persisted record conta
 
 Retry/reconnect/restart/background reconciliation for that same `intentId` reuses the same key and original payload. A **new explicit user intent gets a new `intentId` and a new key even if its business payload is identical to an older unresolved intent**. Payload equality is never the definition of user-intent identity.
 
+```mermaid
+sequenceDiagram
+    actor User
+    participant Mobile
+    participant SecureStore
+    participant FastAPI
+    participant PostgreSQL
+
+    User->>Mobile: Submit financial intent
+    Mobile->>SecureStore: Persist intentId + key + original payload
+    Mobile->>FastAPI: Send request with same key + payload
+    FastAPI->>PostgreSQL: Execute owner-derived transactional mutation
+    PostgreSQL-->>FastAPI: Durable effect + replay result
+    alt Definitive response arrives
+        FastAPI-->>Mobile: Success
+        Mobile->>SecureStore: Close pending intent
+    else Response lost / timeout
+        FastAPI--xMobile: Outcome remains ambiguous
+        Mobile->>SecureStore: Retain pending state
+        User->>Mobile: Retry / reconnect / restart
+        Mobile->>SecureStore: Load same key + original payload
+        Mobile->>FastAPI: Replay same key + same original payload
+        FastAPI->>PostgreSQL: Durable replay
+        PostgreSQL-->>FastAPI: Previously committed result
+        FastAPI-->>Mobile: Converged result
+        Mobile->>SecureStore: Close pending intent
+    end
+```
+
+The diagram illustrates the replay path; the text below remains the normative behavioral contract.
+
 Fresh intent allocation is single-flight per mounted `useFinancialMutation` hook. The hook claims a synchronous re-entrancy guard before any awaited auth/pending-state preflight. React `saving`/loading state remains presentation feedback, not the financial correctness mutex. A second activation while the first submit is still being prepared or transported cannot allocate or persist a second logical intent.
 
 ## UI lifecycle
@@ -23,7 +54,7 @@ Fresh intent allocation is single-flight per mounted `useFinancialMutation` hook
 - Retry while that form/intention remains active reuses the handle and original persisted payload.
 - After an ambiguous result, fields are locked so retry cannot silently substitute recomputed/edited values for the persisted original payload.
 - Cancelling/leaving/resetting the form clears only the local UI handle. It **does not cancel** an ambiguous server outcome and does not delete the encrypted persisted record.
-- The authenticated navigator exposes a privacy-safe unresolved-operation status that survives the originating form being closed. It shows only operation categories/counts; it never renders amounts, titles, original payloads, idempotency keys or intent IDs.
+- The authenticated navigator exposes a privacy-safe unresolved-operation status that survives the originating form being closed. It shows only operation categories/counts; it never renders amounts, titles, original payloads, idempotency keys, or intent IDs.
 - If a fresh form attempts the same operation type while an older ambiguous record still exists for the authenticated owner, the app requires explicit acknowledgement **before allocating the new identity** that this is an additional financial action and both actions may later appear after reconciliation.
 - Definitive success or definitive non-auth client rejection closes the persisted intent and refreshes the unresolved status.
 - Timeout, response loss, network loss, 5xx, 408/425/429, and auth/session loss retain the ambiguous intent.
@@ -93,4 +124,4 @@ The mobile auth/UX contracts must prove or enforce:
 - unresolved status is owner-scoped and privacy-safe;
 - a fresh same-operation intent waits for explicit additional-operation acknowledgement before a new identity is allocated;
 - definitive closure refreshes the unresolved status;
-- the `America/Sao_Paulo` financial date contract from #37 remains green in the same gate.
+- the `America/Sao_Paulo` financial date contract remains green in the same gate.
