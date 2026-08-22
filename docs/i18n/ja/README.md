@@ -6,7 +6,7 @@
 
 FinanceFlow は React Native / Expo を使用した個人向けファイナンスアプリで、FastAPI、Supabase Auth、PostgreSQL RLS、非公開レシートストレージを組み合わせています。ネットワーク、リトライ、セッション、外部プロバイダーが予測不能に失敗しても、金融操作の意図、データ所有権、正確な金額表現を保つことを設計上の中心に置いています。
 
-[English](../../../README.md) · [Português](../pt-BR/README.md) · [日本語](README.md) · [Español](../es/README.md)
+<a href="../../../README.md">English</a> · <a href="../pt-BR/README.md">Português</a> · <strong>日本語</strong> · <a href="../es/README.md">Español</a>
 
 [![FinanceFlow CI](https://github.com/Gyliardson/FinanceFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Gyliardson/FinanceFlow/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../../../LICENSE)
